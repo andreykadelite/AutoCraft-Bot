@@ -1,3 +1,5 @@
+устанавливаем с оф. сайта
+ https:/www.python.org/downloads/release/python-3117/
 Python 3.11.7
 устанавливаем пакеты
 python -m pip install aiogram==2.25.1 psutil==5.9.5 speedtest-cli pyautogui PyQt5 requests Pillow
