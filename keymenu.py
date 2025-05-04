@@ -1,4 +1,5 @@
 from aiogram import types
+import inspect
 
 def get_main_keyboard():
     """
@@ -24,7 +25,8 @@ def get_additional_keyboard():
     """
     Возвращает дополнительную клавиатуру с кнопками:
     "Заметки", "Отправить файлы", "Прием файлов", "Питание",
-    "Плагины", "Справка", "лог", "Настройки", "Связь с разработчиком", "Назад"
+    "Плагины", "Справка", "лог", "Особые функции", "Настройки",
+    "Связь с разработчиком", "Назад"
     """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     buttons = [
@@ -35,13 +37,13 @@ def get_additional_keyboard():
         "Плагины",
         "Справка",
         "лог",
+        "Особые функции",
         "Настройки",
         "Связь с разработчиком",
         "Назад"
     ]
     kb.add(*buttons)
     return kb
-
 
 def create_plugins_ext_menu():
     """
@@ -76,7 +78,7 @@ def backup_main_keyboard():
 def create_list_keyboard(items, add_back=True):
     """
     Универсальная функция для создания клавиатуры из списка кнопок.
-    Если add_back=True, в конец добавляется кнопка "Назад".
+    Если add_back=True, в конец добавляется кнопку "Назад".
     """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     for item in items:
@@ -85,10 +87,10 @@ def create_list_keyboard(items, add_back=True):
         kb.add(types.KeyboardButton("Назад"))
     return kb
 
-import inspect
 # Патчим метод add у ReplyKeyboardMarkup для автоматического добавления кнопки "Настройки"
 _original_add = types.ReplyKeyboardMarkup.add
 def patched_add(self, *buttons):
+    import inspect
     stack = inspect.stack()
     if stack and len(stack) > 1:
         caller_function = stack[1].function
@@ -108,9 +110,35 @@ def get_main_settings_keyboard():
     """
     Возвращает основное меню настроек:
     "Авторизация", "Система", "Память", "Сброс",
-    "Резервное копирование и восстановление", "Информация", "Назад"
+    "Резервное копирование и восстановление", "Информация", "Вернуться"
     """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("Авторизация", "Система", "Память", "Сброс", "Резервное копирование и восстановление", "Информация", "Вернуться")
+    kb.add(
+        "Авторизация",
+        "Система",
+        "Память",
+        "Сброс",
+        "Резервное копирование и восстановление",
+        "Информация",
+        "Вернуться"
+    )
     return kb
 
+def get_sound_keyboard():
+    """
+    Возвращает клавиатуру для модуля звука:
+    "Синтез речи", "Отправить голос", "Очистить sound" и "Вернуться".
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("Синтез речи", "Отправить голос", "Очистить sound")
+    kb.add("Вернуться")
+    return kb
+
+def get_voice_cancel_keyboard():
+    """
+    Возвращает клавиатуру для отмены режима отправки голоса:
+    "Отмена".
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("Отмена")
+    return kb

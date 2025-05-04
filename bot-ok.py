@@ -538,7 +538,7 @@ def run_bot():
 
 
     # --- ЭКСТРЕННАЯ КОМАНДА ---
-    @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "hrp")
+    @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "hrp" and message.from_user.id in authorized_users)
     async def emergency_exit(message: types.Message):
         user_id = message.from_user.id
         note_mode[user_id] = False
@@ -700,14 +700,8 @@ def run_bot():
                     return
                 if message.text.strip() == PIN_CODE:
                     authorized_users.add(user_id)
-                    write_bot_log(f"Пользователь {user_id} успешно прошёл аутентификацию.")
                     keyboard = get_main_keyboard()
-                    intro_text = (
-                        "PIN-код верный. Вы авторизовались.\n\n"
-                        "Инструкция:\n\n" + info.HELP_TEXT + "\nВыберите действие:"
-                    )
-                    await message.answer(intro_text, reply_markup=keyboard)
-                    # Отправка накопленных логов пользователю
+                    await message.answer("Вы авторизовались.", reply_markup=keyboard)
                     if pending_log_messages:
                         await message.answer("Пока вас не было, вот что произошло:")
                         log_text = "\n".join(pending_log_messages)
@@ -716,8 +710,8 @@ def run_bot():
                         for chunk in chunks:
                             await message.answer(chunk)
                         pending_log_messages.clear()
-                        status_str = "включен" if debug_enabled else "выключен"
-                        await message.answer(f"Статус дебага: {status_str}.")
+                    status_str = "включен" if debug_enabled else "выключен"
+                    await message.answer(f"Статус дебага: {status_str}.")
                 else:
                     write_bot_log(f"Неудачная попытка авторизации пользователя {user_id} с неправильным PIN: {message.text.strip()}")
                     await message.answer("Неверный PIN-код. Попробуйте ещё раз.")
@@ -743,11 +737,7 @@ def run_bot():
                 if message.text.strip() == PIN_CODE:
                     authorized_users.add(user_id)
                     keyboard = get_main_keyboard()
-                    intro_text = (
-                        "PIN-код верный. Вы авторизовались.\n\n"
-                        "Инструкция:\n\n" + info.HELP_TEXT + "\nВыберите действие:"
-                    )
-                    await message.answer(intro_text, reply_markup=keyboard)
+                    await message.answer("Вы авторизовались.", reply_markup=keyboard)
                     if pending_log_messages:
                         await message.answer("Пока вас не было, вот что произошло:")
                         log_text = "\n".join(pending_log_messages)
@@ -756,8 +746,8 @@ def run_bot():
                         for chunk in chunks:
                             await message.answer(chunk)
                         pending_log_messages.clear()
-                        status_str = "включен" if debug_enabled else "выключен"
-                        await message.answer(f"Статус дебага: {status_str}.")
+                    status_str = "включен" if debug_enabled else "выключен"
+                    await message.answer(f"Статус дебага: {status_str}.")
                 else:
                     write_bot_log(f"Неудачная попытка авторизации пользователя {user_id} с неправильным PIN: {message.text.strip()}")
                     await message.answer("Неверный PIN-код. Попробуйте ещё раз.")

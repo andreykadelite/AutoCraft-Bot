@@ -21,8 +21,12 @@ def remove_handlers_from_module(dp: Dispatcher, module_name: str):
                 return False
             mod_name = getattr(callback_fn, "__module__", "")
             return mod_name == module_name
-        dp.message_handlers.handlers[:] = [h for h in dp.message_handlers.handlers if not is_from_module(h)]
-        dp.callback_query_handlers.handlers[:] = [h for h in dp.callback_query_handlers.handlers if not is_from_module(h)]
+        dp.message_handlers.handlers[:] = [
+            h for h in dp.message_handlers.handlers if not is_from_module(h)
+        ]
+        dp.callback_query_handlers.handlers[:] = [
+            h for h in dp.callback_query_handlers.handlers if not is_from_module(h)
+        ]
     except Exception:
         pass
 
@@ -74,16 +78,15 @@ def import_utilites(dp: Dispatcher):
     except Exception:
         pass
 
-def import_dptools(dp: Dispatcher):
+def import_moduldptools(dp: Dispatcher):
     """
-    Импорт и регистрация обработчиков из dptools после авторизации.
+    Импорт и регистрация обработчиков из moduldptools после авторизации.
     """
     try:
-        import importlib
         import __main__
-        dptools = importlib.import_module("dptools")
-        if hasattr(dptools, "register_dptools_handlers"):
-            dptools.register_dptools_handlers(
+        moduldptools = importlib.import_module("moduldptools")
+        if hasattr(moduldptools, "register_dptools_handlers"):
+            moduldptools.register_dptools_handlers(
                 dp,
                 __main__.base_dir,
                 __main__.note_mode,
@@ -97,6 +100,22 @@ def import_dptools(dp: Dispatcher):
     except Exception:
         pass
 
+def import_modulsound(dp: Dispatcher):
+    try:
+        modulsound = importlib.import_module("modulsound")
+        if hasattr(modulsound, "register_handlers"):
+            modulsound.register_handlers(dp)
+    except Exception:
+        pass
+
+# Теперь звук грузится последним
+async def import_all_plugins(dp: Dispatcher):
+    import_modulpsw(dp)         # 1. psw
+    import_modulset(dp)         # 2. set
+    import_modulcon(dp)         # 3. con
+    import_utilites(dp)         # 4. утилиты
+    import_moduldptools(dp)     # 5. moduldptools (после авторизации)
+    import_modulsound(dp)       # 6. звук – теперь в конце
 
 def wait_for_bot_loop(dp: Dispatcher):
     while not hasattr(dp.bot, "loop") or dp.bot.loop is None:
@@ -106,12 +125,11 @@ def authorization_monitor(dp: Dispatcher):
     wait_for_bot_loop(dp)
     while not check_auth():
         time.sleep(1)
-    # Импорт модулей плагинов после авторизации
-    dp.bot.loop.call_soon_threadsafe(import_modulpsw, dp)
-    dp.bot.loop.call_soon_threadsafe(import_modulset, dp)
-    dp.bot.loop.call_soon_threadsafe(import_modulcon, dp)
-    dp.bot.loop.call_soon_threadsafe(import_dptools, dp)
-    dp.bot.loop.call_soon_threadsafe(import_utilites, dp)
+    dp.bot.loop.call_soon_threadsafe(asyncio.create_task, import_all_plugins(dp))
 
 def register_handlers(dp: Dispatcher):
-    threading.Thread(target=authorization_monitor, args=(dp,), daemon=True).start()
+    threading.Thread(
+        target=authorization_monitor,
+        args=(dp,),
+        daemon=True
+    ).start()
