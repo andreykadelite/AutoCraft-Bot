@@ -1,7 +1,1 @@
-aiogram==2.25.1
-psutil==5.9.5
-speedtest-cli
-pyautogui
-PyQt5
-requests
-Pillow
+aiogram==2.25.1 psutil==5.9.5 speedtest-cli pyautogui PyQt5 requests gTTS pyttsx3 Pillow
