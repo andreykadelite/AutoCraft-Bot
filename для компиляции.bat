@@ -13,6 +13,11 @@ python -m nuitka ^
     --include-package=pyautogui ^
     --include-package=gtts ^
     --include-package=pyttsx3 ^
+    --include-package=comtypes ^
+    --include-package=pycaw ^
+    --include-package=cv2 ^
+    --include-package=sounddevice ^
+    --include-package=soundfile ^
     --include-data-file="E:\vscod\tgbot\v4\ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
     "bot-ok.py"
 

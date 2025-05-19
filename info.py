@@ -139,5 +139,5 @@ CONTACT_TEXT = """
 
 CONTACT_TEXT = """Телеграм: @Cyberlinkboom
 Электронная почта: andreykadelite@ya.ru
-
+https://github.com/andreykadelite/AutoCraft-Bot
 По багам, улучшениям и предложениям пишите в Telegram или на электронную почту."""

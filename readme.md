@@ -163,6 +163,11 @@ python -m nuitka ^
     --include-package=pyautogui ^
     --include-package=gtts ^
     --include-package=pyttsx3 ^
+    --include-package=comtypes ^
+    --include-package=pycaw ^
+    --include-package=cv2 ^
+    --include-package=sounddevice ^
+    --include-package=soundfile ^
     --include-data-file="E:\vscod\tgbot\v4\ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
     "bot-ok.py"
 внимание!
@@ -170,8 +175,8 @@ python -m nuitka ^
 библеотека в корне проекта ffmpeg-7.1
 
 или запустите
-компиляция программы без консольного вывода.bat
-путь к внешней библеотеки тоже прописать свой, 
+кдля компиляции.bat
+путь к внешней библеотеке в батнике ffmpeg тоже прописать свой, 
 
  они должны быть в папке с проектом где исходники
 начальный файл для компиляции bot-ok.py, остальные файлы он сам подхватит

@@ -110,12 +110,12 @@ def import_modulsound(dp: Dispatcher):
 
 # Теперь звук грузится последним
 async def import_all_plugins(dp: Dispatcher):
-    import_modulpsw(dp)         # 1. psw
-    import_modulset(dp)         # 2. set
-    import_modulcon(dp)         # 3. con
-    import_utilites(dp)         # 4. утилиты
-    import_moduldptools(dp)     # 5. moduldptools (после авторизации)
-    import_modulsound(dp)       # 6. звук – теперь в конце
+    import_modulpsw(dp)           # 1. psw
+    import_modulset(dp)           # 2. set
+    import_modulcon(dp)           # 3. con
+    import_utilites(dp)           # 4. утилиты
+    import_moduldptools(dp)       # 5. dptools -> теперь moduldptools
+    import_modulsound(dp)         # 6. звук – теперь в конце
 
 def wait_for_bot_loop(dp: Dispatcher):
     while not hasattr(dp.bot, "loop") or dp.bot.loop is None:

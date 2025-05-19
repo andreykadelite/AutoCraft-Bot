@@ -383,7 +383,7 @@ def register_handlers(dp):
         change_token_mode.pop(message.from_user.id, None)
         await message.answer("Операция смены токена отменена.", reply_markup=get_main_settings_keyboard())
     
-    @dp.message_handler(lambda message: message.from_user.id in change_token_mode and not isinstance(change_token_mode.get(message.from_user.id), bool))
+    @dp.message_handler(lambda message: message.from_user.id in change_token_mode and isinstance(change_token_mode.get(message.from_user.id), bool))
     async def process_new_token(message: types.Message):
         new_token = message.text.strip()
         from aiogram import Bot
