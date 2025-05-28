@@ -16,8 +16,11 @@ python -m nuitka ^
     --include-package=comtypes ^
     --include-package=pycaw ^
     --include-package=cv2 ^
+    --include-package=numpy ^
     --include-package=sounddevice ^
     --include-package=soundfile ^
+    --include-package=cpuinfo ^
+    --include-package=wmi ^
     --include-data-file="E:\vscod\tgbot\v4\ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
     "bot-ok.py"
 

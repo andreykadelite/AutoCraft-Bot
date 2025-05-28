@@ -136,46 +136,70 @@ def selective_delete(base_dir, items_to_delete):
             pass
 
 # Функция для сбора информации о системе
+
 def get_system_information():
-    lines = []
-    uname = platform.uname()
-    lines.append(f"ОС: {uname.system} {uname.release} ({uname.version})")
-    lines.append(f"Модель: {uname.machine}")
-    lines.append(f"Процессор: {uname.processor}")
+    import cpuinfo
+    import wmi
+    import psutil
+    import os
+    import sys
+    # Получаем информацию об ОС через WMI
+    try:
+        c = wmi.WMI()
+        os_info = c.Win32_OperatingSystem()[0]
+        os_line = f"ОС: {os_info.Caption} (Версия {os_info.Version}, Сборка {os_info.BuildNumber})"
+    except Exception:
+        import platform
+        uname = platform.uname()
+        os_line = f"ОС: {uname.system} {uname.release} ({uname.version})"
+    # Информация о процессоре через py-cpuinfo
+    try:
+        ci = cpuinfo.get_cpu_info()
+        brand = ci.get('brand_raw', 'Неизвестно')
+        freq = ci.get('hz_actual_friendly', 'N/A')
+        cpu_line = f"Процессор: {brand} @ {freq}"
+    except Exception:
+        import platform
+        cpu_line = f"Процессор: {platform.processor()}"
+    # Память и диски
     vm = psutil.virtual_memory()
-    lines.append(f"Память: Всего {get_human_readable_size(vm.total)}, Использовано {get_human_readable_size(vm.used)} ({vm.percent}%), Доступно {get_human_readable_size(vm.available)}")
-    partitions = psutil.disk_partitions()
-    for part in partitions:
+    from modulset import get_human_readable_size
+    mem_line = f"Память: Всего {get_human_readable_size(vm.total)}, Использовано {get_human_readable_size(vm.used)} ({vm.percent}%), Доступно {get_human_readable_size(vm.available)}"
+    parts = [os_line, cpu_line, mem_line]
+    # Диски
+    for part in psutil.disk_partitions():
         try:
             usage = psutil.disk_usage(part.mountpoint)
-            lines.append(f"Диск {part.device} ({part.mountpoint}): Всего {get_human_readable_size(usage.total)}, Использовано {get_human_readable_size(usage.used)} ({usage.percent}%), Свободно {get_human_readable_size(usage.free)}")
+            parts.append(f"Диск {part.device} ({part.mountpoint}): Всего {get_human_readable_size(usage.total)}, Использовано {get_human_readable_size(usage.used)} ({usage.percent}%), Свободно {get_human_readable_size(usage.free)}")
         except Exception:
-            lines.append(f"Диск {part.device}: информация недоступна")
+            parts.append(f"Диск {part.device}: информация недоступна")
+    # Сетевые интерфейсы
     net_info = "Сетевые интерфейсы:\n"
-    net_if_addrs = psutil.net_if_addrs()
-    for iface, addrs in net_if_addrs.items():
+    for iface, addrs in psutil.net_if_addrs().items():
         addr_list = []
         for addr in addrs:
             fam = addr.family.name if hasattr(addr.family, "name") else str(addr.family)
             addr_list.append(f"{fam}: {addr.address}")
         net_info += f"{iface}: " + ", ".join(addr_list) + "\n"
-    lines.append(net_info)
-    lines.append(f"Python: {sys.version}")
+    parts.append(net_info)
+    parts.append(f"Python: {sys.version}")
+    # Плагины и размер рабочей директории
     base_dir_local = os.path.dirname(os.path.abspath(__file__))
     plugins_dir = os.path.join(base_dir_local, "plugins")
     if os.path.isdir(plugins_dir):
         plugins = [name for name in os.listdir(plugins_dir) if os.path.isdir(os.path.join(plugins_dir, name))]
-        lines.append(f"Установлено плагинов: {len(plugins)}")
+        parts.append(f"Установлено плагинов: {len(plugins)}")
     else:
-        lines.append("Папка plugins не найдена.")
+        parts.append("Папка plugins не найдена.")
     total = 0
     for dirpath, _, filenames in os.walk(base_dir_local):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             if os.path.exists(fp):
                 total += os.path.getsize(fp)
-    lines.append(f"Размер рабочей директории: {get_human_readable_size(total)}")
-    return "\n".join(lines)
+    parts.append(f"Размер рабочей директории: {get_human_readable_size(total)}")
+    return "\n".join(parts)
+
 
 # Регистрируем обработчики
 def register_handlers(dp):

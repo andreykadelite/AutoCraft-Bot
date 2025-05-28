@@ -13,3 +13,5 @@ opencv-python
 numpy
 sounddevice
 soundfile
+py-cpuinfo
+wmi

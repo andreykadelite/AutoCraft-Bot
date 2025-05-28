@@ -141,7 +141,7 @@ AutoCraft Bot — это гибридная Telegram/десктоп-утилит
  https:/www.python.org/downloads/release/python-3117/
 Python 3.11.7
 устанавливаем пакеты
-ppython -m pip install aiogram==2.25.1 psutil==5.9.5 speedtest-cli pyautogui PyQt5 requests gTTS pyttsx3 Pillow
+ppython -m pip install aiogram==2.25.1 psutil==5.9.5 speedtest-cli pyautogui PyQt5 requests gTTS pyttsx3 Pillow comtypes pycaw opencv-python numpy sounddevice soundfile py-cpuinfo WMI
 
 устанавливаем компилятор
 pip install nuitka
@@ -166,10 +166,14 @@ python -m nuitka ^
     --include-package=comtypes ^
     --include-package=pycaw ^
     --include-package=cv2 ^
+    --include-package=numpy ^
     --include-package=sounddevice ^
     --include-package=soundfile ^
+    --include-package=cpuinfo ^
+    --include-package=wmi ^
     --include-data-file="E:\vscod\tgbot\v4\ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
     "bot-ok.py"
+
 внимание!
 путь к внешней библеотеки у вас свой, вот пример     --include-data-file="E:\vscod\tgbot\v4\ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
 библеотека в корне проекта ffmpeg-7.1

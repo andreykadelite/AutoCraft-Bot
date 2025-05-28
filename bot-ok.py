@@ -10,6 +10,8 @@ import platform
 from datetime import datetime
 
 import psutil
+import cpuinfo  # Новый импорт для точной информации о процессоре
+from wmi import WMI  # Новый импорт для точной информации об ОС на Windows
 import speedtest
 import pyautogui
 import logging  # новый импорт для стандартного логирования
@@ -554,47 +556,76 @@ def run_bot():
         await message.answer("Экстренное завершение текущего режима. Возвращаюсь в главное меню.", reply_markup=keyboard)
 
     def get_os_status():
-
-        return f"ОС: {platform.system()} {platform.release()} ({platform.version()})"
+        """
+        Возвращает точную информацию об ОС для Windows через WMI и для других ОС через platform.uname().
+        """
+        try:
+            if platform.system() == "Windows":
+                w = WMI()
+                os_info = w.Win32_OperatingSystem()[0]
+                name = os_info.Caption.strip()
+                version = os_info.Version
+                arch = os_info.OSArchitecture
+                return f"ОС: {name} (Версия {version}, {arch})"
+            else:
+                uname = platform.uname()
+                return f"ОС: {uname.system} {uname.release} ({uname.version}), {uname.machine}"
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] get_os_status: {e}")
+            # fallback to original implementation
+            return f"ОС: {platform.system()} {platform.release()} ({platform.version()})"
 
     def get_cpu_status():
-
-        cpu_usage = psutil.cpu_percent(interval=1)
-        physical_cores = psutil.cpu_count(logical=False)
-        total_cores = psutil.cpu_count(logical=True)
+        """
+        Возвращает точную информацию о процессоре: модель, загрузку, ядра и частоту (через WMI на Windows).
+        """
         try:
+            if platform.system() == "Windows":
+                w = WMI()
+                cpu_w = w.Win32_Processor()[0]
+                name = cpu_w.Name.strip()
+                cores = cpu_w.NumberOfCores
+                threads = cpu_w.NumberOfLogicalProcessors
+                usage = psutil.cpu_percent(interval=1)
+                freq = cpu_w.MaxClockSpeed  # MaxClockSpeed в МГц
+                return (
+                    f"CPU: {name}\n"
+                    f"Загрузка: {usage}%\n"
+                    f"Ядер: {cores} физ., {threads} лог.\n"
+                    f"Частота: {freq} МГц"
+                )
+            else:
+                cpu_usage = psutil.cpu_percent(interval=1)
+                physical_cores = psutil.cpu_count(logical=False)
+                total_cores = psutil.cpu_count(logical=True)
+                cpu_freq = psutil.cpu_freq()
+                if cpu_freq:
+                    current_freq = f"{cpu_freq.current:.2f}"
+                else:
+                    current_freq = "Недоступно"
+                return (
+                    f"CPU: {platform.processor()}\n"
+                    f"Загрузка: {cpu_usage}%\n"
+                    f"Ядер: {physical_cores} физ., {total_cores} лог.\n"
+                    f"Частота: {current_freq} МГц"
+                )
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] get_cpu_status: {e}")
+            # fallback to original implementation
+            cpu_usage = psutil.cpu_percent(interval=1)
+            physical_cores = psutil.cpu_count(logical=False)
+            total_cores = psutil.cpu_count(logical=True)
             cpu_freq = psutil.cpu_freq()
             if cpu_freq:
                 current_freq = f"{cpu_freq.current:.2f}"
-                min_freq = f"{cpu_freq.min:.2f}"
-                max_freq = f"{cpu_freq.max:.2f}"
             else:
-                current_freq = min_freq = max_freq = "Недоступно"
-        except Exception:
-            current_freq = min_freq = max_freq = "Недоступно"
-        temp = "Недоступно"
-        try:
-            temps = psutil.sensors_temperatures()
-            if "coretemp" in temps:
-                core_temps = [t.current for t in temps["coretemp"] if hasattr(t, "current")]
-                if core_temps:
-                    temp = f"{sum(core_temps)/len(core_temps):.1f}"
-            elif temps:
-                sensor = list(temps.values())[0]
-                if sensor:
-                    temp = sensor[0].current
-        except Exception:
-            pass
-        boot_time = datetime.fromtimestamp(psutil.boot_time())
-        uptime = datetime.now() - boot_time
-        uptime_str = str(uptime).split('.')[0]
-        return (
-            f"CPU: {cpu_usage}% загрузки\n"
-            f"Физ. ядер: {physical_cores}, Лог. ядер: {total_cores}\n"
-            f"Частота: {current_freq} МГц (мин/макс: {min_freq}/{max_freq})\n"
-            f"Температура: {temp}°C\n"
-            f"Время работы: {uptime_str}"
-        )
+                current_freq = "Недоступно"
+            return (
+                f"CPU: {platform.processor()}\n"
+                f"Загрузка: {cpu_usage}%\n"
+                f"Ядер: {physical_cores} физ., {total_cores} лог.\n"
+                f"Частота: {current_freq} МГц"
+            )
 
     def get_ram_status():
 

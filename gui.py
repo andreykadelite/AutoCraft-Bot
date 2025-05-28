@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
                 background-color: #555555;
             }
         """)
-        self.setWindowTitle("AutoCraft Bot v1.1")
+        self.setWindowTitle(f"AutoCraft Bot v{info.VERSION}")
         self.setGeometry(100, 100, 600, 500)
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
@@ -365,7 +365,7 @@ class MainWindow(QMainWindow):
 
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(self.windowIcon())
-        self.tray_icon.setToolTip("AutoCraft Bot v1.1")
+        self.tray_icon.setToolTip(f"AutoCraft Bot v{info.VERSION}")
 
         tray_menu = QMenu()
         restore_action = QAction("Развернуть", self)
