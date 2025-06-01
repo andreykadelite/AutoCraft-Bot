@@ -7,8 +7,6 @@
 В папке плагина создайте файл <plugin_id>.json, где <plugin_id> — имя папки и идентификатор.
 Минимальное содержание файла:
 json
-Копировать
-Редактировать
 {
   "name": "<plugin_id>",
   "dependencies": [
@@ -19,8 +17,6 @@ json
 }
 Пример правильного net_scanner.json для плагина сканера сети:
 json
-Копировать
-Редактировать
 {
   "name": "net_scanner",
   "dependencies": [
@@ -34,8 +30,6 @@ json
 2. Обязательные функции и точки входа
 2.1. Инициализация
 python
-Копировать
-Редактировать
 def init_plugin(dp: Dispatcher):
     @dp.message_handler(lambda m: m.text == "Запустить мой плагин")
     async def start_handler(message: types.Message):
@@ -51,8 +45,6 @@ def init_plugin(dp: Dispatcher):
         ...
 2.2. Запуск плагина
 python
-Копировать
-Редактировать
 async def run_plugin(message: types.Message):
     user_id = message.from_user.id
     plugin_state[user_id] = {"active": True, "state": STATE_MAIN}
@@ -62,8 +54,6 @@ async def run_plugin(message: types.Message):
 2.3. Завершение плагина и возврат в главное меню
 Важно: не вызывайте await keymenu(message), а берите готовую клавиатуру из keymenu.get_main_keyboard() и передавайте её в reply_markup.
 python
-Копировать
-Редактировать
 import keymenu
 
 async def close_plugin(message: types.Message):
@@ -85,8 +75,6 @@ async def close_plugin(message: types.Message):
  
 2.4. Проверка активности
 python
-Копировать
-Редактировать
 def is_plugin_active(message: types.Message) -> bool:
     return plugin_state.get(message.from_user.id, {}).get("active", False)
  
@@ -126,8 +114,6 @@ STATE_INPUT (или своё) — ожидание ввода пользоват
  
 7. Шаблон реализации (my_plugin.py)
 python
-Копировать
-Редактировать
 from aiogram import types, Dispatcher
 import keymenu
 

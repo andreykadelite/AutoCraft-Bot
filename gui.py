@@ -505,8 +505,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self.perform_full_restart_wrapper)
 
     def perform_full_restart_wrapper(self):
-        from modulpsw import perform_full_restart
-        perform_full_restart()
+        # При нажатии на кнопку перезапускаем GUI с кодом 42 для watchdog
+        import os
+        os._exit(42)
 
     def start_bot(self):
         global TOKEN, PIN_CODE, bot_thread, current_bot, current_loop, allowed_accounts

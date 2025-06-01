@@ -1,4 +1,4 @@
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 HELP_TEXT = f"""AutoCraft Bot v{VERSION} ** “AutoCraft Bot — автоматизация без границ”** — твой персональный ассистент в Telegram и на десктопе. Возможно, тут и там попадутся баги — welcome to beta life! 😉
 
 ---

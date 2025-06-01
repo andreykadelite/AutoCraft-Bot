@@ -697,8 +697,7 @@ def register_handlers(dp):
     async def full_restart_handler(message: types.Message):
         await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
         import asyncio
-        asyncio.get_running_loop().call_later(2, perform_full_restart)
-
+        asyncio.get_running_loop().call_later(2, lambda: os._exit(42))
     # ===== Меню плагинов =====
     @dp.message_handler(lambda m: m.text == "Плагины")
     async def merged_plugins_menu(message: types.Message):

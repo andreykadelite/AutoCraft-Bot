@@ -146,44 +146,12 @@ ppython -m pip install aiogram==2.25.1 psutil==5.9.5 speedtest-cli pyautogui PyQ
 устанавливаем компилятор
 pip install nuitka
 
-войдите в папку с проектом, путь у вас свой, а это мой путь проекта
+запустите
+автокомпиляция.bat
 
-cd "E:\vscod\tgbot\v4"
-
-после того как вошли в папку с проектом введите команду для компиляции
-python -m nuitka ^
-    --standalone ^
-    --onefile ^
-    --windows-console-mode=disable ^
-    --plugin-enable=pyqt5 ^
-    --include-qt-plugins=sensible ^
-    --include-package=aiogram ^
-    --include-package=psutil ^
-    --include-package=speedtest ^
-    --include-package=pyautogui ^
-    --include-package=gtts ^
-    --include-package=pyttsx3 ^
-    --include-package=comtypes ^
-    --include-package=pycaw ^
-    --include-package=cv2 ^
-    --include-package=numpy ^
-    --include-package=sounddevice ^
-    --include-package=soundfile ^
-    --include-package=cpuinfo ^
-    --include-package=wmi ^
-    --include-data-file="E:\vscod\tgbot\v4\ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
-    "bot-ok.py"
-
-внимание!
-путь к внешней библеотеки у вас свой, вот пример     --include-data-file="E:\vscod\tgbot\v4\ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
-библеотека в корне проекта ffmpeg-7.1
-
-или запустите
-кдля компиляции.bat
-путь к внешней библеотеке в батнике ffmpeg тоже прописать свой, 
-
- они должны быть в папке с проектом где исходники
-начальный файл для компиляции bot-ok.py, остальные файлы он сам подхватит
+в папке с проектом должны быть все файлы и папки
+включая ffmpeg-7.1
+точка входа bot-ok.py, остальные файлы он сам подхватит
 после компиляции у вас появиться bot-ok.exe
 рядом с приложением обязательно должен быть Python.zip, он используется для работы консоли Python и плагинов.
 Python.zip лежит в папке с проектом.)”#   A u t o C r a f t - B o t 

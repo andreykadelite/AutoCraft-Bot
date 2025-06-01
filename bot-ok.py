@@ -1426,10 +1426,69 @@ if debug_enabled:
     threading.settrace(trace_calls)
 # End of debug tracing setup
 
+
 if __name__ == "__main__":
-    write_bot_log("Запуск приложения. Инициализация GUI.")
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    write_bot_log("GUI инициализирован.")
-    sys.exit(app.exec_())
+    import subprocess
+    # Если запущено с --child, то стартуем GUI/бота
+    if "--child" in sys.argv:
+        try:
+            write_bot_log("Запуск приложения. Инициализация GUI.")
+            app = QApplication(sys.argv)
+            window = MainWindow()
+            window.show()
+            write_bot_log("GUI инициализирован.")
+            ret = app.exec_()
+            write_bot_log(f"GUI закрыт с кодом: {ret}")
+            sys.exit(ret)
+        except Exception:
+            write_bot_log(f"[ОШИБКА] Критическая ошибка в GUI:\n{traceback.format_exc()}")
+            sys.exit(1)
+    else:
+        # Режим watchdog по умолчанию
+        log_path = os.path.join(base_dir, "watchdog.log")
+        def log(msg: str):
+            max_size_mb = 5
+            try:
+                if os.path.exists(log_path) and os.path.getsize(log_path) > max_size_mb * 1024**2:
+                    os.replace(log_path, log_path + ".old")
+            except Exception:
+                pass
+            with open(log_path, "a", encoding="utf-8") as f:
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"{ts} {msg}\n")
+
+        def spawn_child():
+            exe_path = sys.executable
+            if is_frozen():
+                base = exe_path
+                cmd = [base, "--child"]
+            else:
+                python = exe_path
+                script = os.path.abspath(sys.argv[0])
+                cmd = [python, script, "--child"]
+            log(f"▶️ [watchdog] Запускаем бота: {cmd}")
+            return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=base_dir)
+
+        restart_count = 0
+        MAX_RESTARTS = 5
+
+        while True:
+            proc = spawn_child()
+            for line in proc.stdout:
+                line = line.rstrip()
+                log(f"[BOT] {line}")
+            code = proc.wait()
+            log(f"⚠️ [watchdog] Процесс бота завершился с кодом {code}")
+            if code == 0:
+                log("🛑 [watchdog] Код 0 — считаем, что юзер закрыл приложение. Завершаемся.")
+                sys.exit(0)
+            elif code == 42:
+                log("♻️ [watchdog] Получен код 42 — полный рестарт. Запускаем сразу новый процесс.")
+                continue
+            else:
+                restart_count += 1
+                log(f"♻️ [watchdog] Bot crashed (code={code}). Restart #{restart_count}/{MAX_RESTARTS} через 3 сек...")
+                if restart_count >= MAX_RESTARTS:
+                    log(f"♻️ [watchdog] Достигнут лимит рестартов ({MAX_RESTARTS}). Останавливаемся.")
+                    sys.exit(code)
+                time.sleep(3)

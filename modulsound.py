@@ -5,6 +5,20 @@ from keymenu import get_additional_keyboard, get_main_keyboard
 import subprocess
 import winsound
 import os
+import os, sys
+if getattr(sys, 'frozen', False):
+    base_dir = os.getcwd()
+else:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+c1 = os.path.join(base_dir, "ffmpeg.exe")
+c2 = os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe")
+for p in (c1, c2):
+    if os.path.isfile(p):
+        FFMPEG_PATH = p
+        break
+else:
+    raise FileNotFoundError(f"ffmpeg.exe не найден ни в {c1}, ни в {c2}")
+
 import sys
 import shutil
 from gtts import gTTS
@@ -34,8 +48,6 @@ VIDEO_FOLDER = "videos"
 os.makedirs(SOUND_FOLDER, exist_ok=True)
 os.makedirs(VIDEO_FOLDER, exist_ok=True)
 
-# Полный путь до ffmpeg.exe
-FFMPEG_PATH = r"E:\vscod\tgbot\test\ffmpeg-7.1\bin\ffmpeg.exe"
 
 # Глобальные состояния
 VOICE_MODE = set()
@@ -266,16 +278,35 @@ async def record_video(chat_id, bot):
         out.release()
 
         # Слияние видео и аудио в mp4 (H.264 + AAC)
-        subprocess.run([
-            FFMPEG_PATH, '-y',
-            '-i', video_filepath,
-            '-i', audio_filepath,
-            '-c:v', 'libx264', '-preset', 'ultrafast',
-            '-c:a', 'aac',
-            merged_filepath
-        ], check=True)
+        try:
+            result = subprocess.run(
+                [
+                    FFMPEG_PATH, '-y',
+                    '-i', video_filepath,
+                    '-i', audio_filepath,
+                    '-c:v', 'libx264', '-preset', 'ultrafast',
+                    '-c:a', 'aac',
+                    merged_filepath
+                ], capture_output=True, text=True, check=True
+            )
+        except subprocess.CalledProcessError as e:
+            state["error"] = e.stderr or e.stdout or str(e)
+            return
 
     await asyncio.to_thread(blocking_record)
+    current_state = VIDEO_STATE.get(chat_id, {})
+    error = current_state.get("error")
+    if error:
+        await bot.send_message(
+            chat_id,
+            f"""Ошибка конвертации:
+```{error}```
+Конвертер: {FFMPEG_PATH}""",
+            parse_mode='Markdown',
+            reply_markup=get_sound_keyboard()
+        )
+        VIDEO_STATE.pop(chat_id, None)
+        return
 
     current_state = VIDEO_STATE.get(chat_id, {})
     if current_state.get("cancelled"):
