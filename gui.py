@@ -12,13 +12,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QIcon, QPalette, QColor, QFont
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
 # Enable High DPI scaling and high DPI pixmaps
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
 QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
-# Определяем единый каталог для файла config.ini
+# Define the unified path for config.ini
 if "NUITKA_ONEFILE_PARENT" in os.environ:
     BASE_DIR = os.path.dirname(os.path.abspath(os.environ["NUITKA_ONEFILE_PARENT"]))
 elif getattr(sys, "frozen", False):
@@ -26,22 +24,19 @@ elif getattr(sys, "frozen", False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
+
 def load_credentials():
     config = configparser.ConfigParser()
-    # Если файла нет — создаём его с секцией credentials и возвращаем пустые значения
     if not os.path.exists(CONFIG_PATH):
         config['credentials'] = {'token': '', 'pin': '', 'allowed_ids': ''}
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             config.write(f)
         return "", "", ""
-    # Читаем существующий файл
     config.read(CONFIG_PATH, encoding='utf-8')
-    # Если нет секции — добавляем её и сохраняем
     if 'credentials' not in config:
         config['credentials'] = {'token': '', 'pin': '', 'allowed_ids': ''}
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             config.write(f)
-    # Возвращаем токен, pin и строку ID, используя fallback
     token = config.get('credentials', 'token', fallback='')
     pin = config.get('credentials', 'pin', fallback='')
     allowed_ids = config.get('credentials', 'allowed_ids', fallback='')
@@ -49,7 +44,6 @@ def load_credentials():
 
 def save_credentials(token, pin, allowed_ids):
     config = configparser.ConfigParser()
-    # Если файл уже есть, читаем его, чтобы не затирать другие разделы
     if os.path.exists(CONFIG_PATH):
         config.read(CONFIG_PATH, encoding='utf-8')
     if 'credentials' not in config:
@@ -60,7 +54,35 @@ def save_credentials(token, pin, allowed_ids):
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         config.write(f)
 
-# Импорт необходимых функций и глобальных переменных из модуля, запущенного как __main__
+def load_api_config():
+    config = configparser.ConfigParser()
+    if not os.path.exists(CONFIG_PATH):
+        # Create config with default telegram_api section
+        config['telegram_api'] = {'address': '', 'port': ''}
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            config.write(f)
+        return "", ""
+    config.read(CONFIG_PATH, encoding='utf-8')
+    if 'telegram_api' not in config:
+        config['telegram_api'] = {'address': '', 'port': ''}
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            config.write(f)
+    address = config.get('telegram_api', 'address', fallback='')
+    port = config.get('telegram_api', 'port', fallback='')
+    return address, port
+
+def save_api_config(address, port):
+    config = configparser.ConfigParser()
+    if os.path.exists(CONFIG_PATH):
+        config.read(CONFIG_PATH, encoding='utf-8')
+    if 'telegram_api' not in config:
+        config['telegram_api'] = {}
+    config['telegram_api']['address'] = address
+    config['telegram_api']['port'] = port
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+        config.write(f)
+
+# Import necessary functions and global variables from __main__
 from __main__ import (
     run_bot,
     current_bot, bot_thread, current_loop, allowed_accounts,
@@ -70,10 +92,6 @@ from __main__ import (
 )
 
 def get_bot_username(token):
-    """
-    Функция для получения имени бота через метод getMe Telegram API.
-    При корректном токене возвращает имя (username) бота, иначе None.
-    """
     url = f"https://api.telegram.org/bot{token}/getMe"
     try:
         response = requests.get(url, timeout=5)
@@ -88,7 +106,7 @@ def get_bot_username(token):
 class BotNameWorker(QObject):
     bot_name_found = pyqtSignal(str)
     finished = pyqtSignal()
-    
+
     def __init__(self, token):
         super().__init__()
         self.token = token
@@ -106,24 +124,21 @@ class BotConfirmDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Подтверждение подключения")
         self.layout = QVBoxLayout(self)
-        
-        # Создаем read-only поле для имени бота, чтобы оно было фокусируемым
+
         self.bot_name_field = QLineEdit("Получение имени бота...")
         self.bot_name_field.setReadOnly(True)
         self.bot_name_field.setAccessibleName("Имя бота")
         self.bot_name_field.setAccessibleDescription("Имя бота для подтверждения подключения")
         self.bot_name_field.setFocusPolicy(Qt.StrongFocus)
         self.layout.addWidget(self.bot_name_field)
-        
-        # Диалоговые кнопки с переводом на русский
+
         self.button_box = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
         self.button_box.button(QDialogButtonBox.Yes).setText("Да")
         self.button_box.button(QDialogButtonBox.No).setText("Нет")
         self.layout.addWidget(self.button_box)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
-        
-        # Устанавливаем порядок табуляции: сначала поле с именем бота, потом кнопки
+
         self.setTabOrder(self.bot_name_field, self.button_box.button(QDialogButtonBox.Yes))
         self.setTabOrder(self.button_box.button(QDialogButtonBox.Yes), self.button_box.button(QDialogButtonBox.No))
 
@@ -133,11 +148,9 @@ class BotConfirmDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # Apply modern Fusion style for a clean look
         app = QApplication.instance()
         if app:
             app.setStyle(QStyleFactory.create('Fusion'))
-            # Apply dark theme palette
             dark_palette = QPalette()
             dark_palette.setColor(QPalette.Window, QColor(45,45,45))
             dark_palette.setColor(QPalette.WindowText, QColor(220,220,220))
@@ -151,13 +164,10 @@ class MainWindow(QMainWindow):
             dark_palette.setColor(QPalette.Highlight, QColor(42,130,218))
             dark_palette.setColor(QPalette.HighlightedText, QColor(255,255,255))
             app.setPalette(dark_palette)
-            # Set global font
             app.setFont(QFont('Segoe UI', 10))
-        # Dynamic window sizing: 80% of available screen
         screen_geom = QApplication.primaryScreen().availableGeometry()
         self.resize(int(screen_geom.width()*0.8), int(screen_geom.height()*0.8))
-        self.setMinimumSize(600, 400)
-        # Set dark stylesheet for modern UI
+        self.setMinimumSize(600, 500)
         self.setStyleSheet("""
             QWidget {
                 background-color: #2d2d2d;
@@ -191,13 +201,14 @@ class MainWindow(QMainWindow):
             }
         """)
         self.setWindowTitle(f"AutoCraft Bot v{info.VERSION}")
-        self.setGeometry(100, 100, 600, 500)
+        self.setGeometry(100, 100, 600, 550)
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         layout = QGridLayout(central_widget)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(12)
 
+        # Token input
         token_label = QLabel("Токен:")
         token_label.setAccessibleName("Метка токена")
         token_label.setAccessibleDescription("Метка для поля ввода токена бота")
@@ -208,6 +219,7 @@ class MainWindow(QMainWindow):
         self.token_edit.setToolTip("Поле ввода токена")
         self.token_edit.setFocus()
 
+        # PIN input
         pin_label = QLabel("PIN-код:")
         pin_label.setAccessibleName("Метка PIN-кода")
         pin_label.setAccessibleDescription("Метка для поля ввода PIN-кода")
@@ -218,6 +230,7 @@ class MainWindow(QMainWindow):
         self.pin_edit.setPlaceholderText("Введите PIN-код")
         self.pin_edit.setToolTip("Поле ввода PIN-кода")
 
+        # Allowed account IDs input
         account_ids_label = QLabel("ID аккаунтов:")
         account_ids_label.setAccessibleName("Метка ID аккаунтов")
         account_ids_label.setAccessibleDescription("Метка для поля ввода ID аккаунтов (через запятую)")
@@ -227,7 +240,27 @@ class MainWindow(QMainWindow):
         self.account_ids_edit.setPlaceholderText("Например: 1234567, 1234567890")
         self.account_ids_edit.setToolTip("Поле ввода ID аккаунтов")
 
-        # Кнопка "Сохранить и подключить"
+        # Address input (Telegram API server)
+        address_label = QLabel("Адрес API:")
+        address_label.setAccessibleName("Метка адреса API")
+        address_label.setAccessibleDescription("Метка для поля ввода адреса Telegram API сервера")
+        self.address_edit = QLineEdit()
+        self.address_edit.setAccessibleName("Поле ввода адреса API")
+        self.address_edit.setAccessibleDescription("Введите адрес Telegram API сервера (IP или домен)")
+        self.address_edit.setPlaceholderText("Введите адрес API")
+        self.address_edit.setToolTip("Поле ввода адреса API")
+
+        # Port input (Telegram API server)
+        port_label = QLabel("Порт API:")
+        port_label.setAccessibleName("Метка порта API")
+        port_label.setAccessibleDescription("Метка для поля ввода порта Telegram API сервера")
+        self.port_edit = QLineEdit()
+        self.port_edit.setAccessibleName("Поле ввода порта API")
+        self.port_edit.setAccessibleDescription("Введите порт Telegram API сервера")
+        self.port_edit.setPlaceholderText("Введите порт API")
+        self.port_edit.setToolTip("Поле ввода порта API")
+
+        # Save and Connect button
         self.save_run_button = QPushButton("Сохранить и подключить")
         self.save_run_button.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
         self.save_run_button.setAccessibleName("Кнопка: Сохранить и подключить")
@@ -235,6 +268,7 @@ class MainWindow(QMainWindow):
         self.save_run_button.setToolTip("Сохранить и подключить")
         self.save_run_button.clicked.connect(self.save_and_run_bot)
 
+        # Other control buttons
         self.toggle_button = QPushButton("Перезапустить бота")
         self.toggle_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self.toggle_button.setAccessibleName("Кнопка: Перезапустить бота")
@@ -244,17 +278,17 @@ class MainWindow(QMainWindow):
 
         self.reset_button = QPushButton("Сброс")
         self.reset_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserStop))
-        # Кнопка Справка
+        self.reset_button.setAccessibleName("Кнопка: Сброс")
+        self.reset_button.setAccessibleDescription("Сброс настроек бота, очистка логов и перезапись файла с учетными данными")
+        self.reset_button.setToolTip("Сброс")
+        self.reset_button.clicked.connect(self.reset_bot)
+
         self.help_button = QPushButton("Справка")
         self.help_button.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))
         self.help_button.setAccessibleName("Кнопка: Справка")
         self.help_button.setAccessibleDescription("Нажмите для просмотра справки")
         self.help_button.setToolTip("Справка")
         self.help_button.clicked.connect(self.show_help)
-        self.reset_button.setAccessibleName("Кнопка: Сброс")
-        self.reset_button.setAccessibleDescription("Сброс настроек бота, очистка логов и перезапись файла с учетными данными")
-        self.reset_button.setToolTip("Сброс")
-        self.reset_button.clicked.connect(self.reset_bot)
 
         self.exit_button = QPushButton("Выход")
         self.exit_button.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
@@ -285,12 +319,15 @@ class MainWindow(QMainWindow):
         self.monitor_edit.setTextInteractionFlags(Qt.TextSelectableByKeyboard | Qt.TextSelectableByMouse)
         self.log_buffer = []
 
-        # Попытка загрузки файла config.ini
+        # Load existing credentials and API settings
         try:
             token, pin, allowed_ids_str = load_credentials()
+            address, port = load_api_config()
         except Exception:
             token, pin, allowed_ids_str = "", "", ""
+            address, port = "", ""
             save_credentials("", "", "")
+            save_api_config("", "")
             log_emitter.log_message.emit("Файл config.ini поврежден, перезаписываем его. Введите данные для подключения.")
         else:
             valid = True
@@ -308,49 +345,59 @@ class MainWindow(QMainWindow):
                 save_credentials("", "", "")
                 log_emitter.log_message.emit("Файл config.ini поврежден, перезаписываем его. Введите данные для подключения.")
 
+        # If token exists, fill fields and start bot
         if token:
             self.token_edit.setText(token)
             self.pin_edit.setText(pin)
             self.account_ids_edit.setText(allowed_ids_str)
+            self.address_edit.setText(address)
+            self.port_edit.setText(port)
             self.start_bot()
 
-        # Размещение виджетов
+        # Place widgets in layout
         layout.addWidget(token_label, 0, 0)
         layout.addWidget(self.token_edit, 0, 1, 1, 2)
         layout.addWidget(pin_label, 1, 0)
         layout.addWidget(self.pin_edit, 1, 1, 1, 2)
         layout.addWidget(account_ids_label, 2, 0)
         layout.addWidget(self.account_ids_edit, 2, 1, 1, 2)
-        layout.addWidget(self.save_run_button, 3, 0, 1, 3)
-        # Группировка кнопок действий для логичности интерфейса
+        layout.addWidget(address_label, 3, 0)
+        layout.addWidget(self.address_edit, 3, 1, 1, 2)
+        layout.addWidget(port_label, 4, 0)
+        layout.addWidget(self.port_edit, 4, 1, 1, 2)
+        layout.addWidget(self.save_run_button, 5, 0, 1, 3)
+
         button_bar = QHBoxLayout()
         button_bar.addWidget(self.toggle_button)
         button_bar.addWidget(self.reset_button)
         button_bar.addWidget(self.help_button)
         button_bar.addWidget(self.exit_button)
         button_bar.addWidget(self.minimize_tray_button)
-        layout.addLayout(button_bar, 4, 0, 1, 3)
+        layout.addLayout(button_bar, 6, 0, 1, 3)
 
-        # Разделитель перед логами
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator, 5, 0, 1, 3)
-        layout.addWidget(self.status_label, 6, 0, 1, 3)
-        layout.addWidget(self.monitor_edit, 7, 0, 1, 3)
-        # Make widgets resize nicely
+        layout.addWidget(separator, 7, 0, 1, 3)
+        layout.addWidget(self.status_label, 8, 0, 1, 3)
+        layout.addWidget(self.monitor_edit, 9, 0, 1, 3)
+
         self.token_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.pin_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.account_ids_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.address_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.port_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.monitor_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Stretch layout columns and rows
+
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(2, 1)
-        layout.setRowStretch(7, 1)
+        layout.setRowStretch(9, 1)
 
         self.setTabOrder(self.token_edit, self.pin_edit)
         self.setTabOrder(self.pin_edit, self.account_ids_edit)
-        self.setTabOrder(self.account_ids_edit, self.save_run_button)
+        self.setTabOrder(self.account_ids_edit, self.address_edit)
+        self.setTabOrder(self.address_edit, self.port_edit)
+        self.setTabOrder(self.port_edit, self.save_run_button)
         self.setTabOrder(self.save_run_button, self.toggle_button)
         self.setTabOrder(self.toggle_button, self.reset_button)
         self.setTabOrder(self.reset_button, self.exit_button)
@@ -408,29 +455,21 @@ class MainWindow(QMainWindow):
         token = self.token_edit.text().strip()
         pin = self.pin_edit.text().strip()
         allowed_ids_str = self.account_ids_edit.text().strip()
-        # Проверка токена
-        if not token:
-            errorBox = QMessageBox()
-            errorBox.setIcon(QMessageBox.Warning)
-            errorBox.setWindowTitle("Ошибка ввода")
-            errorBox.setText("Ошибка: введите токен.")
-            errorBox.setInformativeText("Пример корректного токена: 123456:ABCdefGhIjKl")
-            errorBox.setAccessibleName("Ошибка ввода токена")
-            errorBox.setAccessibleDescription("Введите корректный токен, например 123456:ABCdefGhIjKl")
-            errorBox.exec_()
-            return
-        if ":" not in token:
+        address = self.address_edit.text().strip()
+        port = self.port_edit.text().strip()
+
+        # Validate token
+        if not token or ":" not in token:
             errorBox = QMessageBox()
             errorBox.setIcon(QMessageBox.Warning)
             errorBox.setWindowTitle("Ошибка ввода токена")
-            errorBox.setText("Ошибка: некорректный формат токена.")
-            errorBox.setInformativeText("Пример корректного токена: 123456:ABCdefGhIjKl")
-            errorBox.setAccessibleName("Ошибка формата токена")
-            errorBox.setAccessibleDescription("Введите токен в формате 123456:ABCdefGhIjKl")
+            errorBox.setText("Ошибка: введите корректный токен.")
+            errorBox.setInformativeText("Пример токена: 123456:ABCdefGhIjKl")
             errorBox.exec_()
             return
+
+        # Validate account IDs
         allowed_accounts.clear()
-        # Проверка ID аккаунтов (поле может быть пустым)
         if allowed_ids_str:
             valid_ids = []
             for id_str in allowed_ids_str.split(","):
@@ -441,34 +480,33 @@ class MainWindow(QMainWindow):
                         errorBox.setIcon(QMessageBox.Warning)
                         errorBox.setWindowTitle("Ошибка ввода ID аккаунтов")
                         errorBox.setText("Ошибка: неверный формат ID аккаунтов.")
-                        errorBox.setInformativeText(
-                            "ID аккаунта должен содержать от 7 до 10 цифр. Пример: 1234567, 1234567890"
-                        )
-                        errorBox.setAccessibleName("Ошибка формата ID аккаунтов")
-                        errorBox.setAccessibleDescription(
-                            "Введите ID аккаунтов (каждый от 7 до 10 цифр), разделённые запятыми"
-                        )
+                        errorBox.setInformativeText("ID аккаунта должен содержать от 7 до 10 цифр.")
                         errorBox.exec_()
                         return
                     valid_ids.append(int(id_str))
-            # Удаляем дубликаты
             valid_ids = list(set(valid_ids))
             if len(valid_ids) > 10:
                 errorBox = QMessageBox()
                 errorBox.setIcon(QMessageBox.Warning)
                 errorBox.setWindowTitle("Ошибка ввода ID аккаунтов")
                 errorBox.setText("Ошибка: можно вводить не более 10 ID аккаунтов.")
-                errorBox.setInformativeText("Пример корректного ввода: 1234567, 1234567890")
-                errorBox.setAccessibleName("Ошибка количества ID аккаунтов")
-                errorBox.setAccessibleDescription("Введите не более 10 ID аккаунтов, разделённых запятыми")
+                errorBox.setInformativeText("Например: 1234567, 1234567890")
                 errorBox.exec_()
                 return
             for id_num in valid_ids:
                 allowed_accounts.add(id_num)
-            # Формируем нормализованную строку для записи в файл
             allowed_ids_str = ", ".join(map(str, sorted(valid_ids)))
-        
-        # Создаем диалог подтверждения и запускаем worker в отдельном потоке для получения имени бота
+
+        # Validate address/port (optional: ensure port is numeric)
+        if address and port and not port.isdigit():
+            errorBox = QMessageBox()
+            errorBox.setIcon(QMessageBox.Warning)
+            errorBox.setWindowTitle("Ошибка ввода порта")
+            errorBox.setText("Ошибка: порт должен быть числом.")
+            errorBox.exec_()
+            return
+
+        # Confirmation dialog for bot connection
         confirmDialog = BotConfirmDialog()
         thread = QThread()
         worker = BotNameWorker(token)
@@ -483,6 +521,7 @@ class MainWindow(QMainWindow):
         result = confirmDialog.exec_()
         if result == QDialog.Accepted:
             save_credentials(token, pin, allowed_ids_str)
+            save_api_config(address, port)
             global TOKEN, PIN_CODE, bot_thread, current_bot, current_loop
             TOKEN = token
             PIN_CODE = pin
@@ -505,7 +544,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self.perform_full_restart_wrapper)
 
     def perform_full_restart_wrapper(self):
-        # При нажатии на кнопку перезапускаем GUI с кодом 42 для watchdog
         import os
         os._exit(42)
 
@@ -514,9 +552,13 @@ class MainWindow(QMainWindow):
         token = self.token_edit.text().strip()
         pin = self.pin_edit.text().strip()
         allowed_ids_str = self.account_ids_edit.text().strip()
+        address = self.address_edit.text().strip()
+        port = self.port_edit.text().strip()
+
         if not token:
             self.status_label.setText("Ошибка: введите токен.")
             return
+
         TOKEN = token
         PIN_CODE = pin
         allowed_accounts.clear()
@@ -537,6 +579,7 @@ class MainWindow(QMainWindow):
                 allowed_accounts.add(id_num)
             allowed_ids_str = ", ".join(map(str, sorted(valid_ids)))
         save_credentials(token, pin, allowed_ids_str)
+        save_api_config(address, port)
         self.status_label.setText("Бот запускается...")
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
@@ -589,7 +632,10 @@ class MainWindow(QMainWindow):
         self.token_edit.setText("")
         self.pin_edit.setText("")
         self.account_ids_edit.setText("")
+        self.address_edit.setText("")
+        self.port_edit.setText("")
         save_credentials("", "", "")
+        save_api_config("", "")
         self.status_label.setText("Бот сброшен. Файл учетных данных очищен.")
 
     def exit_app(self):
@@ -608,10 +654,7 @@ class MainWindow(QMainWindow):
         if reason == QSystemTrayIcon.Trigger:
             self.show_normal()
 
-# Защита: если модуль запускается напрямую, выводим сообщение и завершаем выполнение.
-
     def show_help(self):
-        """Показывает окно справки с контактами и инструкцией."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Справка")
         dlg_layout = QVBoxLayout(dlg)
@@ -625,5 +668,5 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
 if __name__ == '__main__':
-    print("Ошибка: gui.py не предназначен для самостоятельного запуска. Запусти 6.9.py вместо этого.")
+    print("Ошибка: gui.py не предназначен для самостоятельного запуска. Запусти bot-ok.py вместо этого.")
     sys.exit(1)

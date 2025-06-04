@@ -1,5 +1,5 @@
-import os
 
+import os
 import sys
 import time
 import threading
@@ -29,7 +29,6 @@ def is_frozen():
     return getattr(sys, 'frozen', False)
 
 def get_app_dir():
-
     if "NUITKA_ONEFILE_PARENT" in os.environ:
         return os.path.dirname(os.path.abspath(os.environ["NUITKA_ONEFILE_PARENT"]))
     elif is_frozen():
@@ -40,7 +39,6 @@ def get_app_dir():
         return os.path.dirname(os.path.abspath(__file__))
 
 def get_script_path():
-
     if "NUITKA_ONEFILE_PARENT" in os.environ:
         return os.path.abspath(os.environ["NUITKA_ONEFILE_PARENT"])
     elif is_frozen():
@@ -119,7 +117,6 @@ def ensure_base_python():
         write_bot_log("Папка 'python' уже существует, распаковка не требуется")
 
 def get_base_python_exe():
-
     """
     Возвращает путь к базовому интерпретатору Python, распакованному из Python.zip.
     Если такой интерпретатор не найден, возвращает текущий sys.executable.
@@ -199,7 +196,6 @@ class SignalHandler(logging.Handler):
 formatter = logging.Formatter('[%(name)s] %(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 def create_logger(logger_name, log_file, level=logging.INFO):
-
     logger = logging.getLogger(logger_name)
     logger.setLevel(level)
     logger.handlers.clear()
@@ -212,6 +208,7 @@ def create_logger(logger_name, log_file, level=logging.INFO):
     signal_handler.setFormatter(formatter)
     logger.addHandler(signal_handler)
     return logger
+
 # -----------------------------------------------------
 # Debug feature (added)
 # -----------------------------------------------------
@@ -239,24 +236,20 @@ def get_error_description(error_msg: str) -> str:
         return "Описание ошибки не определено. Проверьте входные данные и системные настройки."
 
 def write_error_log(entry: str):
-
     description = get_error_description(entry)
     error_logger.error(f"{entry} | {description}")
 
 def write_bot_log(entry: str):
-
     bot_logger.info(entry)
     if "[ОШИБКА]" in entry:
         write_error_log(entry)
 
 def write_com_log(entry: str):
-
     com_logger.info(entry)
     if "[ОШИБКА]" in entry:
         write_error_log(entry)
 
 def write_plugin_log(entry: str):
-
     plugin_logger.info(entry)
     if "[ОШИБКА]" in entry:
         write_error_log(entry)
@@ -274,7 +267,6 @@ PLUGIN_DIR = os.path.join(base_dir, "plugins")
 loaded_plugins = {}  # { "имя_плагина": {"modules": [...], "meta": {...}, "venv_site": <site-packages> } }
 
 def notify(dp: Dispatcher, chat_id, text: str):
-
     try:
         loop = getattr(dp, "loop", None)
         if loop is None:
@@ -287,7 +279,6 @@ def notify(dp: Dispatcher, chat_id, text: str):
         write_bot_log(f"[ОШИБКА] Не удалось отправить уведомление в Telegram: {e}")
 
 def create_plugin_venv(plugin_folder: str, dp: Dispatcher, notify_chat_id=None):
-
     """
     Создаёт виртуальное окружение для плагина в его папке.
     Используется распакованный базовый Python (из папки python) для создания venv.
@@ -309,7 +300,6 @@ def create_plugin_venv(plugin_folder: str, dp: Dispatcher, notify_chat_id=None):
                 notify(dp, notify_chat_id, f"[ОШИБКА] Не удалось создать venv для плагина {os.path.basename(plugin_folder)}: {e}")
 
 def get_plugin_venv_paths(plugin_folder: str):
-
     venv_path = os.path.join(plugin_folder, "venv")
     if platform.system().lower().startswith("win"):
         pip_exe = os.path.join(venv_path, "Scripts", "pip.exe")
@@ -322,9 +312,8 @@ def get_plugin_venv_paths(plugin_folder: str):
     return pip_exe, python_exe, site_packages
 
 def install_dependency_for_plugin(dep: str, pip_exe: str, plugin_name: str, dp: Dispatcher, notify_chat_id=None):
-
     try:
-        freeze_proc = subprocess.run([pip_exe, "freeze"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        freeze_proc = subprocess.run([pip_exe, "freeze"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
         if dep.lower() in freeze_proc.stdout.lower():
             write_bot_log(f"Зависимость {dep} уже установлена для плагина {plugin_name}.")
             if notify_chat_id:
@@ -333,7 +322,7 @@ def install_dependency_for_plugin(dep: str, pip_exe: str, plugin_name: str, dp: 
         process = subprocess.Popen([pip_exe, "install", "--upgrade", dep],
                                    stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
-                                   text=True)
+                                   text=True, encoding='utf-8', errors='ignore')
         if process.stdout:
             while True:
                 line = process.stdout.readline()
@@ -361,7 +350,6 @@ def install_dependency_for_plugin(dep: str, pip_exe: str, plugin_name: str, dp: 
             notify(dp, notify_chat_id, f"[ОШИБКА] Не удалось установить {dep} для плагина {plugin_name}: {e}")
 
 def scan_available_plugins():
-
     available = {}
     if not os.path.isdir(PLUGIN_DIR):
         os.makedirs(PLUGIN_DIR, exist_ok=True)
@@ -384,7 +372,6 @@ def scan_available_plugins():
     return available
 
 def reload_all_plugins(dp: Dispatcher, notify_chat_id=None):
-
     write_bot_log("Начинается перезагрузка плагинов.")
     if notify_chat_id:
         notify(dp, notify_chat_id, "Начинается перезагрузка плагинов.")
@@ -399,7 +386,6 @@ def reload_all_plugins(dp: Dispatcher, notify_chat_id=None):
     return [], []
 
 def remove_handlers_from_module(dp: Dispatcher, module_name: str):
-
     dp.message_handlers.handlers[:] = [
         handler for handler in dp.message_handlers.handlers
         if handler.callback.__module__ != module_name
@@ -415,7 +401,6 @@ def remove_handlers_from_module(dp: Dispatcher, module_name: str):
 AUTOSTART_SECTION = 'autostart'
 
 def load_autostart_config():
-
     config.read(CONFIG_FILE, encoding='utf-8')
     if AUTOSTART_SECTION in config:
         plugins_str = config[AUTOSTART_SECTION].get('plugins', '')
@@ -423,7 +408,6 @@ def load_autostart_config():
     return []
 
 def save_autostart_config(plugins_list):
-
     if AUTOSTART_SECTION not in config:
         config[AUTOSTART_SECTION] = {}
     config[AUTOSTART_SECTION]['plugins'] = ','.join(plugins_list)
@@ -491,7 +475,6 @@ async def auto_start_plugins(dp: Dispatcher):
             write_bot_log(f"[ПРЕДУПРЕЖДЕНИЕ] Плагин {plugin} для автозапуска не найден.")
     write_bot_log("Автозапуск плагинов завершён.")
 
-
 # -----------------------------------------------------
 # 7. Функция запуска бота (в отдельном потоке)
 # -----------------------------------------------------
@@ -503,6 +486,11 @@ def run_bot():
     # Загрузка учетных данных из credentials.ini
     global TOKEN, PIN_CODE, allowed_accounts
     TOKEN, PIN_CODE, allowed_ids_str = load_credentials()
+    # Добавляем секцию telegram_api в config.ini, если отсутствует
+    if not config.has_section("telegram_api"):
+        config["telegram_api"] = {"address": "", "port": ""}
+        _save_config()
+
     # Load debug status from config.ini
     global debug_enabled
     debug_enabled = config.getboolean(CONFIG_SECTION, 'debug', fallback=False)
@@ -524,10 +512,31 @@ def run_bot():
     current_loop = loop
     asyncio.set_event_loop(loop)
 
-    current_bot = Bot(token=TOKEN, loop=loop)
+    # Настройка подключения к локальному серверу Telegram API из config.ini
+    api_server = None
+    if config.has_section("telegram_api"):
+        address = config["telegram_api"].get("address", "").strip()
+        port = config["telegram_api"].get("port", "").strip()
+        if address and port:
+            api_server = f"http://{address}:{port}"
+        elif address:
+            api_server = address
+
+    # Вывод информации о сервере подключения
+    if api_server:
+        write_bot_log(f"Подключение к локальному Telegram API серверу: {address}:{port}")
+    else:
+        write_bot_log("Подключение к стандартному Telegram API серверу")
+    if api_server:
+        from aiogram.bot.api import TelegramAPIServer
+        api = TelegramAPIServer.from_base(api_server)
+        current_bot = Bot(token=TOKEN, loop=loop, server=api)
+    else:
+        current_bot = Bot(token=TOKEN, loop=loop)
+
     dp = Dispatcher(current_bot)
     setattr(current_bot, "dispatcher", dp)
-    
+
     # Получение информации о боте и лог подключения
     try:
         bot_info = loop.run_until_complete(current_bot.get_me())
@@ -537,7 +546,6 @@ def run_bot():
 
     import Moduls_manager_ext
     Moduls_manager_ext.register_handlers(dp)
-
 
     # --- ЭКСТРЕННАЯ КОМАНДА ---
     @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "hrp" and message.from_user.id in authorized_users)
@@ -628,7 +636,6 @@ def run_bot():
             )
 
     def get_ram_status():
-
         ram = psutil.virtual_memory()
         return (
             f"RAM: {round(ram.total/(1024**3), 2)} ГБ общий, "
@@ -638,7 +645,6 @@ def run_bot():
         )
 
     def get_disk_status():
-
         partitions = psutil.disk_partitions()
         result = []
         for partition in partitions:
@@ -655,7 +661,6 @@ def run_bot():
         return "\n".join(result)
 
     def get_network_status():
-
         hostname = socket.gethostname()
         net_if_stats = psutil.net_if_stats()
         net_if_addrs = psutil.net_if_addrs()
@@ -694,7 +699,6 @@ def run_bot():
         return hostname, internal_ip, external_ip, connected_interface_details
 
     def test_speed():
-
         try:
             st = speedtest.Speedtest()
             st.get_best_server()
@@ -705,7 +709,6 @@ def run_bot():
             return f"Ошибка теста скорости: {str(e)}"
 
     def clean_old_screenshots():
-
         screenshots_dir = os.path.join(base_dir, "screenshots")
         files = sorted(
             [os.path.join(screenshots_dir, f) for f in os.listdir(screenshots_dir)
@@ -906,9 +909,9 @@ def run_bot():
         await cmd_menu(message)
 
     @dp.message_handler(
-        lambda message: cmd_mode.get(message.from_user.id, False)
-                        and in_cmd_menu.get(message.from_user.id, False)
-                        and message.text not in ["Запуск CMD", "Завершить CMD", "Назад в меню", "cmd", "Питание"]
+        lambda message: cmd_mode.get(message.from_user.id, False) and
+                        in_cmd_menu.get(message.from_user.id, False) and
+                        message.text not in ["Запуск CMD", "Завершить CMD", "Назад в меню", "cmd", "Питание"]
     )
     async def execute_cmd(message: types.Message):
         write_com_log(f"Пользователь {message.from_user.id} выполнил команду CMD: {message.text}")
@@ -999,7 +1002,6 @@ def run_bot():
         except Exception as e:
             await message.answer(f"Ошибка чтения лога ошибок: {str(e)}")
 
-    
     @dp.message_handler(lambda message: message.text == "дебаг")
     async def debug_menu(message: types.Message):
         write_com_log(f"Пользователь {message.from_user.id} открыл меню дебага.")
@@ -1010,6 +1012,7 @@ def run_bot():
         keyboard.add("Вкл дебаг", "Выкл дебаг")
         keyboard.add("Прочитать лог дебага", "Назад в меню логов")
         await message.answer("Меню дебага:", reply_markup=keyboard)
+
     @dp.message_handler(lambda message: message.text == "Вкл дебаг")
     async def enable_debug(message: types.Message):
         global debug_enabled
@@ -1030,6 +1033,7 @@ def run_bot():
             threading.settrace(trace_calls)
             write_debug_log("Debug tracing started by user.")
             await debug_menu(message)
+
     @dp.message_handler(lambda message: message.text == "Выкл дебаг")
     async def disable_debug(message: types.Message):
         global debug_enabled
@@ -1046,6 +1050,7 @@ def run_bot():
             _save_config()
             write_bot_log("Статус дебага сохранён в config.ini")
             await debug_menu(message)
+
     @dp.message_handler(lambda message: message.text == "Прочитать лог дебага")
     async def read_debug_log(message: types.Message):
         write_com_log(f"Пользователь {message.from_user.id} запросил лог дебага.")
@@ -1063,7 +1068,6 @@ def run_bot():
 
     @dp.message_handler(lambda message: message.text == "Назад в меню логов")
     async def back_from_debug_menu(message: types.Message):
-        # Return to log menu from debug menu
         await log_menu(message)
         write_com_log(f"Пользователь {message.from_user.id} вернулся в меню логов из дебага.")
 
@@ -1094,7 +1098,6 @@ def run_bot():
             for plugin_key, info in available.items():
                 display_name = info["meta"].get("name", plugin_key)
                 kb.add(KeyboardButton(display_name))
-            # Две кнопки для возврата: в меню плагинов и в главное меню
             kb.add(KeyboardButton("Плагины"), KeyboardButton("Назад в меню"))
             await message.answer("Выберите плагин для установки/запуска:", reply_markup=kb)
 
@@ -1314,7 +1317,7 @@ import tempfile
 import shutil
 
 # -----------------------------------------------------
-# 9. Профи‑обработка конфигурации (токен, PIN, ID)
+# 9. Профи-обработка конфигурации (токен, PIN, ID)
 # -----------------------------------------------------
 CONFIG_FILE = os.path.join(base_dir, "config.ini")
 CONFIG_SECTION = 'credentials'
@@ -1322,7 +1325,6 @@ CONFIG_SECTION = 'credentials'
 config = configparser.ConfigParser()
 
 def load_credentials():
-
     """
     Читает config.ini, возвращает (token, pin, allowed_ids_str).
     Если файла/секции нет — создаёт с дефолтами.
@@ -1344,7 +1346,6 @@ def load_credentials():
     return token, pin, ids_str
 
 def save_credentials(token: str, pin: str, allowed_ids):
-
     """
     Обновляет в памяти и сохраняет config.ini атомарно.
     allowed_ids может быть множеством/списком или строкой.
@@ -1363,7 +1364,6 @@ def save_credentials(token: str, pin: str, allowed_ids):
     write_bot_log("Конфиг credentials сохранён")
 
 def _save_config():
-
     """
     Атомарно сохраняет config.ini: сначала во временный файл, затем заменяет оригинал.
     """
@@ -1380,7 +1380,6 @@ def _save_config():
             os.remove(tmp_path)
 
 
-
 # -----------------------------------------------------
 # 10. Импорт графического интерфейса из файла gui.py
 # -----------------------------------------------------
@@ -1393,14 +1392,9 @@ def write_debug_log(entry: str):
     if debug_enabled:
         debug_logger.debug(entry)
 
-
-
-
-
 # ----------------------------------------
-# Debug tracing for functions and variables
+# Debug tracing for functions и переменных
 # ----------------------------------------
-# Debug tracing for functions and variables
 def trace_calls(frame, event, arg):
     if not debug_enabled:
         return
@@ -1418,14 +1412,11 @@ def trace_calls(frame, event, arg):
         write_debug_log(f"Returned from {name}")
     return trace_calls
 
-
 # Enable tracing if debug is enabled
 if debug_enabled:
     write_debug_log("Debug enabled: starting trace")
     sys.settrace(trace_calls)
     threading.settrace(trace_calls)
-# End of debug tracing setup
-
 
 if __name__ == "__main__":
     import subprocess
@@ -1467,7 +1458,7 @@ if __name__ == "__main__":
                 script = os.path.abspath(sys.argv[0])
                 cmd = [python, script, "--child"]
             log(f"▶️ [watchdog] Запускаем бота: {cmd}")
-            return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=base_dir)
+            return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore', cwd=base_dir)
 
         restart_count = 0
         MAX_RESTARTS = 5
