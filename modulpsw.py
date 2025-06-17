@@ -196,11 +196,9 @@ def register_handlers(dp):
                 .add(types.KeyboardButton("Отмена"))
         )
 
-    @dp.message_handler(content_types=types.ContentType.DOCUMENT)
+    @dp.message_handler(lambda m: zip_install_mode.get(m.from_user.id, False), content_types=types.ContentType.DOCUMENT)
     async def receive_zip_plugin(message: types.Message):
         uid = message.from_user.id
-        if not zip_install_mode.get(uid, False):
-            return
         doc = message.document
         if not doc.file_name.lower().endswith('.zip'):
             await message.answer("Ошибка: отправленный файл не является ZIP-архивом.")
@@ -208,7 +206,12 @@ def register_handlers(dp):
         temp_dir = os.path.join(os.getcwd(), "temp_plugins")
         os.makedirs(temp_dir, exist_ok=True)
         file_path = os.path.join(temp_dir, f"{uid}_{doc.file_name}")
-        await message.document.download(destination=file_path)
+        telegram_file = await doc.get_file()
+        file_attr = getattr(telegram_file, 'file_path', None)
+        if file_attr and os.path.isabs(file_attr) and os.path.exists(file_attr):
+            shutil.copy(file_attr, file_path)
+        else:
+            await message.bot.download_file(file_attr, file_path)
         zip_uploaded[uid] = file_path
         zip_original_name[uid] = doc.file_name
         await message.answer("ZIP-архив получен. Нажмите «Проверить» для проверки содержимого.")
@@ -257,20 +260,37 @@ def register_handlers(dp):
         if not plugin_root:
             await message.answer("Ошибка: сначала пройдите проверку архива (нажмите «Проверить»).")
             return
-        plugin_name = os.path.splitext(zip_original_name.get(uid, os.path.basename(plugin_root)))[0]
-        target = os.path.join(PLUGIN_DIR, plugin_name)
+        # Определяем имя папки по JSON-файлу
+        try:
+            json_files = [f for f in os.listdir(plugin_root) if f.lower().endswith('.json')]
+            if json_files:
+                json_file = json_files[0]
+                folder_name = os.path.splitext(json_file)[0]
+                await message.answer(f"Папка плагина будет переименована в «{folder_name}» согласно JSON-файлу.")
+            else:
+                folder_name = os.path.splitext(zip_original_name.get(uid, os.path.basename(plugin_root)))[0]
+                await message.answer("Внимание: JSON-файл не найден, будет использовано имя архива.")
+        except Exception as e:
+            folder_name = os.path.splitext(zip_original_name.get(uid, os.path.basename(plugin_root)))[0]
+            await message.answer(f"Не удалось определить JSON-файл: {e}. Используется имя архива.")
+        target = os.path.join(PLUGIN_DIR, folder_name)
         if os.path.exists(target):
-            await message.answer(f"Ошибка: плагин «{plugin_name}» уже установлен.")
+            await message.answer(f"Ошибка: плагин «{folder_name}» уже установлен.")
             return
         try:
             shutil.move(plugin_root, target)
-            await message.answer(f"Плагин «{plugin_name}» успешно установлен и запущен.", reply_markup=create_plugins_ext_menu())
+            await message.answer(f"Плагин «{folder_name}» успешно установлен и запущен.", reply_markup=create_plugins_ext_menu())
         except Exception as e:
             await message.answer(f"Ошибка установки плагина: {e}")
-        zip_install_mode[uid] = False
-        zip_uploaded.pop(uid, None)
-        zip_checked.pop(uid, None)
-        zip_original_name.pop(uid, None)
+        finally:
+            # Очищаем состояния
+            zip_install_mode[uid] = False
+            zip_uploaded.pop(uid, None)
+            zip_checked.pop(uid, None)
+            zip_original_name.pop(uid, None)
+            # Удаляем временную папку после установки
+            temp_plugins_dir = os.path.join(os.getcwd(), "temp_plugins")
+            force_rmtree(temp_plugins_dir)
 
     @dp.message_handler(lambda m: zip_install_mode.get(m.from_user.id, False) and m.text == "Отмена")
     async def cancel_zip_install(message: types.Message):
@@ -682,6 +702,8 @@ def register_handlers(dp):
             with open(zip_filepath, 'rb') as document:
                 await message.answer_document(document)
             os.remove(zip_filepath)
+            # Удаляем временную папку после скачивания плагина
+            force_rmtree(temp_zip_dir)
         except Exception as e:
             await message.answer(f"Ошибка при создании архива плагина: {e}", reply_markup=create_plugins_ext_menu())
         plugins = get_plugins_list()

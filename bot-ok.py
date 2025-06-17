@@ -1436,8 +1436,17 @@ if __name__ == "__main__":
             sys.exit(1)
     else:
         # Режим watchdog по умолчанию
-        log_path = os.path.join(base_dir, "watchdog.log")
+        log_path = os.path.join(base_dir, "лог", "watchdog.log")
+        # Load debug flag for watchdog logging
+        try:
+            config.read(CONFIG_FILE, encoding='utf-8')
+            debug_enabled = config.getboolean(CONFIG_SECTION, 'debug', fallback=False)
+        except Exception:
+            debug_enabled = False
         def log(msg: str):
+            # Only write watchdog logs if debug is enabled
+            if not debug_enabled:
+                return
             max_size_mb = 5
             try:
                 if os.path.exists(log_path) and os.path.getsize(log_path) > max_size_mb * 1024**2:

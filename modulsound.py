@@ -3,6 +3,7 @@ from aiogram import types, Dispatcher
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from keymenu import get_additional_keyboard, get_main_keyboard
 import subprocess
+import math
 import winsound
 import os
 import os, sys
@@ -10,14 +11,19 @@ if getattr(sys, 'frozen', False):
     base_dir = os.getcwd()
 else:
     base_dir = os.path.dirname(os.path.abspath(__file__))
-c1 = os.path.join(base_dir, "ffmpeg.exe")
-c2 = os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe")
-for p in (c1, c2):
+# Добавлена поддержка папки ffmpeg-7.1/bin рядом со скриптом
+script_dir = base_dir
+ffmpeg_candidates = [
+    os.path.join(script_dir, "ffmpeg.exe"),
+    os.path.join(script_dir, "ffmpeg-7.1", "bin", "ffmpeg.exe"),
+    os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe")
+]
+for p in ffmpeg_candidates:
     if os.path.isfile(p):
         FFMPEG_PATH = p
         break
 else:
-    raise FileNotFoundError(f"ffmpeg.exe не найден ни в {c1}, ни в {c2}")
+    raise FileNotFoundError(f"ffmpeg.exe не найден ни в {ffmpeg_candidates}")
 
 import sys
 import shutil
@@ -39,8 +45,27 @@ import glob
 # Timelife stream segment duration (seconds)
 TIMELIFE_SEGMENT_DURATION = 2  # Changed to 2 seconds for circular video notes  # Changed to 5 seconds for circular video notes
 
-# Максимальный размер видео в байтах (19 МБ)
-MAX_VIDEO_SIZE = 19 * 1024 * 1024
+# Максимальный размер видео в байтах (49 МБ)
+MAX_VIDEO_SIZE = 49 * 1024 * 1024
+
+# Dynamic video size limit based on API server type
+def get_video_limit(bot):
+    """
+    Return maximum video size in bytes: 2GB when connected to local Telegram API server,
+    otherwise use standard MAX_VIDEO_SIZE.
+    """
+    try:
+        server = getattr(bot, 'server', None)
+        if server:
+            base_url = getattr(server, 'base', None) or getattr(server, '_base', None)
+            # If base_url does not start with standard API domain, assume local
+            if base_url and not base_url.startswith('https://api.telegram.org'):
+                return 2 * 1024 * 1024 * 1024
+    except Exception:
+        pass
+    return MAX_VIDEO_SIZE
+
+
 
 # Папки для хранения медиа-файлов
 SOUND_FOLDER = "sound"
@@ -184,7 +209,7 @@ def take_snapshot():
 
 # Запись видео в фоне и отправка
 
-async def stream_timelife(chat_id, bot):
+async def _stream_timelife(chat_id, bot):
     # Modified to send circular video notes (2s) instead of plain segments
     state = VIDEO_STATE.get(chat_id)
     if not state:
@@ -229,123 +254,170 @@ async def stream_timelife(chat_id, bot):
         state["last_stream_msg_id"] = sent.message_id
         os.remove(stream_path)
 
-async def record_video(chat_id, bot):
-    state = VIDEO_STATE.get(chat_id)
-    if not state:
-        return
-    index = state["index"]
-    backend = state["backend"]
-    duration = state.get("duration")
-    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    video_dir = os.path.join(script_dir, VIDEO_FOLDER)
-    os.makedirs(video_dir, exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    video_filepath = os.path.join(video_dir, f"video_{chat_id}_{timestamp}.avi")
-    audio_filepath = os.path.join(video_dir, f"audio_{chat_id}_{timestamp}.wav")
-    merged_filepath = os.path.join(video_dir, f"video_{chat_id}_{timestamp}.mp4")
-
-    def blocking_record():
-        # Видео
-        cap = cv2.VideoCapture(index, backend)
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        fps = 20.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        out = cv2.VideoWriter(video_filepath, fourcc, fps, (width, height))
-        # Аудио
-        audio_file = sf.SoundFile(audio_filepath, mode='w', samplerate=44100, channels=2)
-
-        def audio_callback(indata, frames, time_info, status):
-            if status:
-                print(status, file=sys.stderr)
-            audio_file.write(indata)
-
-        stream = sd.InputStream(samplerate=44100, channels=2, callback=audio_callback)
-        stream.start()
-
-        start_time = time.time()
-        while not state.get("stop") and not state.get("cancelled") and (duration is None or time.time() - start_time < duration):
-            ret, frame = cap.read()
-            if not ret:
-                break
-            out.write(frame)
-
-        # Остановка
-        stream.stop()
-        stream.close()
-        audio_file.close()
-        cap.release()
-        out.release()
-
-        # Слияние видео и аудио в mp4 (H.264 + AAC)
-        try:
-            result = subprocess.run(
-                [
-                    FFMPEG_PATH, '-y',
-                    '-i', video_filepath,
-                    '-i', audio_filepath,
-                    '-c:v', 'libx264', '-preset', 'ultrafast',
-                    '-c:a', 'aac',
-                    merged_filepath
-                ], capture_output=True, text=True, check=True
-            )
-        except subprocess.CalledProcessError as e:
-            state["error"] = e.stderr or e.stdout or str(e)
+async def _record_video(chat_id, bot):
+    try:
+        state = VIDEO_STATE.get(chat_id)
+        if not state:
             return
-
-    await asyncio.to_thread(blocking_record)
-    current_state = VIDEO_STATE.get(chat_id, {})
-    error = current_state.get("error")
-    if error:
-        await bot.send_message(
-            chat_id,
-            f"""Ошибка конвертации:
-```{error}```
-Конвертер: {FFMPEG_PATH}""",
-            parse_mode='Markdown',
-            reply_markup=get_sound_keyboard()
-        )
-        VIDEO_STATE.pop(chat_id, None)
-        return
-
-    current_state = VIDEO_STATE.get(chat_id, {})
-    if current_state.get("cancelled"):
-        for path in [video_filepath, audio_filepath, merged_filepath]:
-            if os.path.exists(path):
-                os.remove(path)
-        await bot.send_message(chat_id, "Запись видео отменена.", reply_markup=get_sound_keyboard())
-    else:
-        file_size = os.path.getsize(merged_filepath)
-        if file_size <= MAX_VIDEO_SIZE:
-            with open(merged_filepath, 'rb') as video:
-                await bot.send_video(chat_id, video)
-            await bot.send_message(chat_id, f"Видео отправлено. Сохранено: {merged_filepath}", reply_markup=get_sound_keyboard())
-            # Удаляем временные файлы avi и wav
-            for path in [video_filepath, audio_filepath]:
-                if os.path.exists(path): os.remove(path)
+        index = state["index"]
+        backend = state["backend"]
+        duration = state.get("duration")
+        script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        video_dir = os.path.join(script_dir, VIDEO_FOLDER)
+        os.makedirs(video_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        video_filepath = os.path.join(video_dir, f"video_{chat_id}_{timestamp}.avi")
+        audio_filepath = os.path.join(video_dir, f"audio_{chat_id}_{timestamp}.wav")
+        merged_filepath = os.path.join(video_dir, f"video_{chat_id}_{timestamp}.mp4")
+    
+        def blocking_record():
+            # Видео
+            cap = cv2.VideoCapture(index, backend)
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            fps = 20.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            out = cv2.VideoWriter(video_filepath, fourcc, fps, (width, height))
+            # Аудио
+            audio_file = sf.SoundFile(audio_filepath, mode='w', samplerate=44100, channels=2)
+    
+            def audio_callback(indata, frames, time_info, status):
+                if status:
+                    print(status, file=sys.stderr)
+                audio_file.write(indata)
+    
+            stream = sd.InputStream(samplerate=44100, channels=2, callback=audio_callback)
+            stream.start()
+    
+            start_time = time.time()
+            while not state.get("stop") and not state.get("cancelled") and (duration is None or time.time() - start_time < duration):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                out.write(frame)
+    
+            # Остановка
+            stream.stop()
+            stream.close()
+            audio_file.close()
+            cap.release()
+            out.release()
+    
+            # Слияние видео и аудио в mp4 (H.264 + AAC)
+            try:
+                result = subprocess.run(
+                    [
+                        FFMPEG_PATH, '-y',
+                        '-i', video_filepath,
+                        '-i', audio_filepath,
+                        '-c:v', 'libx264', '-preset', 'ultrafast',
+                        '-c:a', 'aac',
+                        merged_filepath
+                    ], capture_output=True, text=True, check=True
+                )
+            except subprocess.CalledProcessError as e:
+                state["error"] = e.stderr or e.stdout or str(e)
+                return
+    
+        await asyncio.to_thread(blocking_record)
+        current_state = VIDEO_STATE.get(chat_id, {})
+        error = current_state.get("error")
+        if error:
+            await bot.send_message(
+                chat_id,
+                f"""Ошибка конвертации:
+    ```{error}```
+    Конвертер: {FFMPEG_PATH}""",
+                parse_mode='Markdown',
+                reply_markup=get_sound_keyboard()
+            )
+            return
+    
+        current_state = VIDEO_STATE.get(chat_id, {})
+        if current_state.get("cancelled"):
+            for path in [video_filepath, audio_filepath, merged_filepath]:
+                if os.path.exists(path):
+                    os.remove(path)
+            await bot.send_message(chat_id, "Запись видео отменена.", reply_markup=get_sound_keyboard())
         else:
-            await bot.send_message(chat_id, "Видео превышает 19 МБ, разбиваю на части...", reply_markup=get_sound_keyboard())
-            base, ext = os.path.splitext(merged_filepath)
-            pattern = f"{base}_part%03d{ext}"
-            subprocess.run([
-                FFMPEG_PATH, "-i", merged_filepath,
-                "-c", "copy", "-f", "segment",
-                "-segment_time", "60", "-reset_timestamps", "1",
-                pattern
-            ], check=True)
-            parts = sorted(glob.glob(f"{base}_part*{ext}"))
-            total = len(parts)
-            for idx, part in enumerate(parts, 1):
-                with open(part, 'rb') as video:
+            
+            file_size = os.path.getsize(merged_filepath)
+            limit = get_video_limit(bot)
+            limit_text = f"{limit/1024**3:.2f} ГБ" if limit>=1024**3 else f"{limit/1024**2:.2f} МБ"
+            if file_size <= limit:
+                with open(merged_filepath, 'rb') as video:
                     await bot.send_video(chat_id, video)
-                await bot.send_message(chat_id, f"Часть {idx}/{total} отправлена: {os.path.basename(part)}", reply_markup=get_sound_keyboard())
-            await bot.send_message(chat_id, f"Видео разбито на {total} частей и отправлено.", reply_markup=get_sound_keyboard())
-            # Удаляем временные части и файлы avi, wav
-            for part in parts:
-                if os.path.exists(part): os.remove(part)
-            for path in [video_filepath, audio_filepath]:
-                if os.path.exists(path): os.remove(path)
-    VIDEO_STATE.pop(chat_id, None)
+                await bot.send_message(
+                    chat_id,
+                    f"Видео отправлено. Размер: {file_size/1024**2:.2f} МБ. Лимит видео: {limit_text}",
+                    reply_markup=get_sound_keyboard()
+                )
+                # Удаляем временные файлы avi и wav
+                for path in [video_filepath, audio_filepath]:
+                    if os.path.exists(path):
+                        os.remove(path)
+            else:
+                await bot.send_message(
+                    chat_id,
+                    f"Видео превышает {limit_text}, разбиваю на части по {limit_text}...",
+                    reply_markup=get_sound_keyboard()
+                )
+                base, ext = os.path.splitext(merged_filepath)
+                pattern = f"{base}_part%03d{ext}"
+                # Split video into parts based on duration and target size
+                file_size = os.path.getsize(merged_filepath)
+                num_parts = math.ceil(file_size / limit)
+                # Get video duration using OpenCV
+                cap_split = cv2.VideoCapture(merged_filepath)
+                fps_split = cap_split.get(cv2.CAP_PROP_FPS) or 1
+                frame_count = cap_split.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+                cap_split.release()
+                duration = frame_count / fps_split if fps_split > 0 else 0
+                segment_time = int(math.ceil(duration / num_parts)) if num_parts > 0 else int(duration)
+                if segment_time < 1:
+                    segment_time = 1
+                pattern = f"{base}_part%03d{ext}"
+                split_cmd = [
+                    FFMPEG_PATH, "-i", merged_filepath,
+                    "-c", "copy", "-f", "segment",
+                    "-segment_time", str(segment_time),
+                    "-reset_timestamps", "1",
+                    pattern
+                ]
+                try:
+                    subprocess.run(split_cmd, check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e:
+                    await bot.send_message(
+                        chat_id,
+                        f"Ошибка при разделении видео на части:\n```{e.stderr or e.stdout or str(e)}```",
+                        parse_mode='Markdown',
+                        reply_markup=get_sound_keyboard()
+                    )
+                    return
+                parts = sorted(glob.glob(f"{base}_part*{ext}"))
+                total = len(parts)
+                for idx, part in enumerate(parts, 1):
+                    with open(part, 'rb') as video:
+                        await bot.send_video(chat_id, video)
+                    await bot.send_message(
+                        chat_id,
+                        f"Часть {idx}/{total} отправлена: {os.path.basename(part)}",
+                        reply_markup=get_sound_keyboard()
+                    )
+                await bot.send_message(
+                    chat_id,
+                    f"Видео разбито на {total} частей и отправлено.",
+                    reply_markup=get_sound_keyboard()
+                )
+                # Удаляем временные файлы, оставляем только целый mp4
+                for path in [video_filepath, audio_filepath]:
+                    if os.path.exists(path):
+                        os.remove(path)
+                for part in parts:
+                    if os.path.exists(part):
+                        os.remove(part)
+    finally:
+        VIDEO_STATE.pop(chat_id, None)
 async def cmd_special(message: types.Message):
     await message.answer("Выберите функцию:", reply_markup=get_sound_keyboard())
 
@@ -406,7 +478,12 @@ async def button_handler(message: types.Message):
                     for index, backend in VIDEO_STATE[chat_id]["cameras"]:
                         if index == idx:
                             VIDEO_STATE[chat_id].update({"state": "ready", "index": index, "backend": backend, "timelife": False, "last_stream_msg_id": None})
-                            await message.answer("Камера выбрана. Нажмите 'Старт' для начала записи, введите время в секундах для записи с ограничением по времени, или 'Отмена'.", reply_markup=get_video_control_keyboard(False))
+                            limit = get_video_limit(message.bot)
+                            limit_text = f"{limit/1024**3:.2f} ГБ" if limit>=1024**3 else f"{limit/1024**2:.2f} МБ"
+                            await message.answer(
+                                f"Камера выбрана. Лимит видео: {limit_text}. Нажмите 'Старт' для начала записи, введите время в секундах для записи с ограничением по времени, или 'Отмена'.",
+                                reply_markup=get_video_control_keyboard(False)
+                            )
                             break
                 except Exception:
                     await message.answer("Пожалуйста, выберите корректную камеру.", reply_markup=get_video_selection_keyboard(VIDEO_STATE[chat_id]["cameras"]))
@@ -588,7 +665,10 @@ async def button_handler(message: types.Message):
 
     # Выбор движка
     if chat_id in TTS_STATE and TTS_STATE[chat_id].get("state") == "engine":
-        if text in ENGINE_OPTIONS:
+        if text == "Отмена":
+            TTS_STATE.pop(chat_id, None)
+            await message.answer("Синтез речи отменён.", reply_markup=get_sound_keyboard())
+        elif text in ENGINE_OPTIONS:
             TTS_STATE[chat_id]["engine"] = text
             TTS_STATE[chat_id]["state"] = "voice"
             await message.answer("Выберите голос:", reply_markup=VOICE_KEYBOARDS[text])
@@ -598,7 +678,10 @@ async def button_handler(message: types.Message):
 
     # Выбор голоса
     if chat_id in TTS_STATE and TTS_STATE[chat_id].get("state") == "voice":
-        if text in VOICE_OPTIONS.get(TTS_STATE[chat_id]["engine"], []):
+        if text == "Отмена":
+            TTS_STATE.pop(chat_id, None)
+            await message.answer("Синтез речи отменён.", reply_markup=get_sound_keyboard())
+        elif text in VOICE_OPTIONS.get(TTS_STATE[chat_id]["engine"], []):
             TTS_STATE[chat_id]["voice"] = text
             TTS_STATE[chat_id]["state"] = "text"
             await message.answer("Введите текст для синтеза:", reply_markup=get_cancel_keyboard())
@@ -652,8 +735,13 @@ async def voice_handler(message: types.Message):
     if chat_id not in VOICE_MODE:
         return
     file_info = await message.bot.get_file(message.voice.file_id)
+    file_path_attr = getattr(file_info, 'file_path', None)
     ogg_path = os.path.join(SOUND_FOLDER, f"voice_{chat_id}_{message.voice.file_unique_id}.ogg")
-    await message.bot.download_file(file_info.file_path, ogg_path)
+    # Save voice file: copy if local Telegram API server, else download
+    if file_path_attr and os.path.isabs(file_path_attr) and os.path.exists(file_path_attr):
+        shutil.copy(file_path_attr, ogg_path)
+    else:
+        await message.bot.download_file(file_path_attr, ogg_path)
     wav_path = ogg_path.replace(".ogg", ".wav")
     subprocess.run([FFMPEG_PATH, "-y", "-i", ogg_path, wav_path], check=True)
     os.remove(ogg_path)
@@ -684,3 +772,21 @@ def register_handlers(dp: Dispatcher):
     @dp.message_handler(lambda message: message.chat.id in VOICE_MODE, content_types=['voice'])
     async def voice_handler_wrapper(message: types.Message):
         await voice_handler(message)
+# Обёртки с обработкой ошибок для видео-функций
+async def stream_timelife(chat_id, bot):
+    try:
+        await _stream_timelife(chat_id, bot)
+    except Exception as e:
+        try:
+            await bot.send_message(chat_id, f"❌ Ошибка в процессе live-стрима видео: {e}", reply_markup=get_sound_keyboard())
+        except Exception:
+            pass
+
+async def record_video(chat_id, bot):
+    try:
+        await _record_video(chat_id, bot)
+    except Exception as e:
+        try:
+            await bot.send_message(chat_id, f"❌ Ошибка в процессе записи видео: {e}", reply_markup=get_sound_keyboard())
+        except Exception:
+            pass

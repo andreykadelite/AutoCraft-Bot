@@ -558,7 +558,7 @@ def register_handlers(dp):
             else:
                 await message.answer("Резервная копия успешно восстановлена без ошибок.")
             await message.answer("Бот перезапускается...")
-            asyncio.get_running_loop().call_later(2, perform_full_restart)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
         else:
             await message.answer("Операция восстановления отменена. Возвращаюсь в меню настроек.", reply_markup=get_main_settings_keyboard())
     
