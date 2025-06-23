@@ -309,14 +309,36 @@ def register_dptools_handlers(dp, base_dir, note_mode, pending_note, file_mode, 
                 keyboard.add(*buttons)
                 await message.answer("Выберите действие:", reply_markup=keyboard)
 
+    # ------------------ Обработчик для справки ------------------
     @dp.message_handler(lambda message: message.text == "Справка")
     async def send_help(message: types.Message):
         keyboard = get_additional_keyboard()
-        max_len = 4096
+        max_len = 4096  # Telegram message character limit
         text = info.HELP_TEXT
         for start in range(0, len(text), max_len):
             chunk = text[start:start+max_len]
-            if start == 0:
+            # Send keyboard only with the last chunk
+            if start + max_len >= len(text):
                 await message.answer(chunk, reply_markup=keyboard)
             else:
                 await message.answer(chunk)
+        write_bot_log(f"Пользователь {message.from_user.id} запросил справку.")
+
+
+    @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "связь с разработчиком")
+    async def contact_developer(message: types.Message):
+        keyboard = get_additional_keyboard()
+        await message.answer(info.CONTACT_TEXT, reply_markup=keyboard)
+        write_bot_log(f"Пользователь {message.from_user.id} запросил связь с разработчиком.")
+
+    # Добавляем также обработчик для команды /contact
+    @dp.message_handler(commands=["contact"])
+    async def contact_developer_cmd(message: types.Message):
+        keyboard = get_additional_keyboard()
+        await message.answer(info.CONTACT_TEXT, reply_markup=keyboard)
+        write_bot_log(f"Пользователь {message.from_user.id} запросил связь с разработчиком командой /contact.")
+
+        keyboard = get_additional_keyboard()
+        await message.answer(info.CONTACT_TEXT, reply_markup=keyboard)
+        write_bot_log(f"Пользователь {message.from_user.id} запросил связь с разработчиком.")
+

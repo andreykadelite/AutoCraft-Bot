@@ -35,7 +35,7 @@ python -m nuitka ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\avfilter-10.dll=avfilter-10.dll" ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\avdevice-61.dll=avdevice-61.dll" ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\avcodec-61.dll=avcodec-61.dll" ^
-    "%SCRIPT_DIR%bot-ok.py"
+    "%SCRIPT_DIR%src\bot-ok.py"
 
 echo 🚀 Готово! Упаковано и отправлено в космос!
 pause
