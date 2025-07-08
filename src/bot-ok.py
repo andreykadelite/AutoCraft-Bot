@@ -1,3 +1,18 @@
+import logging
+import sys
+from pathlib import Path
+
+
+# Глобальный обработчик ненехваченных исключений
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.exception('Необработанное исключение', exc_info=(exc_type, exc_value, exc_traceback))
+    sys.exit(1)
+
+sys.excepthook = handle_exception
+
 
 import os
 import sys
@@ -72,6 +87,31 @@ def add_site_packages(path):
 # -----------------------------------------------------
 base_dir = get_app_dir()
 print("App dir =", base_dir)
+# Настройка логирования (модифицировано): запись логов при включенном дебаге в папку 'лог'
+import configparser
+API_SECTION = 'api_server'
+API_USE_STANDARD_KEY = 'use_standard_api'
+
+
+conf = configparser.ConfigParser()
+conf.read(Path(base_dir) / 'config.ini', encoding='utf-8')
+debug_enabled = conf.getboolean('credentials', 'debug', fallback=False)
+if debug_enabled:
+    log_dir = Path(base_dir) / 'лог'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / Path(sys.executable).with_suffix('.log').name
+    handlers = [logging.FileHandler(log_file, mode='w', encoding='utf-8'), logging.StreamHandler(sys.stdout)]
+    log_level = logging.DEBUG
+else:
+    handlers = [logging.StreamHandler(sys.stdout)]
+    log_level = logging.INFO
+logging.basicConfig(
+    level=log_level,
+    format='%(asctime)s %(levelname)-8s %(name)s:%(lineno)d — %(message)s',
+    handlers=handlers
+)
+logger = logging.getLogger()
+
 
 folders = ["лог", "notes", "files", "screenshots", "infiles", "plugins"]
 for folder in folders:
@@ -512,38 +552,68 @@ def run_bot():
     current_loop = loop
     asyncio.set_event_loop(loop)
 
-    # Настройка подключения к локальному серверу Telegram API из config.ini
-    api_server = None
-    if config.has_section("telegram_api"):
-        address = config["telegram_api"].get("address", "").strip()
-        port = config["telegram_api"].get("port", "").strip()
-        if address and port:
-            api_server = f"http://{address}:{port}"
-        elif address:
-            api_server = address
-
-    # Вывод информации о сервере подключения
-    if api_server:
-        write_bot_log(f"Подключение к локальному Telegram API серверу: {address}:{port}")
-    else:
-        write_bot_log("Подключение к стандартному Telegram API серверу")
-    if api_server:
-        from aiogram.bot.api import TelegramAPIServer
-        api = TelegramAPIServer.from_base(api_server)
-        current_bot = Bot(token=TOKEN, loop=loop, server=api)
-    else:
+    # Проверяем настройку GUI: использование стандартного Telegram API сервера
+    use_standard_api = config.getboolean(API_SECTION, API_USE_STANDARD_KEY, fallback=False)
+    if use_standard_api:
+        write_bot_log("Настройка GUI: использование стандартного Telegram API сервера")
         current_bot = Bot(token=TOKEN, loop=loop)
+        try:
+            bot_info = loop.run_until_complete(current_bot.get_me())
+            write_bot_log(f"Бот подключён через стандартный сервер: {bot_info.first_name} (@{bot_info.username})")
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] Не удалось подключиться к стандартному серверу: {e}")
+    else:
+        # Настройка подключения к локальному серверу Telegram API из config.ini
+        api_server = None
+        if config.has_section("telegram_api"):
+            address = config["telegram_api"].get("address", "").strip()
+            port = config["telegram_api"].get("port", "").strip()
+            if address and port:
+                api_server = f"http://{address}:{port}"
+            elif address:
+                api_server = address
+        
+        # Вывод информации о сервере подключения
+        # Попытка подключения к локальному Telegram API серверу с реальными проверками в течение 1 минуты
+        if api_server:
+            write_bot_log(f"Подключение к локальному Telegram API серверу: {address}:{port}")
+            from aiogram.bot.api import TelegramAPIServer
+            server_connected = False
+            current_bot = None
+            max_attempts = 12  # попытки в течение 1 минуты каждые 5 секунд
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    api = TelegramAPIServer.from_base(api_server)
+                    tmp_bot = Bot(token=TOKEN, loop=loop, server=api)
+                    bot_info = loop.run_until_complete(tmp_bot.get_me())
+                    write_bot_log("Успешно подключено к локальному Telegram API серверу")
+                    write_bot_log(f"Бот подключён: {bot_info.first_name} (@{bot_info.username})")
+                    current_bot = tmp_bot
+                    server_connected = True
+                    break
+                except Exception as e:
+                    write_bot_log(f"[ОШИБКА] Попытка {attempt}/{max_attempts} не удалась: {e}")
+                    if attempt < max_attempts:
+                        time.sleep(5)
+            if not server_connected:
+                write_bot_log("Не удалось подключиться к локальному API серверу за 1 минуту, переключаюсь на стандартный сервер")
+                current_bot = Bot(token=TOKEN, loop=loop)
+                try:
+                    bot_info = loop.run_until_complete(current_bot.get_me())
+                    write_bot_log(f"Бот подключён через стандартный сервер: {bot_info.first_name} (@{bot_info.username})")
+                except Exception as e:
+                    write_bot_log(f"[ОШИБКА] Не удалось получить информацию о боте: {e}")
+        else:
+            write_bot_log("Подключение к стандартному Telegram API серверу")
+            current_bot = Bot(token=TOKEN, loop=loop)
+            try:
+                bot_info = loop.run_until_complete(current_bot.get_me())
+                write_bot_log(f"Бот подключён: {bot_info.first_name} (@{bot_info.username})")
+            except Exception as e:
+                write_bot_log(f"[ОШИБКА] Не удалось получить информацию о боте: {e}")
 
     dp = Dispatcher(current_bot)
     setattr(current_bot, "dispatcher", dp)
-
-    # Получение информации о боте и лог подключения
-    try:
-        bot_info = loop.run_until_complete(current_bot.get_me())
-        write_bot_log(f"Бот подключён: {bot_info.first_name} (@{bot_info.username})")
-    except Exception as e:
-        write_bot_log(f"[ОШИБКА] Не удалось получить информацию о боте: {e}")
-
     import Moduls_manager_ext
     Moduls_manager_ext.register_handlers(dp)
 

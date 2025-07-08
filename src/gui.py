@@ -4,10 +4,11 @@ import threading
 import requests
 import configparser
 import info
+import gui_serverapi
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QSystemTrayIcon, QMenu, QAction, QStyle, QStyleFactory, QSizePolicy,
-    QMessageBox, QDialog, QVBoxLayout, QDialogButtonBox, QFrame, QHBoxLayout
+    QMessageBox, QDialog, QVBoxLayout, QDialogButtonBox, QCheckBox, QFrame, QHBoxLayout
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QIcon, QPalette, QColor, QFont
@@ -24,6 +25,9 @@ elif getattr(sys, "frozen", False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
+# Section and key for API server checkbox
+API_SECTION = 'api_server'
+API_USE_STANDARD_KEY = 'use_standard_api'
 
 def load_credentials():
     config = configparser.ConfigParser()
@@ -71,6 +75,18 @@ def load_api_config():
     port = config.get('telegram_api', 'port', fallback='')
     return address, port
 
+
+def load_server_autostart():
+    """Load the gui_settings.auto_start flag from config.ini"""
+    cfg = configparser.ConfigParser()
+    if os.path.exists(CONFIG_PATH):
+        cfg.read(CONFIG_PATH, encoding="utf-8")
+        try:
+            return cfg.getboolean("gui_settings", "auto_start")
+        except Exception:
+            return False
+    return False
+
 def save_api_config(address, port):
     config = configparser.ConfigParser()
     if os.path.exists(CONFIG_PATH):
@@ -81,6 +97,38 @@ def save_api_config(address, port):
     config['telegram_api']['port'] = port
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         config.write(f)
+
+def load_lock_api_fields():
+    """Load the use_standard_api flag from config.ini api_server section"""
+    config = configparser.ConfigParser()
+    if not os.path.exists(CONFIG_PATH):
+        config[API_SECTION] = {API_USE_STANDARD_KEY: 'false'}
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            config.write(f)
+        return False
+    config.read(CONFIG_PATH, encoding='utf-8')
+    if API_SECTION not in config:
+        config[API_SECTION] = {API_USE_STANDARD_KEY: 'false'}
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            config.write(f)
+        return False
+    try:
+        return config.getboolean(API_SECTION, API_USE_STANDARD_KEY)
+    except Exception:
+        return False
+
+def save_lock_api_fields(lock):
+    """Save the use_standard_api flag to config.ini api_server section"""
+    config = configparser.ConfigParser()
+    if os.path.exists(CONFIG_PATH):
+        config.read(CONFIG_PATH, encoding='utf-8')
+    if API_SECTION not in config:
+        config[API_SECTION] = {}
+    config[API_SECTION][API_USE_STANDARD_KEY] = 'true' if lock else 'false'
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+        config.write(f)
+
+
 
 # Import necessary functions and global variables from __main__
 from __main__ import (
@@ -255,6 +303,17 @@ class MainWindow(QMainWindow):
         port_label.setAccessibleName("Метка порта API")
         port_label.setAccessibleDescription("Метка для поля ввода порта Telegram API сервера")
         self.port_edit = QLineEdit()
+        # Checkbox to lock API fields
+        self.lock_api_checkbox = QCheckBox("Использовать стандартный сервер Telegram API")
+        self.lock_api_checkbox.setAccessibleName("Чекбокс: использовать стандартный сервер Telegram API")
+        self.lock_api_checkbox.setAccessibleDescription("Если установлен, будут использоваться стандартные адрес и порт Telegram API сервера, а поля адреса и порта будут недоступны для редактирования")
+        self.lock_api_checkbox.setToolTip("Использовать стандартный сервер Telegram API")
+        lock = load_lock_api_fields()
+        self.lock_api_checkbox.setChecked(lock)
+        self.address_edit.setEnabled(not lock)
+        self.port_edit.setEnabled(not lock)
+        self.lock_api_checkbox.stateChanged.connect(self.on_lock_api_checkbox_changed)
+
         self.port_edit.setAccessibleName("Поле ввода порта API")
         self.port_edit.setAccessibleDescription("Введите порт Telegram API сервера")
         self.port_edit.setPlaceholderText("Введите порт API")
@@ -353,6 +412,13 @@ class MainWindow(QMainWindow):
             self.address_edit.setText(address)
             self.port_edit.setText(port)
             self.start_bot()
+            # Auto-launch API server GUI if configured
+            if load_server_autostart():
+                self.api_server_window = gui_serverapi.MainWindow()
+                self.api_server_window.showMinimized()
+            else:
+                self.api_server_window = None
+
 
         # Place widgets in layout
         layout.addWidget(token_label, 0, 0)
@@ -365,22 +431,30 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.address_edit, 3, 1, 1, 2)
         layout.addWidget(port_label, 4, 0)
         layout.addWidget(self.port_edit, 4, 1, 1, 2)
-        layout.addWidget(self.save_run_button, 5, 0, 1, 3)
+        layout.addWidget(self.lock_api_checkbox, 5, 0, 1, 3)
+        layout.addWidget(self.save_run_button, 6, 0, 1, 3)
 
         button_bar = QHBoxLayout()
+        # Button for local Telegram API server settings
+        self.api_settings_button = QPushButton("Настройки API сервера")
+        self.api_settings_button.setAccessibleName("Кнопка: Настройки API сервера")
+        self.api_settings_button.setAccessibleDescription("Открыть окно настроек локального Telegram API сервера")
+        self.api_settings_button.clicked.connect(self.open_api_server_settings)
+
         button_bar.addWidget(self.toggle_button)
         button_bar.addWidget(self.reset_button)
         button_bar.addWidget(self.help_button)
         button_bar.addWidget(self.exit_button)
+        button_bar.addWidget(self.api_settings_button)
         button_bar.addWidget(self.minimize_tray_button)
-        layout.addLayout(button_bar, 6, 0, 1, 3)
+        layout.addLayout(button_bar, 7, 0, 1, 3)
 
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator, 7, 0, 1, 3)
-        layout.addWidget(self.status_label, 8, 0, 1, 3)
-        layout.addWidget(self.monitor_edit, 9, 0, 1, 3)
+        layout.addWidget(separator, 8, 0, 1, 3)
+        layout.addWidget(self.status_label, 9, 0, 1, 3)
+        layout.addWidget(self.monitor_edit, 10, 0, 1, 3)
 
         self.token_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.pin_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -391,7 +465,7 @@ class MainWindow(QMainWindow):
 
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(2, 1)
-        layout.setRowStretch(9, 1)
+        layout.setRowStretch(10, 1)
 
         self.setTabOrder(self.token_edit, self.pin_edit)
         self.setTabOrder(self.pin_edit, self.account_ids_edit)
@@ -541,7 +615,21 @@ class MainWindow(QMainWindow):
 
     def restart_bot(self):
         self.status_label.setText("Бот перезапускается...")
-        QTimer.singleShot(2000, self.perform_full_restart_wrapper)
+        # Останавливаем локальный API сервер, если он запущен
+        if hasattr(self, "api_server_window") and self.api_server_window:
+            try:
+                proc = self.api_server_window.proc
+                if proc.state() == gui_serverapi.QProcess.Running:
+                    # После остановки сервера выполнить полный рестарт
+                    proc.finished.connect(lambda exitCode, exitStatus: self.perform_full_restart_wrapper())
+                    self.api_server_window.stop_server()
+                    return
+            except Exception as e:
+                self.append_log(f"Ошибка остановки API сервера перед перезапуском: {e}")
+        # Останавливаем Telegram-бота
+        self.stop_bot()
+        # Немного ждем для корректного завершения
+        QTimer.singleShot(1000, self.perform_full_restart_wrapper)
 
     def perform_full_restart_wrapper(self):
         import os
@@ -639,8 +727,40 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Бот сброшен. Файл учетных данных очищен.")
 
     def exit_app(self):
+        # First, stop the local Telegram API server window and process
+        if hasattr(self, "api_server_window") and self.api_server_window:
+            try:
+                proc = self.api_server_window.proc
+                # If server is running, stop it and close window after stop
+                if proc.state() == gui_serverapi.QProcess.Running:
+                    proc.finished.connect(lambda exitCode, exitStatus: self.api_server_window.close())
+                    self.api_server_window.stop_server()
+                else:
+                    # If not running, close the window immediately
+                    self.api_server_window.close()
+            except Exception:
+                pass
+        # Then stop the Telegram bot
         self.stop_bot()
+        # Quit the main application
         QApplication.quit()
+
+    def closeEvent(self, event):
+        # On main window close, ensure server window and bot are stopped
+        if hasattr(self, "api_server_window") and self.api_server_window:
+            try:
+                proc = self.api_server_window.proc
+                if proc.state() == gui_serverapi.QProcess.Running:
+                    proc.finished.connect(lambda exitCode, exitStatus: self.api_server_window.close())
+                    self.api_server_window.stop_server()
+                else:
+                    self.api_server_window.close()
+            except Exception:
+                pass
+        # Stop the Telegram bot
+        self.stop_bot()
+        # Accept the close event
+        event.accept()
 
     def hide_to_tray(self):
         self.hide()
@@ -666,6 +786,29 @@ class MainWindow(QMainWindow):
         btns.accepted.connect(dlg.accept)
         dlg_layout.addWidget(btns)
         dlg.exec_()
+
+
+    def open_api_server_settings(self):
+        """Open the Local Telegram API Server settings window"""
+        # If window exists, restore or show it
+        if hasattr(self, "api_server_window") and self.api_server_window:
+            if self.api_server_window.isMinimized():
+                self.api_server_window.showNormal()
+                self.api_server_window.activateWindow()
+            else:
+                self.api_server_window.show()
+                self.api_server_window.activateWindow()
+        else:
+            # First launch: open normally
+            self.api_server_window = gui_serverapi.MainWindow()
+            self.api_server_window.show()
+
+
+    def on_lock_api_checkbox_changed(self, state):
+        locked = (state == Qt.Checked)
+        self.address_edit.setEnabled(not locked)
+        self.port_edit.setEnabled(not locked)
+        save_lock_api_fields(locked)
 
 if __name__ == '__main__':
     print("Ошибка: gui.py не предназначен для самостоятельного запуска. Запусти bot-ok.py вместо этого.")

@@ -557,8 +557,13 @@ def register_handlers(dp):
                 await message.answer("Восстановление завершено с ошибками:\n" + error_report)
             else:
                 await message.answer("Резервная копия успешно восстановлена без ошибок.")
-            await message.answer("Бот перезапускается...")
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
+            try:
+                import gui_serverapi
+                gui_serverapi.stop_server_globally()
+            except Exception as e:
+                print(f"Ошибка при остановке API сервера: {e}")
+            asyncio.get_running_loop().call_later(2, lambda: os._exit(42))
         else:
             await message.answer("Операция восстановления отменена. Возвращаюсь в меню настроек.", reply_markup=get_main_settings_keyboard())
     
@@ -961,8 +966,13 @@ def register_handlers(dp):
     
     @dp.message_handler(lambda message: message.text == "Полный перезапуск" and system_mode.get(message.from_user.id, False))
     async def full_restart_handler(message: types.Message):
-        await message.answer("Бот перезапускается...")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
+        try:
+            import gui_serverapi
+            gui_serverapi.stop_server_globally()
+        except Exception as e:
+            print(f"Ошибка при остановке API сервера: {e}")
+        asyncio.get_running_loop().call_later(2, lambda: os._exit(42))
     
     @dp.message_handler(lambda message: message.text == "Возврат в настройки" and system_mode.get(message.from_user.id, False))
     async def system_back_handler(message: types.Message):

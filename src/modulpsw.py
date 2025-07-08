@@ -718,6 +718,12 @@ def register_handlers(dp):
     @dp.message_handler(lambda m: m.text == "Полный перезапуск")
     async def full_restart_handler(message: types.Message):
         await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
+        # Остановим локальный API сервер, как при нажатии кнопки Стоп
+        try:
+            import gui_serverapi
+            gui_serverapi.stop_server_globally()
+        except Exception as e:
+            print(f"Ошибка при остановке API сервера: {e}")
         import asyncio
         asyncio.get_running_loop().call_later(2, lambda: os._exit(42))
     # ===== Меню плагинов =====
