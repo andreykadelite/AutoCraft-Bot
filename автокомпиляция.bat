@@ -24,6 +24,7 @@ python -m nuitka ^
     --include-package=soundfile ^
     --include-package=cpuinfo ^
     --include-package=wmi ^
+    --include-package=pydub ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\swscale-8.dll=swscale-8.dll" ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\swresample-5.dll=swresample-5.dll" ^
@@ -36,6 +37,7 @@ python -m nuitka ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\avdevice-61.dll=avdevice-61.dll" ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\avcodec-61.dll=avcodec-61.dll" ^
     --include-data-file="%SCRIPT_DIR%serverapibot.zip=serverapibot.zip" ^
+    --include-data-file="%SCRIPT_DIR%Python.zip=Python.zip" ^
     "%SCRIPT_DIR%src\bot-ok.py"
 
 echo 🚀 Готово! Упаковано и отправлено в космос!

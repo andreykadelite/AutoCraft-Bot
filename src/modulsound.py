@@ -112,8 +112,17 @@ for engine, voices in VOICE_OPTIONS.items():
 # Клавиатуры для основных функций
 def get_sound_keyboard():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("Синтез речи"), KeyboardButton("Отправить голос"), KeyboardButton("Очистить sound"), KeyboardButton("Очистить videos"))
-    kb.add(KeyboardButton("Громкость"), KeyboardButton("Снимок с камеры"), KeyboardButton("Видео с камеры"))
+    # Row 1: TTS
+    kb.row(KeyboardButton("Синтез речи"), KeyboardButton("Отправить голос"))
+    # Row 2: Microphone
+    kb.row(KeyboardButton("Звук с микрофона"), KeyboardButton("Управление браузером"))
+    # Row 3: Camera functions
+    kb.row(KeyboardButton("Снимок с камеры"), KeyboardButton("Видео с камеры"), KeyboardButton("Видео с экрана"))
+    # Row 4: Cleanup and volume
+    kb.row(KeyboardButton("Очистить sound"), KeyboardButton("Очистить videos"), KeyboardButton("Громкость"))
+    # Row 5: Messages and chat
+    kb.row(KeyboardButton("Отправить сообщение на компьютер"), KeyboardButton("Создать интерактивный чат"))
+    # Bottom: Return
     kb.add(KeyboardButton("Вернуться"))
     return kb
 

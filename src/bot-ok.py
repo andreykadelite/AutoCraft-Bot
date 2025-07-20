@@ -1,3 +1,36 @@
+import sys
+import time
+import psutil
+import logging
+
+# --- API Watchdog Mode ---
+if "--api-watchdog" in sys.argv:
+    try:
+        idx = sys.argv.index("--api-watchdog")
+        parent_pid = int(sys.argv[idx+1])
+        api_pid    = int(sys.argv[idx+2])
+    except (ValueError, IndexError):
+        print("Usage: <exe> --api-watchdog <parent_pid> <api_pid>")
+        sys.exit(1)
+    logging.basicConfig(level=logging.INFO)
+    logging.info(f"API Watchdog started: parent={parent_pid}, api={api_pid}")
+    while True:
+        if not psutil.pid_exists(parent_pid):
+            logging.info("Parent died — killing API process tree")
+            try:
+                p = psutil.Process(api_pid)
+                for c in p.children(recursive=True):
+                    c.kill()
+                p.kill()
+            except Exception as e:
+                logging.error(f"Error killing API process: {e}")
+            break
+        if not psutil.pid_exists(api_pid):
+            logging.info("API process exited on its own — stopping watchdog")
+            break
+        time.sleep(1)
+    sys.exit(0)
+
 import logging
 import sys
 from pathlib import Path
@@ -131,31 +164,6 @@ print("Готово! Бот работает в:", base_dir)
 # -----------------------------------------------------
 # 3. Функция распаковки базового Python (при старте бота)
 # -----------------------------------------------------
-def ensure_base_python():
-    """
-    При старте бота проверяет наличие папки 'python' в рабочей директории.
-    Если папка отсутствует, распаковывает архив Python.zip в папку 'python'.
-    """
-    python_folder = os.path.join(base_dir, "python")
-    if not os.path.isdir(python_folder):
-        python_zip_path = os.path.join(get_app_dir(), "Python.zip")
-        if not os.path.exists(python_zip_path):
-            print("Python.zip не найден в каталоге приложения")
-            write_bot_log("Python.zip не найден в каталоге приложения")
-            return
-        try:
-            import zipfile
-            with zipfile.ZipFile(python_zip_path, 'r') as zip_ref:
-                zip_ref.extractall(python_folder)
-            print("Базовый Python распакован в папку 'python'")
-            write_bot_log("Базовый Python распакован в папку 'python'")
-        except Exception as e:
-            print(f"[ОШИБКА] Не удалось распаковать Python.zip: {e}")
-            write_bot_log(f"[ОШИБКА] Не удалось распаковать Python.zip: {e}")
-    else:
-        # Если папка уже существует, распаковка не требуется
-        write_bot_log("Папка 'python' уже существует, распаковка не требуется")
-
 def get_base_python_exe():
     """
     Возвращает путь к базовому интерпретатору Python, распакованному из Python.zip.
@@ -198,8 +206,6 @@ authorized_users = set()
 note_mode = {}
 pending_note = {}
 file_mode = {}
-cmd_mode = {}
-in_cmd_menu = {}
 power_mode = {}
 pending_power_action = {}
 infiles_mode = {}
@@ -294,6 +300,11 @@ def write_plugin_log(entry: str):
     if "[ОШИБКА]" in entry:
         write_error_log(entry)
 
+import modulcmd
+
+# Expose cmd_mode and in_cmd_menu for gui imports
+cmd_mode = modulcmd.cmd_mode
+in_cmd_menu = modulcmd.in_cmd_menu
 # -----------------------------------------------------
 # 6.1. Менеджер плагинов с поддержкой изоляции через отдельные venv
 # -----------------------------------------------------
@@ -520,7 +531,6 @@ async def auto_start_plugins(dp: Dispatcher):
 # -----------------------------------------------------
 def run_bot():
     from keymenu import get_main_keyboard, get_additional_keyboard
-    ensure_base_python()
     write_bot_log("Бот запускается...")
 
     # Загрузка учетных данных из credentials.ini
@@ -613,6 +623,7 @@ def run_bot():
                 write_bot_log(f"[ОШИБКА] Не удалось получить информацию о боте: {e}")
 
     dp = Dispatcher(current_bot)
+    modulcmd.register_handlers(dp)
     setattr(current_bot, "dispatcher", dp)
     import Moduls_manager_ext
     Moduls_manager_ext.register_handlers(dp)
@@ -933,76 +944,6 @@ def run_bot():
         plugins_mode[message.from_user.id] = False
         keyboard = get_main_keyboard()
         await message.answer("Возвращаюсь в главное меню.", reply_markup=keyboard)
-
-    # ------------------------- CMD -------------------------
-    @dp.message_handler(lambda message: message.text == "Назад в меню" and cmd_mode.get(message.from_user.id, False))
-    async def cmd_back_to_main(message: types.Message):
-        in_cmd_menu[message.from_user.id] = False
-        keyboard = get_main_keyboard()
-        await message.answer("Возвращаюсь в главное меню. Режим CMD активен.", reply_markup=keyboard)
-
-    @dp.message_handler(lambda message: message.text == "cmd")
-    async def cmd_menu(message: types.Message):
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        buttons = ["Запуск CMD", "Завершить CMD", "Назад в меню"]
-        if cmd_mode.get(message.from_user.id, False):
-            extra_buttons = ["dir", "ipconfig", "tasklist", "ping 8.8.8.8", "netstat", "tracert 8.8.8.8"]
-            buttons.extend(extra_buttons)
-        keyboard.add(*buttons)
-        if cmd_mode.get(message.from_user.id, False):
-            in_cmd_menu[message.from_user.id] = True
-            await message.answer("Режим CMD активен. Выберите команду.", reply_markup=keyboard)
-        else:
-            await message.answer("Режим CMD не активен. Запустите его кнопкой «Запуск CMD».", reply_markup=keyboard)
-
-    @dp.message_handler(lambda message: message.text == "Запуск CMD")
-    async def start_cmd(message: types.Message):
-        if cmd_mode.get(message.from_user.id, False):
-            await message.answer("Режим CMD уже запущен!")
-        else:
-            cmd_mode[message.from_user.id] = True
-            in_cmd_menu[message.from_user.id] = True
-            write_bot_log(f"Пользователь {message.from_user.id} запустил режим CMD.")
-            await message.answer("Режим CMD запущен.")
-        await cmd_menu(message)
-
-    @dp.message_handler(lambda message: message.text in ["Завершить CMD", "Закрыть CMD"])
-    async def end_cmd(message: types.Message):
-        if not power_mode.get(message.from_user.id, False):
-            if not cmd_mode.get(message.from_user.id, False):
-                await message.answer("Режим CMD не запущен!")
-            else:
-                cmd_mode[message.from_user.id] = False
-                in_cmd_menu[message.from_user.id] = False
-                write_bot_log(f"Пользователь {message.from_user.id} завершил режим CMD.")
-                await message.answer("Режим CMD завершён.")
-        await cmd_menu(message)
-
-    @dp.message_handler(
-        lambda message: cmd_mode.get(message.from_user.id, False) and
-                        in_cmd_menu.get(message.from_user.id, False) and
-                        message.text not in ["Запуск CMD", "Завершить CMD", "Назад в меню", "cmd", "Питание"]
-    )
-    async def execute_cmd(message: types.Message):
-        write_com_log(f"Пользователь {message.from_user.id} выполнил команду CMD: {message.text}")
-        try:
-            result = subprocess.run(
-                message.text,
-                shell=True,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore'
-            )
-            output = result.stdout.strip() or result.stderr.strip() or "Команда выполнена без вывода."
-            if len(output) > 4000:
-                chunks = [output[i:i+4000] for i in range(0, len(output), 4000)]
-                for chunk in chunks:
-                    await message.answer(chunk)
-            else:
-                await message.answer(output)
-        except Exception as e:
-            await message.answer(f"Ошибка: {str(e)}")
 
     # ------------------------- Логи -------------------------
     @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "лог")

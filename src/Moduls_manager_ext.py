@@ -100,6 +100,17 @@ def import_moduldptools(dp: Dispatcher):
     except Exception:
         pass
 
+def import_modulscrin(dp: Dispatcher):
+    """
+    Импорт и регистрация обработчиков из modulscrin после авторизации.
+    """
+    try:
+        modulescrin = importlib.import_module("modulscrin")
+        if hasattr(modulescrin, "register_handlers"):
+            modulescrin.register_handlers(dp)
+    except Exception:
+        pass
+
 def import_modulsound(dp: Dispatcher):
     try:
         modulsound = importlib.import_module("modulsound")
@@ -108,14 +119,65 @@ def import_modulsound(dp: Dispatcher):
     except Exception:
         pass
 
-# Теперь звук грузится последним
+def import_modulmicrosendsound(dp: Dispatcher):
+    """
+    Импорт и регистрация обработчиков из modulmicrosendsound после авторизации.
+    """
+    try:
+        micros = importlib.import_module("modulmicrosendsound")
+        if hasattr(micros, "register_handlers"):
+            micros.register_handlers(dp)
+    except Exception:
+        pass
+
+# --- Новые функции для ваших модулей ---
+def import_modulopenchat(dp: Dispatcher):
+    """
+    Импорт и регистрация обработчиков из modulopenchat после авторизации.
+    """
+    try:
+        openchat = importlib.import_module("modulopenchat")
+        if hasattr(openchat, "register_handlers"):
+            openchat.register_handlers(dp)
+    except Exception:
+        pass
+
+def import_modulsendmess(dp: Dispatcher):
+    """
+    Импорт и регистрация обработчиков из modulsendmess после авторизации.
+    """
+    try:
+        sendmess = importlib.import_module("modulsendmess")
+        if hasattr(sendmess, "register_handlers"):
+            sendmess.register_handlers(dp)
+    except Exception:
+        pass
+
+def import_modulbrowsrem(dp: Dispatcher):
+    """
+    Импорт и регистрация обработчиков из modulbrowsrem после авторизации.
+    """
+    try:
+        browsrem = importlib.import_module("modulbrowsrem")
+        if hasattr(browsrem, "register_handlers"):
+            browsrem.register_handlers(dp)
+    except Exception:
+        pass
+# --- Конец новых функций ---
+
 async def import_all_plugins(dp: Dispatcher):
-    import_modulpsw(dp)           # 1. psw
-    import_modulset(dp)           # 2. set
-    import_modulcon(dp)           # 3. con
-    import_utilites(dp)           # 4. утилиты
-    import_moduldptools(dp)       # 5. dptools -> теперь moduldptools
-    import_modulsound(dp)         # 6. звук – теперь в конце
+    import_modulpsw(dp)             # 1. psw
+    import_modulset(dp)             # 2. set
+    import_modulcon(dp)             # 3. con
+    import_utilites(dp)             # 4. утилиты
+    import_moduldptools(dp)         # 5. dptools
+    import_modulscrin(dp)           # 6. scrin
+    import_modulsound(dp)           # 7. звук
+    import_modulmicrosendsound(dp)  # 8. микрозвук
+    # Подключаем ваши новые модули:
+    import_modulopenchat(dp)        # 9. openchat
+    import_modulsendmess(dp)        # 10. sendmess
+    import_modulbrowsrem(dp)        # 11. browsrem
 
 def wait_for_bot_loop(dp: Dispatcher):
     while not hasattr(dp.bot, "loop") or dp.bot.loop is None:

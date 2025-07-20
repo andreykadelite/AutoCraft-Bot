@@ -11,6 +11,46 @@ from aiogram import types
 import platform
 from modulpsw import perform_full_restart  # Функция полного перезапуска бота
 from keymenu import get_main_settings_keyboard, get_additional_keyboard
+
+# Поиск архива Python.zip
+import tempfile
+from pathlib import Path
+
+ZIP_NAME = 'Python.zip'
+TARGET_FOLDER = 'python'
+
+def find_zip_file(zip_name: str = ZIP_NAME) -> Path:
+    """
+    Ищем ZIP в нескольких местах аналогично Pythonextrbot.py
+    """
+    try:
+        exec_dir = Path(sys.executable).parent
+        candidate = exec_dir / zip_name
+        if candidate.is_file():
+            return candidate
+    except Exception:
+        pass
+    try:
+        script_dir = Path(__file__).parent
+        candidate = script_dir / zip_name
+        if candidate.is_file():
+            return candidate
+    except Exception:
+        pass
+    temp_root = Path(tempfile.gettempdir())
+    candidate = temp_root / zip_name
+    if candidate.is_file():
+        return candidate
+    pid = os.getpid()
+    for sub in temp_root.iterdir():
+        if not sub.is_dir():
+            continue
+        if sub.name.startswith(f"onefile_{pid}_"):
+            candidate = sub / zip_name
+            if candidate.is_file():
+                return candidate
+    return None
+
 import datetime
 
 # Глобальные переменные
@@ -906,51 +946,54 @@ def register_handlers(dp):
         try:
             import __main__
             base_dir = getattr(__main__, "base_dir", ".")
-            archive_path = os.path.join(base_dir, "Python.zip")
-            python_folder = os.path.join(base_dir, "python")
-            errors = []
-            system_messages = []
-            if not os.path.exists(archive_path):
-                errors.append("Архив Python.zip не найден")
-            if not os.path.isdir(python_folder):
-                errors.append("Папка python не найдена")
+            zip_path = find_zip_file()
+            # Проверка архива
+            if zip_path:
+                msg = f"Архив Python.zip найден: {zip_path}"
             else:
-                if os.name == 'nt':
-                    exe = os.path.join(python_folder, "python.exe")
+                msg = "Архив Python.zip не найден ни в одной из проверяемых локаций."
+            messages = [msg]
+            # Проверка папки python
+            python_folder = os.path.join(base_dir, TARGET_FOLDER)
+            if os.path.isdir(python_folder):
+                messages.append(f"Папка python существует: {python_folder}")
+                exe = os.path.join(python_folder, "python.exe") if os.name == 'nt' else os.path.join(python_folder, "bin", "python")
+                if os.path.exists(exe):
+                    messages.append(f"Исполняемый файл найден: {exe}")
                 else:
-                    exe = os.path.join(python_folder, "bin", "python")
-                if not os.path.exists(exe):
-                    errors.append("Исполняемый файл python не найден в папке python")
-            if errors:
-                system_messages.append("Обнаружены проблемы:")
-                for error in errors:
-                    system_messages.append(f"- {error}")
-                try:
-                    with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                        zip_ref.extractall(python_folder)
-                    system_messages.append("Выполнено восстановление из архива Python.zip.")
-                except Exception as e:
-                    system_messages.append(f"Восстановление не удалось: {e}")
-                result_text = "\n".join(system_messages)
+                    messages.append(f"Исполняемый файл не найден в папке python: {exe}")
             else:
-                result_text = "Целостность архива Python.zip и папки python в порядке."
+                messages.append("Папка python не найдена.")
+            # Формируем результат
+            errors = [m for m in messages if "не найден" in m]
+            if not errors:
+                result_text = "Проверка целостности пройдена успешно. Все необходимые элементы на месте.\n" + "\n".join(messages)
+            else:
+                result_text = "Обнаружены проблемы при проверке целостности:\n" + "\n".join(messages)
+            await message.answer(result_text)
         except Exception as e:
-            result_text = f"Ошибка проверки целостности: {e}"
-        await message.answer(result_text)
-    
+            await message.answer(f"Ошибка проверки целостности: {e}")
+
+
     @dp.message_handler(lambda message: message.text == "Переустановить python" and system_mode.get(message.from_user.id, False))
     async def reinstall_python_handler(message: types.Message):
         await message.answer("Начинается переустановка Python...")
+        # Ищем архив с Python
+        zip_path = find_zip_file()
+        if not zip_path:
+            await message.answer(f"Не найден файл {ZIP_NAME}")
+            return
+        import __main__
+        base_dir = getattr(__main__, "base_dir", ".")
+        python_folder = os.path.join(base_dir, TARGET_FOLDER)
+        # Удаляем старую папку python
+        if os.path.exists(python_folder):
+            shutil.rmtree(python_folder)
+            await message.answer("Старая папка python удалена.")
+        os.makedirs(python_folder, exist_ok=True)
+        # Распаковываем архив
         try:
-            import __main__
-            base_dir = getattr(__main__, "base_dir", ".")
-            python_folder = os.path.join(base_dir, "python")
-            archive_path = os.path.join(base_dir, "Python.zip")
-            if os.path.exists(python_folder):
-                shutil.rmtree(python_folder)
-                await message.answer("Старая папка python удалена.")
-            os.makedirs(python_folder, exist_ok=True)
-            with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 files = zip_ref.namelist()
                 total_files = len(files)
                 next_threshold = 5
@@ -963,7 +1006,7 @@ def register_handlers(dp):
             await message.answer("Переустановка Python завершена.")
         except Exception as e:
             await message.answer(f"Ошибка переустановки Python: {e}")
-    
+
     @dp.message_handler(lambda message: message.text == "Полный перезапуск" and system_mode.get(message.from_user.id, False))
     async def full_restart_handler(message: types.Message):
         await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")

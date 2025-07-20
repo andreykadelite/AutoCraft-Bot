@@ -9,6 +9,7 @@ Accessible and Debug-enabled Local Telegram Bot API Config GUI
 import sys
 import os
 import configparser
+import subprocess
 from PyQt5.QtCore import Qt, QProcess, QTimer
 import locale
 from PyQt5.QtWidgets import (
@@ -20,7 +21,6 @@ from PyQt5.QtWidgets import QStyleFactory
 from PyQt5.QtGui import QPalette, QColor, QFont
 
 import serverextrbot
-
 # Globals for external control
 _proc_global = None
 _win_global = None
@@ -62,7 +62,23 @@ def load_config():
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             config.write(f)
         return defaults
-    config.read(CONFIG_PATH, encoding='utf-8')
+    # Читаем конфиг с защитой от дублирующихся секций
+    try:
+        config.read(CONFIG_PATH, encoding='utf-8')
+    except configparser.DuplicateSectionError:
+        # Убираем дубли секций
+        cleaned = []
+        seen_secs = set()
+        with open(CONFIG_PATH, encoding='utf-8') as cf:
+            for ln in cf:
+                if ln.startswith('[') and ln.rstrip().endswith(']'):
+                    sec = ln.strip()[1:-1]
+                    if sec in seen_secs:
+                        continue
+                    seen_secs.add(sec)
+                cleaned.append(ln)
+        config = configparser.ConfigParser()
+        config.read_string(''.join(cleaned))
     # Если секция GUI отсутствует, создаём с дефолтами и сохраняем
     if SECTION not in config:
         config[SECTION] = defaults
@@ -76,7 +92,23 @@ def save_config(settings):
     config = configparser.ConfigParser()
     # Читаем существующий config.ini, чтобы не терять другие секции
     if os.path.exists(CONFIG_PATH):
-        config.read(CONFIG_PATH, encoding='utf-8')
+        # Читаем конфиг с защитой от дублирующихся секций
+        try:
+            config.read(CONFIG_PATH, encoding='utf-8')
+        except configparser.DuplicateSectionError:
+            # Убираем дубли секций
+            cleaned = []
+            seen_secs = set()
+            with open(CONFIG_PATH, encoding='utf-8') as cf:
+                for ln in cf:
+                    if ln.startswith('[') and ln.rstrip().endswith(']'):
+                        sec = ln.strip()[1:-1]
+                        if sec in seen_secs:
+                            continue
+                        seen_secs.add(sec)
+                    cleaned.append(ln)
+            config = configparser.ConfigParser()
+            config.read_string(''.join(cleaned))
     config[SECTION] = {
         'api_id': settings['api_id'],
         'api_hash': settings['api_hash'],
@@ -548,6 +580,20 @@ class MainWindow(QMainWindow):
             self.add_log("Версия: не удалось получить версию")
         self.proc.setWorkingDirectory(SERVER_ROOT)
         self.proc.start(exe, args)
+                # Запуск внешнего watchdog-процесса
+        try:
+            DETACHED_PROCESS = 0x00000008
+            proc_pid = self.proc.processId()
+            watchdog_script = os.path.join(BASE_DIR, 'watchdog_killer.py')
+            subprocess.Popen(
+                [sys.executable, "--api-watchdog", str(os.getpid()), str(proc_pid)],
+                creationflags=DETACHED_PROCESS
+            )
+            self.add_log('Watchdog-запущен')
+        except Exception as e:
+            self.add_log(f'Ошибка запуска Watchdog: {e}')
+
+        
         if not self.proc.waitForStarted(3000):
             QMessageBox.critical(self, "Ошибка", "Не удалось запустить процесс.")
         else:
