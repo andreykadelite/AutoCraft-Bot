@@ -3,7 +3,11 @@
 """
 Accessible and Debug-enabled Local Telegram Bot API Config GUI
 
-
+Добавлено:
+- Флажок «Автопоиск путей»: если включён и в config.ini указаны невалидные пути,
+  то GUI автоматически подставляет пути по умолчанию (рядом с программой)
+  для data_dir, temp_dir и exe_path, создавая каталоги при необходимости.
+- Автоподстановка выполняется при загрузке настроек, при сохранении и перед запуском сервера.
 """
 
 import sys
@@ -20,13 +24,19 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtWidgets import QStyleFactory
 from PyQt5.QtGui import QPalette, QColor, QFont
 
-import serverextrbot
+import serverextrbot  # не удаляем, используется внешним кодом
+
+# Try to import startup settings reader from main app to know "start in tray"
+try:
+    from windows_startup import load_startup_full
+except Exception:
+    def load_startup_full():
+        # Fallback: autorun disabled, start_in_tray disabled, method 'startup'
+        return False, False, "startup"
+
 # Globals for external control
 _proc_global = None
 _win_global = None
-
-# Global process handle accessible to external scripts
-_proc_global = None
 
 # Determine BASE_DIR dynamically for both development and frozen/exe usage
 if "NUITKA_ONEFILE_PARENT" in os.environ:
@@ -35,9 +45,11 @@ elif getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 SERVER_ROOT = os.path.join(BASE_DIR, 'serverapibot')
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.ini')
 SECTION = 'gui_settings'
+
 
 def load_config():
     config = configparser.ConfigParser()
@@ -54,6 +66,7 @@ def load_config():
         'exe_path': os.path.join(SERVER_ROOT, 'telegram-bot-api.exe'),
         'auto_start': 'False',
         'log_max_size': '1',
+        'auto_detect_paths': 'False',  # <--- новый флаг
     }
     if not os.path.exists(CONFIG_PATH):
         config[SECTION] = defaults
@@ -62,6 +75,7 @@ def load_config():
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             config.write(f)
         return defaults
+
     # Читаем конфиг с защитой от дублирующихся секций
     try:
         config.read(CONFIG_PATH, encoding='utf-8')
@@ -79,20 +93,24 @@ def load_config():
                 cleaned.append(ln)
         config = configparser.ConfigParser()
         config.read_string(''.join(cleaned))
+
     # Если секция GUI отсутствует, создаём с дефолтами и сохраняем
     if SECTION not in config:
         config[SECTION] = defaults
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             config.write(f)
         return defaults
+
     s = config[SECTION] if SECTION in config else defaults
-    return {k: s.get(k, defaults[k]) for k in defaults}
+    # Возвращаем словарь, гарантируя наличие новых полей
+    result = {k: s.get(k, defaults[k]) for k in defaults}
+    return result
+
 
 def save_config(settings):
     config = configparser.ConfigParser()
     # Читаем существующий config.ini, чтобы не терять другие секции
     if os.path.exists(CONFIG_PATH):
-        # Читаем конфиг с защитой от дублирующихся секций
         try:
             config.read(CONFIG_PATH, encoding='utf-8')
         except configparser.DuplicateSectionError:
@@ -109,6 +127,7 @@ def save_config(settings):
                     cleaned.append(ln)
             config = configparser.ConfigParser()
             config.read_string(''.join(cleaned))
+
     config[SECTION] = {
         'api_id': settings['api_id'],
         'api_hash': settings['api_hash'],
@@ -121,10 +140,12 @@ def save_config(settings):
         'temp_dir': settings['temp_dir'],
         'exe_path': settings['exe_path'] or os.path.join(SERVER_ROOT, 'telegram-bot-api.exe'),
         'auto_start': str(settings['auto_start']),
-        'log_max_size': str(settings['log_max_size'])
+        'log_max_size': str(settings['log_max_size']),
+        'auto_detect_paths': str(settings.get('auto_detect_paths', False)),  # <--- сохраняем флаг
     }
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         config.write(f)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -134,19 +155,20 @@ class MainWindow(QMainWindow):
         if app:
             app.setStyle(QStyleFactory.create('Fusion'))
             dark_palette = QPalette()
-            dark_palette.setColor(QPalette.Window, QColor(45,45,45))
-            dark_palette.setColor(QPalette.WindowText, QColor(220,220,220))
-            dark_palette.setColor(QPalette.Base, QColor(30,30,30))
-            dark_palette.setColor(QPalette.AlternateBase, QColor(45,45,45))
-            dark_palette.setColor(QPalette.ToolTipBase, QColor(255,255,220))
-            dark_palette.setColor(QPalette.ToolTipText, QColor(0,0,0))
-            dark_palette.setColor(QPalette.Text, QColor(220,220,220))
-            dark_palette.setColor(QPalette.Button, QColor(45,45,45))
-            dark_palette.setColor(QPalette.ButtonText, QColor(220,220,220))
-            dark_palette.setColor(QPalette.Highlight, QColor(42,130,218))
-            dark_palette.setColor(QPalette.HighlightedText, QColor(255,255,255))
+            dark_palette.setColor(QPalette.Window, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.Base, QColor(30, 30, 30))
+            dark_palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 220))
+            dark_palette.setColor(QPalette.ToolTipText, QColor(0, 0, 0))
+            dark_palette.setColor(QPalette.Text, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.Button, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
             app.setPalette(dark_palette)
             app.setFont(QFont('Segoe UI', 10))
+
         self.setStyleSheet("""
             QWidget {
                 background-color: #2d2d2d;
@@ -180,13 +202,12 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        # Register global window handle for external stop
-        global _win_global
+        # Register global window/process handles
+        global _win_global, _proc_global
         _win_global = self
         self.proc = QProcess(self)
-        # Register global process handle for external stop
-        global _proc_global
         _proc_global = self.proc
+
         self.proc.setProcessChannelMode(QProcess.MergedChannels)
         self.encoding = locale.getpreferredencoding(False)
         self.user_initiated_stop = False  # флаг для пользовательской остановки
@@ -194,8 +215,10 @@ class MainWindow(QMainWindow):
         self.proc.readyReadStandardError.connect(self.handle_stderr)
         self.proc.errorOccurred.connect(self.handle_error)
         self.proc.finished.connect(self.handle_finished)
+
         self.init_ui()
-        self.load_settings()
+        self.load_settings()  # подтянем и сразу применим автопоиск при необходимости
+
         # Автостарт сервера при старте приложения
         if self.auto_start_cb.isChecked():
             QTimer.singleShot(0, self.start_server)
@@ -203,6 +226,19 @@ class MainWindow(QMainWindow):
         # UI log файл
         self.log_file_path = os.path.join(self.data_edit.text(), 'telegram-bot-api-ui.log')
 
+        # Автосворачивание окна при старте, если включены автозапуск сервера и запуск в трее
+        try:
+            _, _start_in_tray, _method = load_startup_full()
+        except Exception:
+            _start_in_tray = False
+        if self.auto_start_cb.isChecked() and _start_in_tray:
+            try:
+                self.add_log("Автосворачивание: включены 'Запуск сервера при старте' и 'Запуск сразу в трее' — скрываю окно настроек.")
+            except Exception:
+                pass
+            QTimer.singleShot(0, self.minimize_window)
+
+    # ---------------- UI -----------------
     def init_ui(self):
         self.setWindowTitle("telegram-bot-api-server")
         central = QWidget(self)
@@ -358,6 +394,16 @@ class MainWindow(QMainWindow):
         grid.addWidget(btn3, row, 2)
         row += 1
 
+        # NEW: Автопоиск путей
+        self.auto_paths_cb = QCheckBox("Автопоиск путей (рядом с программой)")
+        self.auto_paths_cb.setAccessibleName("Флажок автопоиска путей для serverapibot")
+        self.auto_paths_cb.setAccessibleDescription(
+            "Если включено, при невалидных путях автоматически подставляются стандартные: "
+            "serverapibot/data, serverapibot/temp и serverapibot/telegram-bot-api.exe"
+        )
+        grid.addWidget(self.auto_paths_cb, row, 0, 1, 3)
+        row += 1
+
         main_layout.addWidget(group)
 
         # Auto-Start Checkbox
@@ -372,24 +418,39 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton("Старт")
         self.start_btn.setAccessibleName("Кнопка Старт")
         self.start_btn.setAccessibleDescription("Запустить сервер Telegram Bot API")
+        self.start_btn.setToolTip("Запустить локальный сервер Telegram Bot API")
         self.start_btn.clicked.connect(self.start_server)
         hbox.addWidget(self.start_btn)
+
         self.stop_btn = QPushButton("Стоп")
         self.stop_btn.setAccessibleName("Кнопка Стоп")
         self.stop_btn.setAccessibleDescription("Остановить сервер Telegram Bot API")
+        self.stop_btn.setToolTip("Остановить локальный сервер Telegram Bot API")
         self.stop_btn.clicked.connect(self.stop_server)
         hbox.addWidget(self.stop_btn)
+
         self.save_btn = QPushButton("Сохранить")
         self.save_btn.setAccessibleName("Кнопка Сохранить")
-        self.save_btn.setAccessibleDescription("Сохранить настройки в config.ini")
+        self.save_btn.setAccessibleDescription("Сохранить настройки в файл config.ini")
+        self.save_btn.setToolTip("Сохранить настройки в config.ini")
         self.save_btn.clicked.connect(self.save_settings)
         hbox.addWidget(self.save_btn)
+
+        self.minimize_btn = QPushButton("Свернуть окно")
+        self.minimize_btn.setAccessibleName("Кнопка Свернуть окно")
+        self.minimize_btn.setAccessibleDescription("Полностью скрыть окно настроек (не в трей и не в панель задач)")
+        self.minimize_btn.setToolTip("Полностью скрыть окно настроек")
+        self.minimize_btn.clicked.connect(self.minimize_window)
+        hbox.addWidget(self.minimize_btn)
+
         main_layout.addLayout(hbox)
 
-        # Log Output as list for screen readers and arrow navigation
+        # Логи
         main_layout.addWidget(QLabel("Логи:"))
+
         # Dual log panels: UI logs and telegram-bot-api logs side by side
         dual_layout = QHBoxLayout()
+
         # UI logs panel
         ui_group = QGroupBox("UI Логи")
         ui_group.setAccessibleName("Группа: UI логов")
@@ -405,6 +466,7 @@ class MainWindow(QMainWindow):
         self.log_output.setMinimumHeight(150)
         ui_layout.addWidget(self.log_output)
         dual_layout.addWidget(ui_group)
+
         # API logs panel
         api_group = QGroupBox("API Логи")
         api_group.setAccessibleName("Группа: API логов")
@@ -420,6 +482,7 @@ class MainWindow(QMainWindow):
         self.api_log_output.setMinimumHeight(150)
         api_layout.addWidget(self.api_log_output)
         dual_layout.addWidget(api_group)
+
         main_layout.addLayout(dual_layout)
 
         # Status Label
@@ -429,28 +492,30 @@ class MainWindow(QMainWindow):
         self.status_lbl.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.status_lbl)
 
-        self.resize(700, 650)
+        self.resize(700, 680)
         self.update_buttons()
-        # Gracefully stop API server when main application is exiting (e.g., restart bot)
+
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self.handle_app_quit)
 
+        # Реакция на переключение автопоиска путей
+        self.auto_paths_cb.toggled.connect(self.apply_auto_paths_if_needed)
+
+    # ------------- Вспомогательные методы -------------
     def add_log(self, text):
         item = QListWidgetItem(text)
         self.log_output.addItem(item)
         self.log_output.setCurrentItem(item)
         self.log_output.scrollToItem(item)
-        # Запись логов UI в файл
-        # Rotate UI log if exceeds max size
+        # Ротация и запись логов UI в файл
         try:
-            if os.path.exists(self.log_file_path) and os.path.getsize(self.log_file_path) > self.log_size_spin.value() * 1024 * 1024:
-                with open(self.log_file_path, 'w', encoding='utf-8'):
-                    pass
+            if hasattr(self, 'log_size_spin'):
+                if os.path.exists(self.log_file_path) and os.path.getsize(self.log_file_path) > self.log_size_spin.value() * 1024 * 1024:
+                    with open(self.log_file_path, 'w', encoding='utf-8'):
+                        pass
         except Exception:
             pass
-
-        # Запись логов UI в файл
         try:
             with open(self.log_file_path, 'a', encoding='utf-8') as lf:
                 lf.write(text + '\n')
@@ -478,11 +543,79 @@ class MainWindow(QMainWindow):
         self.api_log_output.addItem(item)
         self.api_log_output.scrollToItem(item)
 
+    def _ensure_paths(self, settings, auto_flag):
+        """
+        Проверяет корректность путей и, при необходимости, подставляет дефолтные.
+        Возвращает (settings, changed: bool)
+        """
+        changed = False
+
+        default_data = os.path.join(SERVER_ROOT, 'data')
+        default_temp = os.path.join(SERVER_ROOT, 'temp')
+        default_exe = os.path.join(SERVER_ROOT, 'telegram-bot-api.exe')
+
+        # data_dir
+        data_dir = settings.get('data_dir') or default_data
+        if auto_flag and (not isinstance(data_dir, str) or not os.path.isdir(data_dir)):
+            settings['data_dir'] = default_data
+            os.makedirs(default_data, exist_ok=True)
+            self.add_log(f"Автопоиск путей: data_dir не найден, заменён на '{default_data}'.")
+            changed = True
+
+        # temp_dir
+        temp_dir = settings.get('temp_dir') or default_temp
+        if auto_flag and (not isinstance(temp_dir, str) or not os.path.isdir(temp_dir)):
+            settings['temp_dir'] = default_temp
+            os.makedirs(default_temp, exist_ok=True)
+            self.add_log(f"Автопоиск путей: temp_dir не найден, заменён на '{default_temp}'.")
+            changed = True
+
+        # exe_path
+        exe_path = settings.get('exe_path') or default_exe
+        if auto_flag and (not isinstance(exe_path, str) or not os.path.isfile(exe_path)):
+            if os.path.isfile(default_exe):
+                settings['exe_path'] = default_exe
+                self.add_log(f"Автопоиск путей: exe_path не найден, заменён на '{default_exe}'.")
+                changed = True
+            else:
+                # Сообщим, но не ломаем сохранённое значение — старт проверит наличие
+                self.add_log("Автопоиск путей: exe по умолчанию не найден рядом с программой. Проверьте serverapibot/telegram-bot-api.exe")
+
+        return settings, changed
+
+    def apply_auto_paths_if_needed(self):
+        """Применяет автопоиск к текущим полям UI и сохраняет в конфиг, если что-то изменилось."""
+        settings = {
+            'api_id': self.api_id_edit.text().strip(),
+            'api_hash': self.api_hash_edit.text().strip(),
+            'local_mode': self.local_cb.isChecked(),
+            'http_ip': self.ip_edit.text().strip(),
+            'http_port': self.port_edit.text().strip(),
+            'max_webhook_connections': str(self.max_conn.value()),
+            'verbosity': str(self.verbosity_spin.value()),
+            'data_dir': self.data_edit.text().strip() or os.path.join(SERVER_ROOT, 'data'),
+            'temp_dir': self.temp_edit.text().strip() or os.path.join(SERVER_ROOT, 'temp'),
+            'exe_path': self.exe_edit.text().strip(),
+            'auto_start': self.auto_start_cb.isChecked(),
+            'log_max_size': str(self.log_size_spin.value()),
+            'auto_detect_paths': self.auto_paths_cb.isChecked(),
+        }
+        settings, changed = self._ensure_paths(settings, self.auto_paths_cb.isChecked())
+        if changed:
+            # Обновим UI
+            self.data_edit.setText(settings['data_dir'])
+            self.temp_edit.setText(settings['temp_dir'])
+            self.exe_edit.setText(settings['exe_path'])
+            # И сразу сохраним, чтобы конфиг стал корректным
+            save_config(settings)
+            self.add_log("Автопоиск путей: изменения сохранены в config.ini.")
+
+    # ------------- Загрузка/сохранение -------------
     def load_settings(self):
         cfg = load_config()
         self.api_id_edit.setText(cfg['api_id'])
         self.api_hash_edit.setText(cfg['api_hash'])
-        self.local_cb.setChecked(cfg['local_mode']=='True')
+        self.local_cb.setChecked(cfg['local_mode'] == 'True')
         self.ip_edit.setText(cfg['http_ip'])
         self.port_edit.setText(cfg['http_port'])
         self.max_conn.setValue(int(cfg['max_webhook_connections']))
@@ -490,8 +623,13 @@ class MainWindow(QMainWindow):
         self.data_edit.setText(cfg['data_dir'])
         self.temp_edit.setText(cfg['temp_dir'])
         self.exe_edit.setText(cfg['exe_path'])
-        self.auto_start_cb.setChecked(cfg['auto_start']=='True')
+        self.auto_start_cb.setChecked(cfg['auto_start'] == 'True')
         self.log_size_spin.setValue(int(cfg.get('log_max_size', '1')))
+        self.auto_paths_cb.setChecked(cfg.get('auto_detect_paths', 'False') == 'True')
+
+        # Автоподстановка сразу после загрузки, если включен флаг
+        if self.auto_paths_cb.isChecked():
+            self.apply_auto_paths_if_needed()
 
     def save_settings(self):
         settings = {
@@ -507,21 +645,27 @@ class MainWindow(QMainWindow):
             'exe_path': self.exe_edit.text().strip(),
             'auto_start': self.auto_start_cb.isChecked(),
             'log_max_size': str(self.log_size_spin.value()),
+            'auto_detect_paths': self.auto_paths_cb.isChecked(),
         }
+        # Если включён автопоиск — поправим пути перед сохранением
+        settings, changed = self._ensure_paths(settings, self.auto_paths_cb.isChecked())
         os.makedirs(settings['data_dir'], exist_ok=True)
         os.makedirs(settings['temp_dir'], exist_ok=True)
         save_config(settings)
         QMessageBox.information(self, "Сохранено", "Настройки сохранены в config.ini")
+        if changed:
+            # Обновим UI на случай автоподстановки
+            self.data_edit.setText(settings['data_dir'])
+            self.temp_edit.setText(settings['temp_dir'])
+            self.exe_edit.setText(settings['exe_path'])
 
+    # ------------- Управление сервером -------------
     def start_server(self):
         if self.proc.state() == QProcess.Running:
             QMessageBox.warning(self, "Внимание", "Сервер уже запущен.")
             return
-        settings = load_config()
-        exe = settings['exe_path']
-        if not os.path.exists(exe):
-            QMessageBox.critical(self, "Ошибка", "Неверный путь к EXE.")
-            return
+
+        # Берём актуальные значения из UI
         settings = {
             'api_id': self.api_id_edit.text().strip(),
             'api_hash': self.api_hash_edit.text().strip(),
@@ -535,16 +679,24 @@ class MainWindow(QMainWindow):
             'exe_path': self.exe_edit.text().strip(),
             'auto_start': self.auto_start_cb.isChecked(),
             'log_max_size': str(self.log_size_spin.value()),
+            'auto_detect_paths': self.auto_paths_cb.isChecked(),
         }
+        # Применяем автопоиск при необходимости
+        settings, _ = self._ensure_paths(settings, self.auto_paths_cb.isChecked())
+
+        exe = settings['exe_path']
+        if not os.path.isfile(exe):
+            QMessageBox.critical(self, "Ошибка", "Неверный путь к EXE. Проверьте serverapibot/telegram-bot-api.exe")
+            return
+
         os.makedirs(settings['data_dir'], exist_ok=True)
         os.makedirs(settings['temp_dir'], exist_ok=True)
+
         save_config(settings)
         self.add_log("Настройки сохранены")
-        settings = load_config()
-        # Путь для записи логов сервера в файл
-        log_path = os.path.join(settings['data_dir'], 'telegram-bot-api.log')
+
         # Формируем аргументы для запуска сервера
-        # Формируем аргументы для запуска сервера
+        log_path = os.path.join(settings['data_dir'], 'telegram-bot-api.log')  # путь логов процесса (файл делает сам процесс)
         args = [
             f"--api-id={settings['api_id']}",
             f"--api-hash={settings['api_hash']}",
@@ -555,20 +707,18 @@ class MainWindow(QMainWindow):
             f"--dir={settings['data_dir']}",
             f"--temp-dir={settings['temp_dir']}",
         ]
-        # Убираем пустые аргументы
         args = [a for a in args if a]
-        # Устанавливаем уровень логирования на основе выбранного уровня
+
         verbosity = int(settings.get('verbosity', '0'))
         if verbosity > 0:
             args.append(f"--verbosity={verbosity}")
-        # Убираем пустые аргументы
-        args = [a for a in args if a]
-        # Ротация логов telegram-bot-api
+
+        # Ротация логов telegram-bot-api (в байтах)
         log_max_size = int(settings.get('log_max_size', '1')) * 1024 * 1024
         args.append(f"--log-max-file-size={log_max_size}")
-        # Убираем пустые аргументы после ротации логов
-        args = [a for a in args if a]
+
         self.add_log(f"Запуск: {exe} {' '.join(args)}")
+
         # Логирование версии перед запуском
         version_proc = QProcess(self)
         version_proc.setProcessChannelMode(QProcess.MergedChannels)
@@ -578,13 +728,15 @@ class MainWindow(QMainWindow):
             self.add_log(f"Версия: {version_out}")
         else:
             self.add_log("Версия: не удалось получить версию")
+
         self.proc.setWorkingDirectory(SERVER_ROOT)
         self.proc.start(exe, args)
-                # Запуск внешнего watchdog-процесса
+
+        # Запуск внешнего watchdog-процесса (если он предусмотрен внешним скриптом)
         try:
             DETACHED_PROCESS = 0x00000008
             proc_pid = self.proc.processId()
-            watchdog_script = os.path.join(BASE_DIR, 'watchdog_killer.py')
+            # Пример: запускаем тот же Python с параметрами — внешняя логика должна обработать
             subprocess.Popen(
                 [sys.executable, "--api-watchdog", str(os.getpid()), str(proc_pid)],
                 creationflags=DETACHED_PROCESS
@@ -593,28 +745,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.add_log(f'Ошибка запуска Watchdog: {e}')
 
-        
         if not self.proc.waitForStarted(3000):
             QMessageBox.critical(self, "Ошибка", "Не удалось запустить процесс.")
         else:
             self.status_lbl.setText("Статус: Запущен")
             self.update_buttons()
-            # Gracefully stop API server when main application is exiting (e.g., restart bot)
             app = QApplication.instance()
             if app is not None:
                 app.aboutToQuit.connect(self.handle_app_quit)
 
     def stop_server(self):
         if self.proc.state() == QProcess.Running:
-            # помечаем, что остановка инициирована пользователем
             self.user_initiated_stop = True
             self.proc.terminate()
             if not self.proc.waitForFinished(3000):
                 self.proc.kill()
-            # обновление UI будет в handle_finished
         else:
-            # Сервер уже остановлен. Ничего не делаем.
             return
+
     def handle_stdout(self):
         text = bytes(self.proc.readAllStandardOutput()).decode(self.encoding, errors='replace')
         for line in text.splitlines():
@@ -627,7 +775,6 @@ class MainWindow(QMainWindow):
 
     def handle_error(self, error):
         if getattr(self, 'user_initiated_stop', False):
-            # Игнорируем ошибку, вызванную ручной остановкой
             return
         QMessageBox.critical(self, "Ошибка процесса", f"Процесс завершился с ошибкой: {error}")
         self.add_log(f"<QProcess.Error> {error}")
@@ -638,7 +785,6 @@ class MainWindow(QMainWindow):
             self.status_lbl.setText("Статус: Остановлен")
             self.add_log("Сервер остановлен пользователем.")
             self.update_buttons()
-            # Gracefully stop API server when main application is exiting (e.g., restart bot)
             app = QApplication.instance()
             if app is not None:
                 app.aboutToQuit.connect(self.handle_app_quit)
@@ -647,10 +793,10 @@ class MainWindow(QMainWindow):
             self.status_lbl.setText(f"Статус: {status} (код {exitCode})")
             self.add_log(f"Процесс завершён: {status}, код={exitCode}")
             self.update_buttons()
-            # Gracefully stop API server when main application is exiting (e.g., restart bot)
             app = QApplication.instance()
             if app is not None:
                 app.aboutToQuit.connect(self.handle_app_quit)
+
     def update_buttons(self):
         running = self.proc.state() == QProcess.Running
         self.start_btn.setEnabled(not running)
@@ -664,6 +810,14 @@ class MainWindow(QMainWindow):
             if not self.proc.waitForFinished(3000):
                 self.proc.kill()
 
+    def minimize_window(self):
+        """Полностью скрыть окно настроек (не в трей и не в панель задач)."""
+        try:
+            self.add_log("Действие: скрыть окно настроек (полностью)")
+        except Exception:
+            pass
+        self.hide()
+
     def closeEvent(self, event):
         if self.proc.state() == QProcess.Running:
             self.user_initiated_stop = True
@@ -671,7 +825,6 @@ class MainWindow(QMainWindow):
             if not self.proc.waitForFinished(3000):
                 self.proc.kill()
         event.accept()
-
 
 
 def stop_server_globally():
@@ -690,8 +843,8 @@ def stop_server_globally():
     else:
         print("Server process is not running or already stopped.")
 
-if __name__ == '__main__':
 
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()

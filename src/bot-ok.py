@@ -1,3 +1,4 @@
+
 import sys
 import time
 import psutil
@@ -68,7 +69,47 @@ import logging  # новый импорт для стандартного лог
 from aiogram.utils import exceptions
 
 # Глобальная переменная для накопления лог-сообщений
-pending_log_messages = []  # все сообщения логов будут сохраняться сюда
+pending_log_messages = []
+# Буфер логов до авторизации в Telegram
+pending_tg_logs = []
+# Максимум 1000 записей, чтобы не раздувать память
+PENDING_TG_MAX = 1000
+
+
+gui_ready = False  # станет True, когда MainWindow подключится и проглотит буфер логов
+# -----------------------------------------------------
+# 1.0. CLI override for config path (must be **very** early)
+# -----------------------------------------------------
+_BASE_DIR_OVERRIDE = None
+_CONFIG_PATH_OVERRIDE = None
+
+def _scan_cli_for_config_override():
+    try:
+        argv = sys.argv[1:]
+        for idx, arg in enumerate(argv):
+            low = str(arg).lower()
+            if low in ("--config", "/config"):
+                if idx + 1 < len(argv):
+                    p = argv[idx+1]
+                    p = os.path.abspath(os.path.expanduser(p.strip().strip('"').strip("'")))
+                    return p
+            if low.startswith("--config=") or low.startswith("/config="):
+                p = arg.split("=", 1)[1]
+                p = os.path.abspath(os.path.expanduser(p.strip().strip('"').strip("'")))
+                return p
+    except Exception:
+        pass
+    return None
+
+
+_tmp_cfg = _scan_cli_for_config_override()
+if _tmp_cfg:
+    _CONFIG_PATH_OVERRIDE = _tmp_cfg
+    try:
+        _BASE_DIR_OVERRIDE = os.path.dirname(_CONFIG_PATH_OVERRIDE)
+    except Exception:
+        _BASE_DIR_OVERRIDE = None
+  # все сообщения логов будут сохраняться сюда
 
 # -----------------------------------------------------
 # 1. Функции определения пути приложения
@@ -77,11 +118,12 @@ def is_frozen():
     return getattr(sys, 'frozen', False)
 
 def get_app_dir():
+    global _BASE_DIR_OVERRIDE
+    if '_BASE_DIR_OVERRIDE' in globals() and _BASE_DIR_OVERRIDE:
+        return _BASE_DIR_OVERRIDE
     if "NUITKA_ONEFILE_PARENT" in os.environ:
         return os.path.dirname(os.path.abspath(os.environ["NUITKA_ONEFILE_PARENT"]))
     elif is_frozen():
-        # При скомпилированном варианте возвращаем директорию исполняемого файла,
-        # а не текущий рабочий каталог, чтобы внешние папки (например, plugins) корректно определялись.
         return os.path.dirname(sys.executable)
     else:
         return os.path.dirname(os.path.abspath(__file__))
@@ -95,6 +137,60 @@ def get_script_path():
         return os.path.abspath(__file__)
 
 APP_PATH = get_script_path()
+
+# -----------------------------------------------------
+# 1.0.a Маркер "истинной" папки установки (для onefile-автозапуска)
+# -----------------------------------------------------
+def _get_program_data_dir():
+    return os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+
+_MARKER_DIR = os.path.join(_get_program_data_dir(), "AutoCraftBot")
+_MARKER_FILE = os.path.join(_MARKER_DIR, "install_root.txt")
+
+def _get_stub_exe_path():
+    return os.environ.get("NUITKA_ONEFILE_PARENT", sys.executable)
+
+def _write_install_root_marker():
+    try:
+        os.makedirs(_MARKER_DIR, exist_ok=True)
+        real_exe = _get_stub_exe_path()
+        real_dir = os.path.dirname(os.path.abspath(real_exe))
+        with open(_MARKER_FILE, "w", encoding="utf-8") as f:
+            f.write(real_dir)
+    except Exception:
+        pass
+
+def _read_install_root_marker():
+    try:
+        if os.path.exists(_MARKER_FILE):
+            with open(_MARKER_FILE, "r", encoding="utf-8") as f:
+                d = f.read().strip()
+                if d and os.path.isdir(d):
+                    return d
+    except Exception:
+        pass
+    return None
+
+try:
+    _write_install_root_marker()
+except Exception:
+    pass
+
+# Если всё ещё в onefile-времянке и нет явного --config, пытаемся восстановить базу из маркера
+try:
+    _cur_dir = get_app_dir()
+    if (("onefile_" in _cur_dir.lower()) and not _CONFIG_PATH_OVERRIDE):
+        marker_dir = _read_install_root_marker()
+        if marker_dir and os.path.exists(os.path.join(marker_dir, "config.ini")):
+            # Не трогаем base_dir здесь; ниже base_dir = get_app_dir() подхватит _BASE_DIR_OVERRIDE
+            try:
+                globals()["_BASE_DIR_OVERRIDE"] = marker_dir
+            except Exception:
+                pass
+except Exception:
+    pass
+
+
 
 # -----------------------------------------------------
 # 1.1. Вспомогательная функция для корректного добавления пути в sys.path
@@ -120,6 +216,36 @@ def add_site_packages(path):
 # -----------------------------------------------------
 base_dir = get_app_dir()
 print("App dir =", base_dir)
+# Guard: if base_dir points to Nuitka temp, switch to parent if available
+try:
+    temp_indicator = os.path.join(os.environ.get("TEMP", ""), "onefile_")
+    if ("onefile_" in base_dir.lower() or (temp_indicator and base_dir.lower().startswith(temp_indicator.lower()))) and "NUITKA_ONEFILE_PARENT" in os.environ:
+        base_dir = os.path.dirname(os.path.abspath(os.environ["NUITKA_ONEFILE_PARENT"]))
+except Exception:
+    pass
+
+
+# Enforce working dir = base_dir (vital for autorun)
+try:
+    os.chdir(base_dir)
+except Exception:
+    pass
+
+# Bootstrap log
+try:
+    _boot_log = os.path.join(base_dir, "autostart_bootstrap.log")
+    with open(_boot_log, "a", encoding="utf-8") as _f:
+        _f.write("=== BOOT(bot-ok) ===\n")
+        _f.write(f"cwd={os.getcwd()}\n")
+        _f.write(f"sys.executable={sys.executable}\n")
+        _f.write(f"base_dir={base_dir}\n")
+        _cfg_guess = _CONFIG_PATH_OVERRIDE or os.path.join(base_dir, "config.ini")
+        _f.write(f"config_guess={_cfg_guess} exists={os.path.exists(_cfg_guess)}\n")
+        _f.write(f"argv={sys.argv}\n")
+        _f.write(f"NUITKA_ONEFILE_PARENT={os.environ.get('NUITKA_ONEFILE_PARENT')!r}\n")
+        _f.write(f"marker_file={_MARKER_FILE} marker_dir={_read_install_root_marker()!r}\n")
+except Exception:
+    pass
 # Настройка логирования (модифицировано): запись логов при включенном дебаге в папку 'лог'
 import configparser
 API_SECTION = 'api_server'
@@ -127,7 +253,7 @@ API_USE_STANDARD_KEY = 'use_standard_api'
 
 
 conf = configparser.ConfigParser()
-conf.read(Path(base_dir) / 'config.ini', encoding='utf-8')
+conf.read((_CONFIG_PATH_OVERRIDE or str(Path(base_dir) / 'config.ini')), encoding='utf-8')
 debug_enabled = conf.getboolean('credentials', 'debug', fallback=False)
 if debug_enabled:
     log_dir = Path(base_dir) / 'лог'
@@ -232,13 +358,31 @@ class SignalHandler(logging.Handler):
     def emit(self, record):
         try:
             msg = self.format(record)
-            log_emitter.log_message.emit(msg)
-            # Only accumulate non-debug messages
+            # Пытаемся отправить в GUI, если он слушает
+            try:
+                log_emitter.log_message.emit(msg)
+            except Exception:
+                pass
+            # Буфер GUI: только до готовности GUI, INFO+ и без подряд-дубликатов
             if record.levelno >= logging.INFO:
-                pending_log_messages.append(msg)
+                try:
+                    if not gui_ready:
+                        if not pending_log_messages or pending_log_messages[-1] != msg:
+                            pending_log_messages.append(msg)
+                except Exception:
+                    pass
+            # Буфер для Telegram: всегда до авторизации, INFO+ и без подряд-дубликатов
+            if record.levelno >= logging.INFO:
+                try:
+                    if not pending_tg_logs or pending_tg_logs[-1] != msg:
+                        pending_tg_logs.append(msg)
+                        # ограничиваем размер буфера
+                        if len(pending_tg_logs) > PENDING_TG_MAX:
+                            del pending_tg_logs[:len(pending_tg_logs)-PENDING_TG_MAX]
+                except Exception:
+                    pass
         except Exception:
             self.handleError(record)
-
 formatter = logging.Formatter('[%(name)s] %(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 def create_logger(logger_name, log_file, level=logging.INFO):
@@ -249,10 +393,12 @@ def create_logger(logger_name, log_file, level=logging.INFO):
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    # Хэндлер для отправки по сигналу
+    # Хэндлер для отправки по сигналу (в GUI/в буферы)
     signal_handler = SignalHandler()
     signal_handler.setFormatter(formatter)
     logger.addHandler(signal_handler)
+    # Не пускаем записи наверх, чтобы не плодить дубликаты
+    logger.propagate = False
     return logger
 
 # -----------------------------------------------------
@@ -817,14 +963,14 @@ def run_bot():
                     authorized_users.add(user_id)
                     keyboard = get_main_keyboard()
                     await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                    if pending_log_messages:
-                        await message.answer("Пока вас не было, вот что произошло:")
-                        log_text = "\n".join(pending_log_messages)
+                    if pending_tg_logs:
+                        await message.answer("Пока вы не были авторизованы, вот что произошло:")
+                        log_text = "\n".join(pending_tg_logs)
                         max_chunk = 4000
                         chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
                         for chunk in chunks:
                             await message.answer(chunk)
-                        pending_log_messages.clear()
+                        pending_tg_logs.clear()
                     status_str = "включен" if debug_enabled else "выключен"
                     await message.answer(f"Статус дебага: {status_str}.")
                 else:
@@ -834,14 +980,14 @@ def run_bot():
                 authorized_users.add(user_id)
                 keyboard = get_main_keyboard()
                 await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                if pending_log_messages:
-                    await message.answer("Пока вас не было, вот что произошло:")
-                    log_text = "\n".join(pending_log_messages)
+                if pending_tg_logs:
+                    await message.answer("Пока вы не были авторизованы, вот что произошло:")
+                    log_text = "\n".join(pending_tg_logs)
                     max_chunk = 4000
                     chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
                     for chunk in chunks:
                         await message.answer(chunk)
-                    pending_log_messages.clear()
+                    pending_tg_logs.clear()
                     status_str = "включен" if debug_enabled else "выключен"
                     await message.answer(f"Статус дебага: {status_str}.")
         else:
@@ -853,14 +999,14 @@ def run_bot():
                     authorized_users.add(user_id)
                     keyboard = get_main_keyboard()
                     await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                    if pending_log_messages:
-                        await message.answer("Пока вас не было, вот что произошло:")
-                        log_text = "\n".join(pending_log_messages)
+                    if pending_tg_logs:
+                        await message.answer("Пока вы не были авторизованы, вот что произошло:")
+                        log_text = "\n".join(pending_tg_logs)
                         max_chunk = 4000
                         chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
                         for chunk in chunks:
                             await message.answer(chunk)
-                        pending_log_messages.clear()
+                        pending_tg_logs.clear()
                     status_str = "включен" if debug_enabled else "выключен"
                     await message.answer(f"Статус дебага: {status_str}.")
                 else:
@@ -870,14 +1016,14 @@ def run_bot():
                 authorized_users.add(user_id)
                 keyboard = get_main_keyboard()
                 await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                if pending_log_messages:
-                    await message.answer("Пока вас не было, вот что произошло:")
-                    log_text = "\n".join(pending_log_messages)
+                if pending_tg_logs:
+                    await message.answer("Пока вы не были авторизованы, вот что произошло:")
+                    log_text = "\n".join(pending_tg_logs)
                     max_chunk = 4000
                     chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
                     for chunk in chunks:
                         await message.answer(chunk)
-                    pending_log_messages.clear()
+                    pending_tg_logs.clear()
                     status_str = "включен" if debug_enabled else "выключен"
                     await message.answer(f"Статус дебага: {status_str}.")
 
@@ -1330,7 +1476,7 @@ import shutil
 # -----------------------------------------------------
 # 9. Профи-обработка конфигурации (токен, PIN, ID)
 # -----------------------------------------------------
-CONFIG_FILE = os.path.join(base_dir, "config.ini")
+CONFIG_FILE = (_CONFIG_PATH_OVERRIDE or os.path.join(base_dir, "config.ini"))
 CONFIG_SECTION = 'credentials'
 
 config = configparser.ConfigParser()
@@ -1480,26 +1626,67 @@ if __name__ == "__main__":
             log(f"▶️ [watchdog] Запускаем бота: {cmd}")
             return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore', cwd=base_dir)
 
-        restart_count = 0
-        MAX_RESTARTS = 5
+        
+def spawn_child_passthrough():
+            """
+            Запуск дочернего процесса с ПРОКИДЫВАНИЕМ исходных аргументов (например, --tray, --config),
+            исключая служебные флаги вотчера (--child, --api-watchdog <pid1> <pid2>).
+            """
+            exe_path = sys.executable
 
-        while True:
-            proc = spawn_child()
-            for line in proc.stdout:
-                line = line.rstrip()
-                log(f"[BOT] {line}")
-            code = proc.wait()
-            log(f"⚠️ [watchdog] Процесс бота завершился с кодом {code}")
-            if code == 0:
-                log("🛑 [watchdog] Код 0 — считаем, что юзер закрыл приложение. Завершаемся.")
-                sys.exit(0)
-            elif code == 42:
-                log("♻️ [watchdog] Получен код 42 — полный рестарт. Запускаем сразу новый процесс.")
-                continue
+            # Собираем пользовательские аргументы, пришедшие родителю
+            passthrough = []
+            i = 1
+            while i < len(sys.argv):
+                a = sys.argv[i]
+                low = str(a).lower()
+                if low in ("--child", "/child"):
+                    i += 1
+                    continue
+                if low == "--api-watchdog":
+                    # пропустить сам флаг и два PID-а
+                    i += 3
+                    continue
+                passthrough.append(a)
+                i += 1
+
+            if is_frozen():
+                # onefile/EXE
+                cmd = [exe_path] + passthrough + ["--child"]
             else:
-                restart_count += 1
-                log(f"♻️ [watchdog] Bot crashed (code={code}). Restart #{restart_count}/{MAX_RESTARTS} через 3 сек...")
-                if restart_count >= MAX_RESTARTS:
-                    log(f"♻️ [watchdog] Достигнут лимит рестартов ({MAX_RESTARTS}). Останавливаемся.")
-                    sys.exit(code)
-                time.sleep(3)
+                # запуск из .py
+                script = os.path.abspath(sys.argv[0])
+                cmd = [exe_path, script] + passthrough + ["--child"]
+
+            log(f"▶️ [watchdog] Запускаем бота (passthrough): {cmd}")
+            return subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', errors='ignore',
+                cwd=base_dir
+            )
+
+restart_count = 0
+MAX_RESTARTS = 5
+
+while True:
+    proc = spawn_child_passthrough()
+    for line in proc.stdout:
+        line = line.rstrip()
+        log(f"[BOT] {line}")
+    code = proc.wait()
+    log(f"⚠️ [watchdog] Процесс бота завершился с кодом {code}")
+    if code == 0:
+        log("🛑 [watchdog] Код 0 — считаем, что юзер закрыл приложение. Завершаемся.")
+        sys.exit(0)
+    elif code == 42:
+        log("♻️ [watchdog] Получен код 42 — полный рестарт. Запускаем сразу новый процесс.")
+        continue
+    else:
+        restart_count += 1
+        log(f"♻️ [watchdog] Bot crashed (code={code}). Restart #{restart_count}/{MAX_RESTARTS} через 3 сек...")
+        if restart_count >= MAX_RESTARTS:
+            log(f"♻️ [watchdog] Достигнут лимит рестартов ({MAX_RESTARTS}). Останавливаемся.")
+            sys.exit(code)
+        time.sleep(3)

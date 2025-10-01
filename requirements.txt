@@ -1,9 +1,14 @@
+selenium
+requests
+websocket-client
+qasync
 aiogram==2.25.1
+aiohttp<3.10
+magic-filter==1.0.12
 psutil==5.9.5
 speedtest-cli
 pyautogui
 PyQt5
-requests
 gTTS
 pyttsx3
 Pillow
@@ -14,5 +19,7 @@ numpy
 sounddevice
 soundfile
 py-cpuinfo
-wmi
+WMI
+pywin32
 pydub
+mss

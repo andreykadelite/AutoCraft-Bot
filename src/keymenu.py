@@ -15,6 +15,7 @@ def get_main_keyboard():
         "Список плагинов",
         "Дополнительно",
         "cmd",
+        "powershell",
         "утилиты",
         "консоль python"
     ]

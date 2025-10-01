@@ -70,6 +70,14 @@ def import_modulcon(dp: Dispatcher):
     except Exception:
         pass
 
+def import_modulpowershell(dp: Dispatcher):
+    try:
+        modulpowershell = importlib.import_module("modulpowershell")
+        if hasattr(modulpowershell, "register_handlers"):
+            modulpowershell.register_handlers(dp)
+    except Exception:
+        pass
+
 def import_utilites(dp: Dispatcher):
     try:
         utilites = importlib.import_module("utilites")
@@ -169,15 +177,16 @@ async def import_all_plugins(dp: Dispatcher):
     import_modulpsw(dp)             # 1. psw
     import_modulset(dp)             # 2. set
     import_modulcon(dp)             # 3. con
-    import_utilites(dp)             # 4. утилиты
-    import_moduldptools(dp)         # 5. dptools
-    import_modulscrin(dp)           # 6. scrin
-    import_modulsound(dp)           # 7. звук
-    import_modulmicrosendsound(dp)  # 8. микрозвук
+    import_modulpowershell(dp)      # 4. powershell
+    import_utilites(dp)             # 5. утилиты
+    import_moduldptools(dp)         # 6. dptools
+    import_modulscrin(dp)           # 7. scrin
+    import_modulsound(dp)           # 8. звук
+    import_modulmicrosendsound(dp)  # 9. микрозвук
     # Подключаем ваши новые модули:
-    import_modulopenchat(dp)        # 9. openchat
-    import_modulsendmess(dp)        # 10. sendmess
-    import_modulbrowsrem(dp)        # 11. browsrem
+    import_modulopenchat(dp)        # 10. openchat
+    import_modulsendmess(dp)        # 11. sendmess
+    import_modulbrowsrem(dp)        # 12. browsrem
 
 def wait_for_bot_loop(dp: Dispatcher):
     while not hasattr(dp.bot, "loop") or dp.bot.loop is None:

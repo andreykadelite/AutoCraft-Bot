@@ -1,4 +1,3 @@
-
 from aiogram import types, Dispatcher
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from keymenu import get_additional_keyboard, get_main_keyboard
@@ -43,10 +42,115 @@ from datetime import datetime
 import glob
 
 # Timelife stream segment duration (seconds)
-TIMELIFE_SEGMENT_DURATION = 2  # Changed to 2 seconds for circular video notes  # Changed to 5 seconds for circular video notes
+TIMELIFE_SEGMENT_DURATION = 2  # сегменты кружков 2 сек
 
 # Максимальный размер видео в байтах (49 МБ)
 MAX_VIDEO_SIZE = 49 * 1024 * 1024
+
+# ---------- NEW: состояние воспроизведения (для мгновенной Отмены) ----------
+# PLAYBACK_STATE[chat_id] = {
+#   "playing": bool,
+#   "temp_wav": str|None,
+#   "cleanup_timer": threading.Timer|None
+# }
+PLAYBACK_STATE = {}
+
+# ---------- NEW: выбор устройства воспроизведения для управления громкостью ----------
+# ВНИМАНИЕ: мы НЕ меняем системное устройство по умолчанию глобально.
+# Мы даём выбрать ЦЕЛЕВОЙ аудио-эндпоинт, над которым бот будет выполнять
+# операции громкости/мута. В списке помечаем текущее системное "по умолчанию".
+AUDIO_OUTPUT_STATE = {}   # {chat_id: {"state": "select_output", "devices": [ {id, name}, ... ]}}
+CURRENT_OUTPUT_DEVICE = {}  # {chat_id: device_id}
+
+def _stop_playback(chat_id: int, silent: bool = True):
+    """Остановить текущее воспроизведение, прибрать temp-файл и таймер."""
+    state = PLAYBACK_STATE.get(chat_id)
+    try:
+        # Останавливаем winsound (работает для SND_ASYNC)
+        winsound.PlaySound(None, winsound.SND_PURGE)
+    except Exception:
+        pass
+    if state:
+        # Отключаем отложенную очистку
+        t = state.get("cleanup_timer")
+        if t and isinstance(t, threading.Timer):
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        # Удаляем temp wav, если есть
+        tmp = state.get("temp_wav")
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+        # Сбрасываем состояние
+        PLAYBACK_STATE.pop(chat_id, None)
+
+def _schedule_cleanup(chat_id: int, temp_wav: str, seconds: float):
+    """Плановая уборка после окончания воспроизведения (если отмены не было)."""
+    def _cleanup():
+        # Если к этому моменту воспроизведение не отменяли — уберём temp и состояние
+        state = PLAYBACK_STATE.get(chat_id)
+        if not state:
+            # уже очищено
+            return
+        # Переинициализируем, чтобы не зависало состояние
+        tmp = state.get("temp_wav")
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+        PLAYBACK_STATE.pop(chat_id, None)
+
+    timer = threading.Timer(max(0.2, seconds + 0.5), _cleanup)
+    timer.daemon = True
+    timer.start()
+    PLAYBACK_STATE.setdefault(chat_id, {})["cleanup_timer"] = timer
+
+def _start_playback(chat_id: int, path: str):
+    """Запускает проигрывание файла асинхронно и позволяет прерывать по 'Отмена'."""
+    # Перед стартом снесём возможное предыдущее проигрывание
+    _stop_playback(chat_id)
+
+    # Подготовка файла: в winsound корректнее скармливать WAV
+    ext = os.path.splitext(path)[1].lower()
+    temp_wav = None
+    src_for_play = path
+    try:
+        if ext != ".wav":
+            # Конвертим во временный WAV рядом с исходником
+            temp_wav = path + ".__tmp_play__.wav"
+            subprocess.run([FFMPEG_PATH, "-y", "-i", path, temp_wav], check=True, capture_output=True, text=True)
+            src_for_play = temp_wav
+    except subprocess.CalledProcessError as e:
+        # Если конвертация не удалась — пробуем отдать как есть, но предупреждаем логом
+        src_for_play = path
+        temp_wav = None
+
+    # Оценка длительности для отложенной уборки (только если WAV)
+    duration = 0.0
+    try:
+        if os.path.splitext(src_for_play)[1].lower() == ".wav" and os.path.exists(src_for_play):
+            with sf.SoundFile(src_for_play, 'r') as f:
+                frames = len(f)
+                sr = f.samplerate or 44100
+                duration = frames / float(sr) if sr else 0.0
+    except Exception:
+        duration = 0.0
+
+    # Сохраняем состояние
+    PLAYBACK_STATE[chat_id] = {"playing": True, "temp_wav": temp_wav, "cleanup_timer": None}
+
+    # Воспроизводим асинхронно: так обработчик кнопок НЕ блокируется
+    winsound.PlaySound(src_for_play, winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+    # Поставим отложенную уборку: удалим temp_wav и очистим состояние
+    if duration > 0:
+        _schedule_cleanup(chat_id, temp_wav, duration)
+
 
 # Dynamic video size limit based on API server type
 def get_video_limit(bot):
@@ -126,13 +230,103 @@ def get_sound_keyboard():
     kb.add(KeyboardButton("Вернуться"))
     return kb
 
-def get_volume_control_keyboard(is_muted: bool):
+def get_volume_control_keyboard(is_muted: bool, current_device_name: str = None, is_default: bool = False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(KeyboardButton("Уменьшить громкость"), KeyboardButton("Увеличить громкость"))
     label = "Включить звук" if is_muted else "Выключить звук"
     kb.add(KeyboardButton(label))
+    # NEW: кнопка смены устройства
+    kb.add(KeyboardButton("Сменить устройство воспроизведения"))
+    # Навигация
     kb.add(KeyboardButton("Вернуться в функции"), KeyboardButton("На главную"))
     return kb
+
+def get_output_devices_keyboard(devices, default_id):
+    """Сформировать клавиатуру устройств вывода. Помечаем системное по умолчанию."""
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    for i, dev in enumerate(devices, 1):
+        name = dev["name"]
+        if dev["id"] == default_id:
+            name = f"{name} (по умолчанию)"
+        kb.add(KeyboardButton(f"{i}. {name}"))
+    kb.add(KeyboardButton("Отмена"))
+    return kb
+
+def _get_default_playback_device_id():
+    try:
+        spk = AudioUtilities.GetSpeakers()
+        return spk.GetId()
+    except Exception:
+        return None
+
+def _list_playback_devices():
+    """Вернуть список активных устройств ВЫВОДА: [{id, name}, ...]."""
+    result = []
+    try:
+        devices = AudioUtilities.GetAllDevices()
+    except Exception:
+        devices = []
+    # Попробуем отфильтровать по data_flow == 0 (Render). Если свойства нет — просто возьмём всё, что даёт IAudioEndpointVolume.
+    for d in devices:
+        dev_id = None
+        name = None
+        try:
+            dev_id = d.GetId()
+            name = getattr(d, "FriendlyName", None) or "Аудио устройство"
+            data_flow = getattr(d, "DataFlow", getattr(d, "data_flow", None))
+            state = getattr(d, "State", getattr(d, "state", None))
+            # 0 = Render, 1 = Capture; 1 (DEVICE_STATE_ACTIVE) = активно
+            if data_flow is not None and data_flow != 0:
+                continue
+            if state is not None and state != 1:
+                continue
+            # Проверим, что устройство поддерживает IAudioEndpointVolume
+            try:
+                interface = d.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                cast(interface, POINTER(IAudioEndpointVolume))
+            except Exception:
+                continue
+            result.append({"id": dev_id, "name": name})
+        except Exception:
+            continue
+    # Фолбэк: если ничего не нашли — добавим системное по умолчанию (если доступно)
+    if not result:
+        try:
+            spk = AudioUtilities.GetSpeakers()
+            result.append({"id": spk.GetId(), "name": getattr(spk, "FriendlyName", "Динамики")})
+        except Exception:
+            pass
+    return result
+
+def _find_device_by_id(dev_id):
+    try:
+        for d in AudioUtilities.GetAllDevices():
+            try:
+                if d.GetId() == dev_id:
+                    return d
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+def _get_volume_interface_for_chat(chat_id):
+    """Получить интерфейс IAudioEndpointVolume для выбранного устройства (или системного по умолчанию)."""
+    # Сначала пробуем выбранное пользователем устройство
+    dev_id = CURRENT_OUTPUT_DEVICE.get(chat_id)
+    if dev_id:
+        d = _find_device_by_id(dev_id)
+        if d is not None:
+            try:
+                interface = d.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                return cast(interface, POINTER(IAudioEndpointVolume)), d
+            except Exception:
+                # Если что-то не так — убираем выбор
+                CURRENT_OUTPUT_DEVICE.pop(chat_id, None)
+    # Фолбэк на системное по умолчанию
+    spk = AudioUtilities.GetSpeakers()
+    interface = spk.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    return cast(interface, POINTER(IAudioEndpointVolume)), spk
 
 def get_playback_keyboard():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -172,17 +366,34 @@ def get_video_control_keyboard(timelife: bool=False):
     return kb
 
 # Поиск доступных камер (для списка)
-def find_camera_indices():
+def find_camera_indices(max_index: int = 10):
+    """Возвращает список уникальных камер без дублей кнопок.
+    Для каждого индекса выбирается первый рабочий backend (MSMF, затем DSHOW).
+    Это устраняет случаи, когда один и тот же индекс открывается разными бэкендами
+    и в клавиатуре появлялись "Камера 0", "Камера 0".
+    """
     cameras = []
+    # Предпочитаем современные бэкенды Windows: сначала MSMF, потом DSHOW
     backends = []
-    if hasattr(cv2, 'CAP_DSHOW'): backends.append(cv2.CAP_DSHOW)
-    if hasattr(cv2, 'CAP_MSMF'): backends.append(cv2.CAP_MSMF)
-    for backend in backends:
-        for idx in range(5):
+    if hasattr(cv2, 'CAP_MSMF'):
+        backends.append(cv2.CAP_MSMF)
+    if hasattr(cv2, 'CAP_DSHOW'):
+        backends.append(cv2.CAP_DSHOW)
+    # Фолбэк, если по какой-то причине нет этих констант
+    if not backends and hasattr(cv2, 'CAP_ANY'):
+        backends.append(cv2.CAP_ANY)
+
+    for idx in range(max_index):
+        chosen_backend = None
+        for backend in backends:
             cap = cv2.VideoCapture(idx, backend)
-            if cap.isOpened():
-                cameras.append((idx, backend))
-                cap.release()
+            opened = cap.isOpened()
+            cap.release()
+            if opened:
+                chosen_backend = backend
+                break
+        if chosen_backend is not None:
+            cameras.append((idx, chosen_backend))
     return cameras
 
 # Поиск первой камеры (для снимка)
@@ -335,8 +546,8 @@ async def _record_video(chat_id, bot):
             await bot.send_message(
                 chat_id,
                 f"""Ошибка конвертации:
-    ```{error}```
-    Конвертер: {FFMPEG_PATH}""",
+```{error}```
+Конвертер: {FFMPEG_PATH}""",\
                 parse_mode='Markdown',
                 reply_markup=get_sound_keyboard()
             )
@@ -398,7 +609,7 @@ async def _record_video(chat_id, bot):
                 except subprocess.CalledProcessError as e:
                     await bot.send_message(
                         chat_id,
-                        f"Ошибка при разделении видео на части:\n```{e.stderr or e.stdout or str(e)}```",
+                        f"Ошибка при разделении видео на части:\\n```{e.stderr or e.stdout or str(e)}```",
                         parse_mode='Markdown',
                         reply_markup=get_sound_keyboard()
                     )
@@ -434,6 +645,57 @@ async def cmd_special(message: types.Message):
 async def button_handler(message: types.Message):
     text = message.text
     chat_id = message.chat.id
+
+    # -------- NEW: выбор устройства воспроизведения --------
+    if chat_id in AUDIO_OUTPUT_STATE:
+        st = AUDIO_OUTPUT_STATE.get(chat_id, {})
+        if st.get("state") == "select_output":
+            if text == "Отмена":
+                AUDIO_OUTPUT_STATE.pop(chat_id, None)
+                # Вернёмся в меню громкости
+                try:
+                    vol_iface, dev = _get_volume_interface_for_chat(chat_id)
+                    current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
+                    is_muted = bool(vol_iface.GetMute())
+                except Exception:
+                    current_vol = 0
+                    is_muted = False
+                await message.answer("Отмена выбора устройства.", reply_markup=get_volume_control_keyboard(is_muted))
+                return
+            # Пытаемся распарсить "N. Название"
+            try:
+                if "." in text:
+                    num_str = text.split(".", 1)[0].strip()
+                    idx = int(num_str) - 1
+                    devices = st.get("devices", [])
+                    if idx < 0 or idx >= len(devices):
+                        raise ValueError
+                    chosen = devices[idx]
+                    CURRENT_OUTPUT_DEVICE[chat_id] = chosen["id"]
+                    AUDIO_OUTPUT_STATE.pop(chat_id, None)
+                    # Обновим меню громкости
+                    try:
+                        vol_iface, dev = _get_volume_interface_for_chat(chat_id)
+                        current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
+                        is_muted = bool(vol_iface.GetMute())
+                        dev_name = getattr(dev, "FriendlyName", None) or "Аудио устройство"
+                    except Exception:
+                        current_vol = 0
+                        is_muted = False
+                        dev_name = "Аудио устройство"
+                    await message.answer(
+                        f"Выбрано устройство для управления громкостью: {dev_name}",
+                        reply_markup=get_volume_control_keyboard(is_muted)
+                    )
+                    return
+            except Exception:
+                pass
+            # Если не распарсили — повторяем клавиатуру
+            devices = st.get("devices", [])
+            default_id = _get_default_playback_device_id()
+            await message.answer("Пожалуйста, выберите пункт списком ниже:", reply_markup=get_output_devices_keyboard(devices, default_id))
+            return
+
     # Обработка состояний снимка
     if chat_id in SNAPSHOT_STATE:
         state = SNAPSHOT_STATE[chat_id].get("state")
@@ -547,51 +809,62 @@ async def button_handler(message: types.Message):
             return
 # Обработка управления громкостью
     if text == "Громкость":
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        current_vol = int(round(volume.GetMasterVolumeLevelScalar() * 100))
-        is_muted = bool(volume.GetMute())
-        await message.answer(f"Текущая громкость: {current_vol}%, Звук {'выключен' if is_muted else 'включён'}", reply_markup=get_volume_control_keyboard(is_muted))
+        # Определим текущее устройство, громкость и статус мута
+        try:
+            vol_iface, dev_obj = _get_volume_interface_for_chat(chat_id)
+            current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
+            is_muted = bool(vol_iface.GetMute())
+            dev_name = getattr(dev_obj, "FriendlyName", None) or "Аудио устройство"
+        except Exception:
+            current_vol = 0
+            is_muted = False
+            dev_name = "Аудио устройство"
+        # Выведем состояние
+        await message.answer(
+            f"Текущая громкость: {current_vol}%, Звук {'выключен' if is_muted else 'включён'}\\nУстройство: {dev_name}",
+            reply_markup=get_volume_control_keyboard(is_muted, dev_name)
+        )
         return
 
     # Обработка изменения громкости и навигации
     if text == "Увеличить громкость":
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume_ctrl = cast(interface, POINTER(IAudioEndpointVolume))
-        current = volume_ctrl.GetMasterVolumeLevelScalar()
+        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
+        current = vol_iface.GetMasterVolumeLevelScalar()
         new = min(current + 0.1, 1.0)
-        volume_ctrl.SetMasterVolumeLevelScalar(new, None)
+        vol_iface.SetMasterVolumeLevelScalar(new, None)
         current_vol = int(round(new * 100))
-        is_muted = bool(volume_ctrl.GetMute())
+        is_muted = bool(vol_iface.GetMute())
         await message.answer(f"Громкость увеличена: {current_vol}%, Звук {'выключен' if is_muted else 'включён'}", reply_markup=get_volume_control_keyboard(is_muted))
         return
     elif text == "Уменьшить громкость":
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume_ctrl = cast(interface, POINTER(IAudioEndpointVolume))
-        current = volume_ctrl.GetMasterVolumeLevelScalar()
+        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
+        current = vol_iface.GetMasterVolumeLevelScalar()
         new = max(current - 0.1, 0.0)
-        volume_ctrl.SetMasterVolumeLevelScalar(new, None)
+        vol_iface.SetMasterVolumeLevelScalar(new, None)
         current_vol = int(round(new * 100))
-        is_muted = bool(volume_ctrl.GetMute())
+        is_muted = bool(vol_iface.GetMute())
         await message.answer(f"Громкость уменьшена: {current_vol}%, Звук {'выключен' if is_muted else 'включён'}", reply_markup=get_volume_control_keyboard(is_muted))
         return
     elif text == "Включить звук":
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume_ctrl = cast(interface, POINTER(IAudioEndpointVolume))
-        volume_ctrl.SetMute(0, None)
-        current_vol = int(round(volume_ctrl.GetMasterVolumeLevelScalar() * 100))
+        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
+        vol_iface.SetMute(0, None)
+        current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
         await message.answer(f"Звук включён. Громкость: {current_vol}%", reply_markup=get_volume_control_keyboard(False))
         return
     elif text == "Выключить звук":
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume_ctrl = cast(interface, POINTER(IAudioEndpointVolume))
-        volume_ctrl.SetMute(1, None)
+        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
+        vol_iface.SetMute(1, None)
         await message.answer("Звук выключен.", reply_markup=get_volume_control_keyboard(True))
+        return
+    elif text == "Сменить устройство воспроизведения":
+        # Собираем список устройств вывода
+        devices = _list_playback_devices()
+        if not devices:
+            await message.answer("Не удалось получить список устройств воспроизведения.", reply_markup=get_volume_control_keyboard(False))
+            return
+        AUDIO_OUTPUT_STATE[chat_id] = {"state": "select_output", "devices": devices}
+        default_id = _get_default_playback_device_id()
+        await message.answer("Выберите устройство для управления громкостью:", reply_markup=get_output_devices_keyboard(devices, default_id))
         return
     elif text == "Вернуться в функции":
         await message.answer("Возвращаюсь к звуковым функциям.", reply_markup=get_sound_keyboard())
@@ -698,31 +971,41 @@ async def button_handler(message: types.Message):
             await message.answer("Пожалуйста, выберите голос из списка.", reply_markup=VOICE_KEYBOARDS[TTS_STATE[chat_id]["engine"]])
         return
 
-    # Отмена
+    # Отмена (ПЕРВЫМ ДЕЛОМ проверяем активное воспроизведение)
     if text == "Отмена":
+        if chat_id in PLAYBACK_STATE:
+            _stop_playback(chat_id)
+            # Выходим из всех режимов, чтобы "режим" закрылся целиком
+            if chat_id in VOICE_MODE:
+                VOICE_MODE.remove(chat_id)
+            if chat_id in TTS_STATE:
+                TTS_STATE.pop(chat_id, None)
+            if chat_id in AUDIO_OUTPUT_STATE:
+                AUDIO_OUTPUT_STATE.pop(chat_id, None)
+            await message.answer("Воспроизведение остановлено. Режим закрыт.", reply_markup=get_sound_keyboard())
+            return
         if chat_id in VOICE_MODE:
             VOICE_MODE.remove(chat_id)
             await message.answer("Режим отправки голоса отменён.", reply_markup=get_sound_keyboard())
-        elif chat_id in TTS_STATE:
+            return
+        if chat_id in TTS_STATE:
             TTS_STATE.pop(chat_id, None)
             await message.answer("Синтез речи отменён.", reply_markup=get_sound_keyboard())
-        else:
-            await message.answer("Действие отменено.", reply_markup=get_sound_keyboard())
+            return
+        if chat_id in AUDIO_OUTPUT_STATE:
+            AUDIO_OUTPUT_STATE.pop(chat_id, None)
+            await message.answer("Выбор устройства отменён.", reply_markup=get_sound_keyboard())
+            return
+        await message.answer("Действие отменено.", reply_markup=get_sound_keyboard())
         return
 
     # Воспроизведение на компьютере
     if text == "Воспроизвести на компьютере":
         path = LAST_FILE.get(chat_id)
         if path and os.path.exists(path):
-            ext = os.path.splitext(path)[1].lower()
-            if ext == ".mp3":
-                wav_path = path.replace(".mp3", ".wav")
-                subprocess.run([FFMPEG_PATH, "-y", "-i", path, wav_path], check=True)
-                winsound.PlaySound(wav_path, winsound.SND_FILENAME)
-                os.remove(wav_path)
-            else:
-                winsound.PlaySound(path, winsound.SND_FILENAME)
-            await message.answer("Воспроизводится на компьютере.", reply_markup=get_playback_keyboard())
+            # Стартуем асинхронное воспроизведение с возможностью мгновенной отмены
+            _start_playback(chat_id, path)
+            await message.answer("Воспроизводится на компьютере. Нажмите «Отмена», чтобы прервать и выйти из режима.", reply_markup=get_playback_keyboard())
         else:
             await message.answer("Нет готового аудиофайла для воспроизведения.", reply_markup=get_sound_keyboard())
         return
@@ -770,9 +1053,10 @@ def register_handlers(dp: Dispatcher):
                 "Синтез речи", "Отправить голос", "Очистить sound", "Очистить videos", "Громкость",
                 "Снимок с камеры", "Видео с камеры", "Вернуться",
                 "Уменьшить громкость", "Увеличить громкость", "Включить звук", "Выключить звук",
-                "Вернуться в функции", "На главную", "Отмена", "Воспроизвести на компьютере"
+                "Вернуться в функции", "На главную", "Отмена", "Воспроизвести на компьютере",
+                "Сменить устройство воспроизведения"
             ]
-            or message.chat.id in TTS_STATE or message.chat.id in VOICE_MODE or message.chat.id in VIDEO_STATE or message.chat.id in SNAPSHOT_STATE,
+            or message.chat.id in TTS_STATE or message.chat.id in VOICE_MODE or message.chat.id in VIDEO_STATE or message.chat.id in SNAPSHOT_STATE or message.chat.id in PLAYBACK_STATE or message.chat.id in AUDIO_OUTPUT_STATE,
         content_types=['text']
     )
     async def button_handler_wrapper(message: types.Message):

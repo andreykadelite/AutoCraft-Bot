@@ -1,8 +1,20 @@
 @echo off
+setlocal
+chcp 65001 >nul
+title Сборка через Nuitka
+
 echo 🚀 Компиляция началась...
 
-REM Определяем папку скрипта
+REM === Папка проекта ===
 set "SCRIPT_DIR=%~dp0"
+
+REM (необязательно) подчистить старые выхлопы
+if exist "%SCRIPT_DIR%build" rd /s /q "%SCRIPT_DIR%build"
+if exist "%SCRIPT_DIR%dist"  rd /s /q "%SCRIPT_DIR%dist"
+if exist "%SCRIPT_DIR%__pycache__" rd /s /q "%SCRIPT_DIR%__pycache__"
+
+REM Убедись, что зависимости установлены:
+REM pip install pywin32 aiogram aiohttp magic_filter psutil speedtest-cli pyautogui gTTS pyttsx3 comtypes pycaw opencv-python numpy sounddevice soundfile py-cpuinfo WMI pydub Pillow mss selenium requests
 
 python -m nuitka ^
     --standalone ^
@@ -11,6 +23,8 @@ python -m nuitka ^
     --plugin-enable=pyqt5 ^
     --include-qt-plugins=sensible ^
     --include-package=aiogram ^
+    --include-package=aiohttp ^
+    --include-package=magic_filter ^
     --include-package=psutil ^
     --include-package=speedtest ^
     --include-package=pyautogui ^
@@ -25,6 +39,15 @@ python -m nuitka ^
     --include-package=cpuinfo ^
     --include-package=wmi ^
     --include-package=pydub ^
+    --include-package=PIL ^
+    --include-package=mss ^
+    --include-package=selenium ^
+    --include-package=requests ^
+    --include-package=win32com ^
+    --include-module=win32com.client ^
+    --include-module=win32com.shell.shell ^
+    --include-module=pythoncom ^
+    --include-module=pywintypes ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\ffmpeg.exe=ffmpeg.exe" ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\swscale-8.dll=swscale-8.dll" ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\swresample-5.dll=swresample-5.dll" ^
@@ -40,5 +63,6 @@ python -m nuitka ^
     --include-data-file="%SCRIPT_DIR%Python.zip=Python.zip" ^
     "%SCRIPT_DIR%src\bot-ok.py"
 
-echo 🚀 Готово! Упаковано и отправлено в космос!
+echo ✅ Готово! Упаковано и отправлено в космос.
+echo.
 pause
