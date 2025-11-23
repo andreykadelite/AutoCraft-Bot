@@ -1,18 +1,23 @@
 from aiogram import types
 from aiogram.dispatcher import Dispatcher
 
+from keymenu import get_utilities_keyboard
+
+
 def register_handlers(dp: Dispatcher):
-    @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "утилиты")
+    @dp.message_handler(
+        lambda message: message.text and message.text.strip().lower() == "утилиты"
+    )
     async def handle_utilities(message: types.Message):
-        # Клавиатура с кнопкой "Назад"
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        keyboard.add("Назад")
+        """
+        Обработчик кнопки 'утилиты'.
+        Показывает клавиатуру с разделами:
+        - Просмотр логов Windows
+        - Работа с процессами
+        - Работа с BAT
+        """
+        keyboard = get_utilities_keyboard()
         await message.answer(
-            "🔧 Наши утилиты сейчас в разработке, но мы трудимся на полную мощность! "
-            "В следующих обновлениях ожидай:\n"
-            "• Функцию удобного резервного копирования данных;\n"
-            "• Инструменты для глубокого анализа логов;\n"
-            "• Генератор отчётов в пару кликов;\n"
-            "и многое другое! Спасибо за терпение — оставайся с нами 🚀",
+            "🔧 Выбери нужный раздел утилит:",
             reply_markup=keyboard
         )

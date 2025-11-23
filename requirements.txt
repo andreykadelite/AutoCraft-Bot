@@ -1,3 +1,6 @@
+nuitka==2.7.16
+edge-tts
+pywin32
 selenium
 requests
 websocket-client
@@ -20,6 +23,5 @@ sounddevice
 soundfile
 py-cpuinfo
 WMI
-pywin32
 pydub
 mss

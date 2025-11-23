@@ -5,7 +5,7 @@ def get_main_keyboard():
     """
     Возвращает основную клавиатуру с кнопками:
     "Статус сервера", "Статус сети", "Скриншот", "Список плагинов",
-    "Дополнительно", "cmd", "утилиты", "консоль python"
+    "Дополнительно", "cmd", "powershell", "утилиты", "консоль python"
     """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     buttons = [
@@ -22,15 +22,17 @@ def get_main_keyboard():
     kb.add(*buttons)
     return kb
 
+
 def get_additional_keyboard():
     """
     Возвращает дополнительную клавиатуру с кнопками:
-    "Заметки", "Отправить файлы", "Прием файлов", "Питание",
+    "громкость", "Заметки", "Отправить файлы", "Прием файлов", "Питание",
     "Плагины", "Справка", "лог", "Особые функции", "Настройки",
     "Связь с разработчиком", "Назад"
     """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     buttons = [
+        "Громкость",
         "Заметки",
         "Отправить файлы",
         "Прием файлов",
@@ -45,6 +47,31 @@ def get_additional_keyboard():
     ]
     kb.add(*buttons)
     return kb
+
+
+def get_utilities_keyboard():
+    """
+    Клавиатура для раздела 'утилиты':
+    - Просмотр логов Windows
+    - Работа с процессами
+    - Работа со службами
+    - Файловый менеджер
+    - Выполнить win+r
+    - Работа с BAT
+    - Работа с сетью
+    - Назад
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("Просмотр логов Windows")
+    kb.add("Работа с процессами")
+    kb.add("Работа со службами")
+    kb.add("Файловый менеджер")
+    kb.add("Выполнить win+r")
+    kb.add("Работа с BAT")
+    kb.add("Работа с сетью")
+    kb.add("Назад")
+    return kb
+
 
 def create_plugins_ext_menu():
     """
@@ -67,19 +94,26 @@ def create_plugins_ext_menu():
     kb.add(types.KeyboardButton("Вернуться"))
     return kb
 
+
 def backup_main_keyboard():
     """
     Формирует основное меню резервных копий.
     """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for btn in ["Восстановить из резервной копии", "Сделать резервную копию", "Очистить резервные копии", "Назад"]:
+    for btn in [
+        "Восстановить из резервной копии",
+        "Сделать резервную копию",
+        "Очистить резервные копии",
+        "Назад"
+    ]:
         kb.add(types.KeyboardButton(btn))
     return kb
+
 
 def create_list_keyboard(items, add_back=True):
     """
     Универсальная функция для создания клавиатуры из списка кнопок.
-    Если add_back=True, в конец добавляется кнопку "Назад".
+    Если add_back=True, в конец добавляется кнопка "Назад".
     """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     for item in items:
@@ -88,8 +122,11 @@ def create_list_keyboard(items, add_back=True):
         kb.add(types.KeyboardButton("Назад"))
     return kb
 
+
 # Патчим метод add у ReplyKeyboardMarkup для автоматического добавления кнопки "Настройки"
 _original_add = types.ReplyKeyboardMarkup.add
+
+
 def patched_add(self, *buttons):
     stack = inspect.stack()
     if stack and len(stack) > 1:
@@ -104,7 +141,10 @@ def patched_add(self, *buttons):
                     btns.append("Настройки")
             buttons = tuple(btns)
     return _original_add(self, *buttons)
+
+
 types.ReplyKeyboardMarkup.add = patched_add
+
 
 def get_main_settings_keyboard():
     """

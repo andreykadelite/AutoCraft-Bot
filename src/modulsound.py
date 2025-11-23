@@ -1,15 +1,33 @@
+import asyncio
+import glob
+import logging
+import math
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import winsound
+from datetime import datetime
+
+import cv2
+import pyttsx3
+import sounddevice as sd
+import soundfile as sf
 from aiogram import types, Dispatcher
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from gtts import gTTS
 from keymenu import get_additional_keyboard, get_main_keyboard
-import subprocess
-import math
-import winsound
-import os
-import os, sys
+
+# Список предупреждений инициализации модуля (например, если не найден ffmpeg)
+INIT_ERRORS = []
+# Определяем базовую папку: при сборке в exe (Nuitka/pyinstaller) и при запуске из .py
 if getattr(sys, 'frozen', False):
     base_dir = os.getcwd()
 else:
     base_dir = os.path.dirname(os.path.abspath(__file__))
+
 # Добавлена поддержка папки ffmpeg-7.1/bin рядом со скриптом
 script_dir = base_dir
 ffmpeg_candidates = [
@@ -17,29 +35,17 @@ ffmpeg_candidates = [
     os.path.join(script_dir, "ffmpeg-7.1", "bin", "ffmpeg.exe"),
     os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe")
 ]
+
+FFMPEG_PATH = None
 for p in ffmpeg_candidates:
     if os.path.isfile(p):
         FFMPEG_PATH = p
         break
-else:
-    raise FileNotFoundError(f"ffmpeg.exe не найден ни в {ffmpeg_candidates}")
 
-import sys
-import shutil
-from gtts import gTTS
-import pyttsx3
-from ctypes import POINTER, cast
-import comtypes
-from comtypes import CLSCTX_ALL
-from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-import cv2
-import sounddevice as sd
-import soundfile as sf
-import threading
-import asyncio
-import time
-from datetime import datetime
-import glob
+if FFMPEG_PATH is None:
+    # Не роняем модуль, а просто записываем предупреждение.
+    INIT_ERRORS.append(f"ffmpeg.exe не найден ни в {ffmpeg_candidates}")
+
 
 # Timelife stream segment duration (seconds)
 TIMELIFE_SEGMENT_DURATION = 2  # сегменты кружков 2 сек
@@ -54,13 +60,6 @@ MAX_VIDEO_SIZE = 49 * 1024 * 1024
 #   "cleanup_timer": threading.Timer|None
 # }
 PLAYBACK_STATE = {}
-
-# ---------- NEW: выбор устройства воспроизведения для управления громкостью ----------
-# ВНИМАНИЕ: мы НЕ меняем системное устройство по умолчанию глобально.
-# Мы даём выбрать ЦЕЛЕВОЙ аудио-эндпоинт, над которым бот будет выполнять
-# операции громкости/мута. В списке помечаем текущее системное "по умолчанию".
-AUDIO_OUTPUT_STATE = {}   # {chat_id: {"state": "select_output", "devices": [ {id, name}, ... ]}}
-CURRENT_OUTPUT_DEVICE = {}  # {chat_id: device_id}
 
 def _stop_playback(chat_id: int, silent: bool = True):
     """Остановить текущее воспроизведение, прибрать temp-файл и таймер."""
@@ -119,16 +118,32 @@ def _start_playback(chat_id: int, path: str):
     ext = os.path.splitext(path)[1].lower()
     temp_wav = None
     src_for_play = path
-    try:
-        if ext != ".wav":
-            # Конвертим во временный WAV рядом с исходником
-            temp_wav = path + ".__tmp_play__.wav"
-            subprocess.run([FFMPEG_PATH, "-y", "-i", path, temp_wav], check=True, capture_output=True, text=True)
-            src_for_play = temp_wav
-    except subprocess.CalledProcessError as e:
-        # Если конвертация не удалась — пробуем отдать как есть, но предупреждаем логом
-        src_for_play = path
-        temp_wav = None
+
+    # Если формат не WAV — по возможности сконвертируем во временный WAV с помощью ffmpeg.
+    if ext != ".wav":
+        if FFMPEG_PATH:
+            try:
+                # Конвертим во временный WAV рядом с исходником
+                temp_wav = path + ".__tmp_play__.wav"
+                subprocess.run(
+                    [FFMPEG_PATH, "-y", "-i", path, temp_wav],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                src_for_play = temp_wav
+            except subprocess.CalledProcessError as e:
+                # Если конвертация не удалась — пробуем отдать как есть, но предупреждаем логом
+                logging.exception("modulsound: ошибка ffmpeg при конвертации для воспроизведения")
+                src_for_play = path
+                temp_wav = None
+            except Exception as e:
+                logging.exception("modulsound: общая ошибка при подготовке аудио к воспроизведению")
+                src_for_play = path
+                temp_wav = None
+        else:
+            # ffmpeg отсутствует — просто попытаемся воспроизвести как есть.
+            logging.warning("modulsound: FFMPEG_PATH не задан, воспроизвожу файл без конвертации")
 
     # Оценка длительности для отложенной уборки (только если WAV)
     duration = 0.0
@@ -154,21 +169,33 @@ def _start_playback(chat_id: int, path: str):
 
 # Dynamic video size limit based on API server type
 def get_video_limit(bot):
-    """
-    Return maximum video size in bytes: 2GB when connected to local Telegram API server,
-    otherwise use standard MAX_VIDEO_SIZE.
+    """Определяет лимит размера видео в байтах.
+
+    Если бот подключён к локальному Telegram API серверу (base URL отличается
+    от официального https://api.telegram.org), возвращаем лимит 2 ГБ.
+    В остальных случаях — стандартный MAX_VIDEO_SIZE.
     """
     try:
         server = getattr(bot, 'server', None)
-        if server:
-            base_url = getattr(server, 'base', None) or getattr(server, '_base', None)
-            # If base_url does not start with standard API domain, assume local
-            if base_url and not base_url.startswith('https://api.telegram.org'):
+        if not server:
+            return MAX_VIDEO_SIZE
+
+        base_url = getattr(server, 'base', None) or getattr(server, '_base', None)
+
+        # На всякий случай проверяем тип: нас интересует только строковый URL.
+        if isinstance(base_url, str):
+            # Если base_url не начинается с стандартного API-домена — считаем, что это локальный сервер.
+            if not base_url.startswith('https://api.telegram.org'):
                 return 2 * 1024 * 1024 * 1024
-    except Exception:
-        pass
+    except Exception as e:
+        # Логируем, но не валим модуль.
+        logging.exception("get_video_limit: ошибка при определении типа API-сервера")
+
     return MAX_VIDEO_SIZE
 
+
+# Путь к edge-tts (Microsoft TTS CLI), если установлен
+EDGE_TTS_PATH = shutil.which("edge-tts")
 
 
 # Папки для хранения медиа-файлов
@@ -187,21 +214,113 @@ LAST_FILE = {}
 VIDEO_STATE = {}  # состояния для модуля видео
 SNAPSHOT_STATE = {}  # состояния для модуля снимка
 
-# Опции синтеза речи
-ENGINE_OPTIONS = ["Google", "pyx3"]
-VOICE_OPTIONS = {
-    "Google": ["ru-RU-Standard-A", "ru-RU-Standard-B"],
-    "pyx3": ["Voice1", "Voice2"]
-}
 
-# Клавиатуры для TTS
-ENGINE_KEYBOARD = ReplyKeyboardMarkup(resize_keyboard=True)
-ENGINE_KEYBOARD.row(*[KeyboardButton(opt) for opt in ENGINE_OPTIONS])
-ENGINE_KEYBOARD.add(KeyboardButton("Отмена"))
+# Опции синтеза речи и состояние TTS
+ENGINE_OPTIONS = []
+VOICE_OPTIONS = {}
+PYTTSX3_VOICE_MAP = {}
+EDGE_TTS_VOICE_MAP = {}
+EDGE_TTS_MODULE = None
+TTS_INIT_DONE = False
+TTS_IMPORT_ERRORS = []
 
-VOICE_KEYBOARDS = {}
-for engine, voices in VOICE_OPTIONS.items():
+
+def init_tts_engines(force: bool = False):
+    """Инициализация доступных движков TTS.
+    Работает как в .py-режиме, так и внутри скомпилированного EXE.
+    """
+    global ENGINE_OPTIONS, VOICE_OPTIONS, PYTTSX3_VOICE_MAP, EDGE_TTS_VOICE_MAP
+    global EDGE_TTS_MODULE, TTS_INIT_DONE, TTS_IMPORT_ERRORS
+
+    if TTS_INIT_DONE and not force:
+        return
+
+    ENGINE_OPTIONS = []
+    VOICE_OPTIONS = {}
+    PYTTSX3_VOICE_MAP = {}
+    EDGE_TTS_VOICE_MAP = {}
+    EDGE_TTS_MODULE = None
+    TTS_IMPORT_ERRORS = []
+
+    # --- Google TTS (gTTS) ---
+    try:
+        if "gTTS" in globals() and gTTS is not None:
+            ENGINE_OPTIONS.append("Google")
+            VOICE_OPTIONS["Google"] = ["Стандартный голос (ru-RU)"]
+        else:
+            raise RuntimeError("модуль gTTS недоступен")
+    except Exception as e:
+        TTS_IMPORT_ERRORS.append(f"Google TTS недоступен: {type(e).__name__}: {e}")
+
+    # --- pyttsx3 (локальные системные голоса) ---
+    try:
+        if "pyttsx3" not in globals() or pyttsx3 is None:
+            raise RuntimeError("модуль pyttsx3 не импортирован")
+        tts_engine_tmp = pyttsx3.init()
+        voices = tts_engine_tmp.getProperty("voices") or []
+        labels = []
+        for idx, v in enumerate(voices, start=1):
+            lang = None
+            try:
+                langs = getattr(v, "languages", None)
+                if langs:
+                    raw = langs[0]
+                    if isinstance(raw, bytes):
+                        lang = raw.decode(errors="ignore")
+                    else:
+                        lang = str(raw)
+            except Exception:
+                lang = None
+            if lang:
+                label = f"{idx}: {v.name} ({lang})"
+            else:
+                label = f"{idx}: {v.name}"
+            labels.append(label)
+            PYTTSX3_VOICE_MAP[label] = v.id
+        if labels:
+            ENGINE_OPTIONS.append("pyx3")
+            VOICE_OPTIONS["pyx3"] = labels
+        else:
+            TTS_IMPORT_ERRORS.append("pyttsx3 не нашёл ни одного доступного голоса.")
+    except Exception as e:
+        TTS_IMPORT_ERRORS.append(f"pyttsx3 недоступен: {type(e).__name__}: {e}")
+
+    # --- Edge TTS (Microsoft, через Python-модуль edge_tts) ---
+    try:
+        import edge_tts as _edge_tts  # type: ignore
+        EDGE_TTS_MODULE = _edge_tts
+        edge_voices = {
+            "ru-RU-SvetlanaNeural (женский)": "ru-RU-SvetlanaNeural",
+            "ru-RU-DmitryNeural (мужской)": "ru-RU-DmitryNeural",
+            "ru-RU-DariyaNeural (женский)": "ru-RU-DariyaNeural",
+        }
+        EDGE_TTS_VOICE_MAP.update(edge_voices)
+        ENGINE_OPTIONS.append("Edge TTS")
+        VOICE_OPTIONS["Edge TTS"] = list(edge_voices.keys())
+    except Exception as e:
+        TTS_IMPORT_ERRORS.append(f"edge-tts недоступен: {type(e).__name__}: {e}")
+        EDGE_TTS_MODULE = None
+
+    # Если вообще ничего не удалось инициализировать — оставим заглушку, чтобы не падать
+    if not ENGINE_OPTIONS:
+        ENGINE_OPTIONS.append("Google")
+        VOICE_OPTIONS["Google"] = ["Стандартный голос (ru-RU)"]
+        TTS_IMPORT_ERRORS.append("Не удалось инициализировать ни один TTS-движок. Используется заглушка Google.")
+
+    TTS_INIT_DONE = True
+
+
+def get_engine_keyboard():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    for opt in ENGINE_OPTIONS:
+        kb.add(KeyboardButton(opt))
+    kb.add(KeyboardButton("Отмена"))
+    return kb
+
+
+def get_voice_keyboard(engine: str):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    voices = VOICE_OPTIONS.get(engine, [])
     row = []
     for v in voices:
         row.append(KeyboardButton(v))
@@ -211,7 +330,79 @@ for engine, voices in VOICE_OPTIONS.items():
     if row:
         kb.row(*row)
     kb.add(KeyboardButton("Отмена"))
-    VOICE_KEYBOARDS[engine] = kb
+    return kb
+
+
+def get_tts_setup_keyboard(has_available_engines: bool):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("Установить TTS"))
+    if has_available_engines:
+        kb.add(KeyboardButton("Продолжить без установки"))
+    kb.add(KeyboardButton("Отмена"))
+    return kb
+
+
+async def synthesize_edge_tts(text: str, voice_id: str, file_path: str):
+    """Синтез через edge_tts в указанный файл."""
+    if EDGE_TTS_MODULE is None:
+        raise RuntimeError("edge-tts не инициализирован")
+    communicate = EDGE_TTS_MODULE.Communicate(text, voice_id)
+    with open(file_path, "wb") as f:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                f.write(chunk["data"])
+
+
+async def attempt_tts_installation(message: types.Message):
+    """Пытается установить недостающие TTS-библиотеки через pip.
+
+    В EXE-режиме установка недоступна — в этом случае показываем
+    понятное сообщение и просто переинициализируем движки.
+    """
+    # Если мы запущены как EXE (Nuitka/pyinstaller), ставить пакеты внутрь файла нельзя.
+    if getattr(sys, "frozen", False):
+        await message.answer(
+            "Я запущен как EXE-файл.\n"
+            "Установить новые пакеты внутрь уже собранного файла нельзя.\n"
+            "Будут доступны только те движки, которые были встроены при сборке.",
+            reply_markup=get_sound_keyboard()
+        )
+        init_tts_engines(force=True)
+        return False
+
+    await message.answer(
+        "Пробую установить недостающие компоненты синтеза речи (pyttsx3, pywin32, edge-tts)...\n"
+        "Это может занять некоторое время.",
+        reply_markup=get_sound_keyboard()
+    )
+
+    commands = [
+        [sys.executable, "-m", "pip", "install", "--upgrade", "pyttsx3", "pywin32", "edge-tts"],
+        ["pip", "install", "--upgrade", "pyttsx3", "pywin32", "edge-tts"],
+        ["python", "-m", "pip", "install", "--upgrade", "pyttsx3", "pywin32", "edge-tts"],
+    ]
+    success = False
+    for cmd in commands:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if proc.returncode == 0:
+                success = True
+                break
+        except Exception as e:
+            logging.warning("modulsound: ошибка при выполнении команды установки TTS %s: %s", cmd, e)
+
+    if success:
+        await message.answer("Установка TTS-библиотек завершена. Перепроверяю доступные движки...")
+    else:
+        await message.answer(
+            "Не удалось автоматически установить дополнительные TTS-движки.\n"
+            "Будут доступны только уже встроенные.",
+            reply_markup=get_sound_keyboard()
+        )
+
+    init_tts_engines(force=True)
+    return success
+
 
 # Клавиатуры для основных функций
 def get_sound_keyboard():
@@ -222,111 +413,13 @@ def get_sound_keyboard():
     kb.row(KeyboardButton("Звук с микрофона"), KeyboardButton("Управление браузером"))
     # Row 3: Camera functions
     kb.row(KeyboardButton("Снимок с камеры"), KeyboardButton("Видео с камеры"), KeyboardButton("Видео с экрана"))
-    # Row 4: Cleanup and volume
-    kb.row(KeyboardButton("Очистить sound"), KeyboardButton("Очистить videos"), KeyboardButton("Громкость"))
+    # Row 4: Cleanup
+    kb.row(KeyboardButton("Очистить sound"), KeyboardButton("Очистить videos"))
     # Row 5: Messages and chat
     kb.row(KeyboardButton("Отправить сообщение на компьютер"), KeyboardButton("Создать интерактивный чат"))
     # Bottom: Return
     kb.add(KeyboardButton("Вернуться"))
     return kb
-
-def get_volume_control_keyboard(is_muted: bool, current_device_name: str = None, is_default: bool = False):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("Уменьшить громкость"), KeyboardButton("Увеличить громкость"))
-    label = "Включить звук" if is_muted else "Выключить звук"
-    kb.add(KeyboardButton(label))
-    # NEW: кнопка смены устройства
-    kb.add(KeyboardButton("Сменить устройство воспроизведения"))
-    # Навигация
-    kb.add(KeyboardButton("Вернуться в функции"), KeyboardButton("На главную"))
-    return kb
-
-def get_output_devices_keyboard(devices, default_id):
-    """Сформировать клавиатуру устройств вывода. Помечаем системное по умолчанию."""
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    for i, dev in enumerate(devices, 1):
-        name = dev["name"]
-        if dev["id"] == default_id:
-            name = f"{name} (по умолчанию)"
-        kb.add(KeyboardButton(f"{i}. {name}"))
-    kb.add(KeyboardButton("Отмена"))
-    return kb
-
-def _get_default_playback_device_id():
-    try:
-        spk = AudioUtilities.GetSpeakers()
-        return spk.GetId()
-    except Exception:
-        return None
-
-def _list_playback_devices():
-    """Вернуть список активных устройств ВЫВОДА: [{id, name}, ...]."""
-    result = []
-    try:
-        devices = AudioUtilities.GetAllDevices()
-    except Exception:
-        devices = []
-    # Попробуем отфильтровать по data_flow == 0 (Render). Если свойства нет — просто возьмём всё, что даёт IAudioEndpointVolume.
-    for d in devices:
-        dev_id = None
-        name = None
-        try:
-            dev_id = d.GetId()
-            name = getattr(d, "FriendlyName", None) or "Аудио устройство"
-            data_flow = getattr(d, "DataFlow", getattr(d, "data_flow", None))
-            state = getattr(d, "State", getattr(d, "state", None))
-            # 0 = Render, 1 = Capture; 1 (DEVICE_STATE_ACTIVE) = активно
-            if data_flow is not None and data_flow != 0:
-                continue
-            if state is not None and state != 1:
-                continue
-            # Проверим, что устройство поддерживает IAudioEndpointVolume
-            try:
-                interface = d.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                cast(interface, POINTER(IAudioEndpointVolume))
-            except Exception:
-                continue
-            result.append({"id": dev_id, "name": name})
-        except Exception:
-            continue
-    # Фолбэк: если ничего не нашли — добавим системное по умолчанию (если доступно)
-    if not result:
-        try:
-            spk = AudioUtilities.GetSpeakers()
-            result.append({"id": spk.GetId(), "name": getattr(spk, "FriendlyName", "Динамики")})
-        except Exception:
-            pass
-    return result
-
-def _find_device_by_id(dev_id):
-    try:
-        for d in AudioUtilities.GetAllDevices():
-            try:
-                if d.GetId() == dev_id:
-                    return d
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return None
-
-def _get_volume_interface_for_chat(chat_id):
-    """Получить интерфейс IAudioEndpointVolume для выбранного устройства (или системного по умолчанию)."""
-    # Сначала пробуем выбранное пользователем устройство
-    dev_id = CURRENT_OUTPUT_DEVICE.get(chat_id)
-    if dev_id:
-        d = _find_device_by_id(dev_id)
-        if d is not None:
-            try:
-                interface = d.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                return cast(interface, POINTER(IAudioEndpointVolume)), d
-            except Exception:
-                # Если что-то не так — убираем выбор
-                CURRENT_OUTPUT_DEVICE.pop(chat_id, None)
-    # Фолбэк на системное по умолчанию
-    spk = AudioUtilities.GetSpeakers()
-    interface = spk.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-    return cast(interface, POINTER(IAudioEndpointVolume)), spk
 
 def get_playback_keyboard():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -609,7 +702,7 @@ async def _record_video(chat_id, bot):
                 except subprocess.CalledProcessError as e:
                     await bot.send_message(
                         chat_id,
-                        f"Ошибка при разделении видео на части:\\n```{e.stderr or e.stdout or str(e)}```",
+                        f"Ошибка при разделении видео на части:\n```{e.stderr or e.stdout or str(e)}```",
                         parse_mode='Markdown',
                         reply_markup=get_sound_keyboard()
                     )
@@ -645,56 +738,6 @@ async def cmd_special(message: types.Message):
 async def button_handler(message: types.Message):
     text = message.text
     chat_id = message.chat.id
-
-    # -------- NEW: выбор устройства воспроизведения --------
-    if chat_id in AUDIO_OUTPUT_STATE:
-        st = AUDIO_OUTPUT_STATE.get(chat_id, {})
-        if st.get("state") == "select_output":
-            if text == "Отмена":
-                AUDIO_OUTPUT_STATE.pop(chat_id, None)
-                # Вернёмся в меню громкости
-                try:
-                    vol_iface, dev = _get_volume_interface_for_chat(chat_id)
-                    current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
-                    is_muted = bool(vol_iface.GetMute())
-                except Exception:
-                    current_vol = 0
-                    is_muted = False
-                await message.answer("Отмена выбора устройства.", reply_markup=get_volume_control_keyboard(is_muted))
-                return
-            # Пытаемся распарсить "N. Название"
-            try:
-                if "." in text:
-                    num_str = text.split(".", 1)[0].strip()
-                    idx = int(num_str) - 1
-                    devices = st.get("devices", [])
-                    if idx < 0 or idx >= len(devices):
-                        raise ValueError
-                    chosen = devices[idx]
-                    CURRENT_OUTPUT_DEVICE[chat_id] = chosen["id"]
-                    AUDIO_OUTPUT_STATE.pop(chat_id, None)
-                    # Обновим меню громкости
-                    try:
-                        vol_iface, dev = _get_volume_interface_for_chat(chat_id)
-                        current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
-                        is_muted = bool(vol_iface.GetMute())
-                        dev_name = getattr(dev, "FriendlyName", None) or "Аудио устройство"
-                    except Exception:
-                        current_vol = 0
-                        is_muted = False
-                        dev_name = "Аудио устройство"
-                    await message.answer(
-                        f"Выбрано устройство для управления громкостью: {dev_name}",
-                        reply_markup=get_volume_control_keyboard(is_muted)
-                    )
-                    return
-            except Exception:
-                pass
-            # Если не распарсили — повторяем клавиатуру
-            devices = st.get("devices", [])
-            default_id = _get_default_playback_device_id()
-            await message.answer("Пожалуйста, выберите пункт списком ниже:", reply_markup=get_output_devices_keyboard(devices, default_id))
-            return
 
     # Обработка состояний снимка
     if chat_id in SNAPSHOT_STATE:
@@ -807,72 +850,7 @@ async def button_handler(message: types.Message):
             else:
                 await message.answer("Запись уже идёт. Нажмите 'Стоп' для остановки или 'Отмена' для отмены.", reply_markup=get_video_control_keyboard(False))
             return
-# Обработка управления громкостью
-    if text == "Громкость":
-        # Определим текущее устройство, громкость и статус мута
-        try:
-            vol_iface, dev_obj = _get_volume_interface_for_chat(chat_id)
-            current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
-            is_muted = bool(vol_iface.GetMute())
-            dev_name = getattr(dev_obj, "FriendlyName", None) or "Аудио устройство"
-        except Exception:
-            current_vol = 0
-            is_muted = False
-            dev_name = "Аудио устройство"
-        # Выведем состояние
-        await message.answer(
-            f"Текущая громкость: {current_vol}%, Звук {'выключен' if is_muted else 'включён'}\\nУстройство: {dev_name}",
-            reply_markup=get_volume_control_keyboard(is_muted, dev_name)
-        )
-        return
-
-    # Обработка изменения громкости и навигации
-    if text == "Увеличить громкость":
-        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
-        current = vol_iface.GetMasterVolumeLevelScalar()
-        new = min(current + 0.1, 1.0)
-        vol_iface.SetMasterVolumeLevelScalar(new, None)
-        current_vol = int(round(new * 100))
-        is_muted = bool(vol_iface.GetMute())
-        await message.answer(f"Громкость увеличена: {current_vol}%, Звук {'выключен' if is_muted else 'включён'}", reply_markup=get_volume_control_keyboard(is_muted))
-        return
-    elif text == "Уменьшить громкость":
-        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
-        current = vol_iface.GetMasterVolumeLevelScalar()
-        new = max(current - 0.1, 0.0)
-        vol_iface.SetMasterVolumeLevelScalar(new, None)
-        current_vol = int(round(new * 100))
-        is_muted = bool(vol_iface.GetMute())
-        await message.answer(f"Громкость уменьшена: {current_vol}%, Звук {'выключен' if is_muted else 'включён'}", reply_markup=get_volume_control_keyboard(is_muted))
-        return
-    elif text == "Включить звук":
-        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
-        vol_iface.SetMute(0, None)
-        current_vol = int(round(vol_iface.GetMasterVolumeLevelScalar() * 100))
-        await message.answer(f"Звук включён. Громкость: {current_vol}%", reply_markup=get_volume_control_keyboard(False))
-        return
-    elif text == "Выключить звук":
-        vol_iface, _ = _get_volume_interface_for_chat(chat_id)
-        vol_iface.SetMute(1, None)
-        await message.answer("Звук выключен.", reply_markup=get_volume_control_keyboard(True))
-        return
-    elif text == "Сменить устройство воспроизведения":
-        # Собираем список устройств вывода
-        devices = _list_playback_devices()
-        if not devices:
-            await message.answer("Не удалось получить список устройств воспроизведения.", reply_markup=get_volume_control_keyboard(False))
-            return
-        AUDIO_OUTPUT_STATE[chat_id] = {"state": "select_output", "devices": devices}
-        default_id = _get_default_playback_device_id()
-        await message.answer("Выберите устройство для управления громкостью:", reply_markup=get_output_devices_keyboard(devices, default_id))
-        return
-    elif text == "Вернуться в функции":
-        await message.answer("Возвращаюсь к звуковым функциям.", reply_markup=get_sound_keyboard())
-        return
-    elif text == "На главную":
-        await message.answer("Возвращаюсь на главную.", reply_markup=get_main_keyboard())
-        return
-    # Обработка динамического выбора камеры для снимка
+# Обработка динамического выбора камеры для снимка
     if text == "Снимок с камеры":
         cams = find_camera_indices()
         if not cams:
@@ -892,10 +870,49 @@ async def button_handler(message: types.Message):
             await message.answer("Выберите камеру для видео:", reply_markup=get_video_selection_keyboard(cams))
         return
 
+    
     # Синтез речи
     if text == "Синтез речи":
-        TTS_STATE[chat_id] = {"state": "engine"}
-        await message.answer("Выберите голосовой движок:", reply_markup=ENGINE_KEYBOARD)
+        # Инициализируем список доступных движков
+        init_tts_engines()
+        has_any = len(ENGINE_OPTIONS) > 0
+        has_errors = bool(TTS_IMPORT_ERRORS)
+
+        if has_errors:
+            # Что-то недоступно — предлагаем установить TTS или продолжить с тем, что есть
+            TTS_STATE[chat_id] = {"state": "setup"}
+            errors_text = "\n".join(f"- {err}" for err in TTS_IMPORT_ERRORS)
+            msg = (
+                "Некоторые компоненты синтеза речи сейчас недоступны:\n"
+                f"{errors_text}\n\n"
+                "Попробовать установить недостающие компоненты автоматически?"
+            )
+            await message.answer(msg, reply_markup=get_tts_setup_keyboard(has_available_engines=has_any))
+        else:
+            # Всё ок — сразу переходим к выбору движка
+            TTS_STATE[chat_id] = {"state": "engine"}
+            await message.answer("Выберите голосовой движок:", reply_markup=get_engine_keyboard())
+        return
+
+    # Режим настройки TTS (установка недостающих компонентов)
+    if chat_id in TTS_STATE and TTS_STATE[chat_id].get("state") == "setup":
+        if text == "Установить TTS":
+            await attempt_tts_installation(message)
+            # После попытки установки переинициализируем движки
+            init_tts_engines(force=True)
+            TTS_STATE[chat_id]["state"] = "engine"
+            await message.answer("Выберите голосовой движок:", reply_markup=get_engine_keyboard())
+        elif text == "Продолжить без установки":
+            TTS_STATE[chat_id]["state"] = "engine"
+            await message.answer("Выберите голосовой движок:", reply_markup=get_engine_keyboard())
+        elif text == "Отмена":
+            TTS_STATE.pop(chat_id, None)
+            await message.answer("Синтез речи отменён.", reply_markup=get_sound_keyboard())
+        else:
+            await message.answer(
+                "Пожалуйста, выберите действие: установить TTS или отменить.",
+                reply_markup=get_tts_setup_keyboard(has_available_engines=len(ENGINE_OPTIONS) > 0),
+            )
         return
 
     # Очистить sound
@@ -927,19 +944,72 @@ async def button_handler(message: types.Message):
             engine_choice = TTS_STATE[chat_id]["engine"]
             voice_choice = TTS_STATE[chat_id]["voice"]
             file_path = os.path.join(SOUND_FOLDER, f"tts_{chat_id}_{message.message_id}.mp3")
+
+            # Генерация речи в зависимости от выбранного движка
             if engine_choice == "Google":
-                tts = gTTS(text=text_to_synth, lang="ru", tld="com")
+                if "gTTS" not in globals() or gTTS is None:
+                    await message.answer(
+                        "Google TTS сейчас недоступен. Попробуйте другой движок.",
+                        reply_markup=get_sound_keyboard(),
+                    )
+                    TTS_STATE.pop(chat_id, None)
+                    return
+                tts = gTTS(text=text_to_synth, lang="ru")
                 tts.save(file_path)
-            else:
+            elif engine_choice == "pyx3":
+                if "pyttsx3" not in globals() or pyttsx3 is None:
+                    await message.answer(
+                        "pyttsx3 сейчас недоступен. Попробуйте другой движок.",
+                        reply_markup=get_sound_keyboard(),
+                    )
+                    TTS_STATE.pop(chat_id, None)
+                    return
                 tts_engine = pyttsx3.init()
-                tts_engine.setProperty('voice', voice_choice)
+                voice_id = PYTTSX3_VOICE_MAP.get(voice_choice)
+                if voice_id:
+                    try:
+                        tts_engine.setProperty("voice", voice_id)
+                    except Exception:
+                        # Если не удалось установить голос – используем голос по умолчанию
+                        pass
                 tts_engine.save_to_file(text_to_synth, file_path)
                 tts_engine.runAndWait()
+            elif engine_choice == "Edge TTS":
+                voice_id = EDGE_TTS_VOICE_MAP.get(voice_choice)
+                if not voice_id or EDGE_TTS_MODULE is None:
+                    await message.answer(
+                        "Edge TTS сейчас недоступен. Попробуйте другой движок.",
+                        reply_markup=get_sound_keyboard(),
+                    )
+                    TTS_STATE.pop(chat_id, None)
+                    return
+                try:
+                    await synthesize_edge_tts(text_to_synth, voice_id, file_path)
+                except Exception as e:
+                    logging.exception("modulsound: ошибка edge-tts при синтезе речи")
+                    await message.answer(
+                        f"Edge TTS вернул ошибку при синтезе: {type(e).__name__}: {e}\n"
+                        "Попробуйте другой движок или позже.",
+                        reply_markup=get_sound_keyboard(),
+                    )
+                    TTS_STATE.pop(chat_id, None)
+                    return
+            else:
+                await message.answer(
+                "Неизвестный движок синтеза речи. Попробуйте ещё раз.",
+                reply_markup=get_sound_keyboard()
+                )
+                TTS_STATE.pop(chat_id, None)
+                return
+
             LAST_TTS[chat_id] = file_path
             LAST_FILE[chat_id] = file_path
-            with open(file_path, 'rb') as f:
+            with open(file_path, "rb") as f:
                 await message.answer_audio(f)
-            await message.answer("Генерация завершена. Можете воспроизвести на компьютере:", reply_markup=get_playback_keyboard())
+            await message.answer(
+                "Генерация завершена. Можете воспроизвести на компьютере:",
+                reply_markup=get_playback_keyboard()
+            )
         else:
             await message.answer("Синтез речи отменён.", reply_markup=get_sound_keyboard())
         TTS_STATE.pop(chat_id, None)
@@ -953,9 +1023,9 @@ async def button_handler(message: types.Message):
         elif text in ENGINE_OPTIONS:
             TTS_STATE[chat_id]["engine"] = text
             TTS_STATE[chat_id]["state"] = "voice"
-            await message.answer("Выберите голос:", reply_markup=VOICE_KEYBOARDS[text])
+            await message.answer("Выберите голос:", reply_markup=get_voice_keyboard(text))
         else:
-            await message.answer("Пожалуйста, выберите движок из списка.", reply_markup=ENGINE_KEYBOARD)
+            await message.answer("Пожалуйста, выберите движок из списка.", reply_markup=get_engine_keyboard())
         return
 
     # Выбор голоса
@@ -968,10 +1038,12 @@ async def button_handler(message: types.Message):
             TTS_STATE[chat_id]["state"] = "text"
             await message.answer("Введите текст для синтеза:", reply_markup=get_cancel_keyboard())
         else:
-            await message.answer("Пожалуйста, выберите голос из списка.", reply_markup=VOICE_KEYBOARDS[TTS_STATE[chat_id]["engine"]])
+            await message.answer(
+                "Пожалуйста, выберите голос из списка.",
+                reply_markup=get_voice_keyboard(TTS_STATE[chat_id]["engine"])
+            )
         return
-
-    # Отмена (ПЕРВЫМ ДЕЛОМ проверяем активное воспроизведение)
+# Отмена (ПЕРВЫМ ДЕЛОМ проверяем активное воспроизведение)
     if text == "Отмена":
         if chat_id in PLAYBACK_STATE:
             _stop_playback(chat_id)
@@ -980,8 +1052,6 @@ async def button_handler(message: types.Message):
                 VOICE_MODE.remove(chat_id)
             if chat_id in TTS_STATE:
                 TTS_STATE.pop(chat_id, None)
-            if chat_id in AUDIO_OUTPUT_STATE:
-                AUDIO_OUTPUT_STATE.pop(chat_id, None)
             await message.answer("Воспроизведение остановлено. Режим закрыт.", reply_markup=get_sound_keyboard())
             return
         if chat_id in VOICE_MODE:
@@ -991,10 +1061,6 @@ async def button_handler(message: types.Message):
         if chat_id in TTS_STATE:
             TTS_STATE.pop(chat_id, None)
             await message.answer("Синтез речи отменён.", reply_markup=get_sound_keyboard())
-            return
-        if chat_id in AUDIO_OUTPUT_STATE:
-            AUDIO_OUTPUT_STATE.pop(chat_id, None)
-            await message.answer("Выбор устройства отменён.", reply_markup=get_sound_keyboard())
             return
         await message.answer("Действие отменено.", reply_markup=get_sound_keyboard())
         return
@@ -1026,45 +1092,188 @@ async def voice_handler(message: types.Message):
     chat_id = message.chat.id
     if chat_id not in VOICE_MODE:
         return
-    file_info = await message.bot.get_file(message.voice.file_id)
-    file_path_attr = getattr(file_info, 'file_path', None)
-    ogg_path = os.path.join(SOUND_FOLDER, f"voice_{chat_id}_{message.voice.file_unique_id}.ogg")
-    # Save voice file: copy if local Telegram API server, else download
-    if file_path_attr and os.path.isabs(file_path_attr) and os.path.exists(file_path_attr):
-        shutil.copy(file_path_attr, ogg_path)
+
+    # Пытаемся получить информацию о файле голосового сообщения
+    try:
+        file_info = await message.bot.get_file(message.voice.file_id)
+    except Exception as e:
+        logging.exception("modulsound: ошибка get_file для голосового сообщения")
+        try:
+            await message.answer(
+                f"❌ Ошибка при получении информации о голосовом сообщении: {type(e).__name__}: {e}",
+                reply_markup=get_sound_keyboard()
+            )
+        except Exception:
+            pass
+        VOICE_MODE.discard(chat_id)
+        return
+
+    file_path_attr = None
+
+    # Вариант 1: локальный API может вернуть dict
+    if isinstance(file_info, dict):
+        for key in ("file_path", "file_path_absolute", "local_path", "path"):
+            val = file_info.get(key)
+            if isinstance(val, str):
+                file_path_attr = val
+                break
     else:
-        await message.bot.download_file(file_path_attr, ogg_path)
+        # Обычный File-объект aiogram
+        val = getattr(file_info, "file_path", None)
+        if isinstance(val, str):
+            file_path_attr = val
+
+    os.makedirs(SOUND_FOLDER, exist_ok=True)
+    ogg_path = os.path.join(SOUND_FOLDER, f"voice_{chat_id}_{message.voice.file_unique_id}.ogg")
+
+    # Скачивание/копирование голосового файла
+    try:
+        if isinstance(file_path_attr, str):
+            # Если локальный API вернул абсолютный путь и файл существует — просто копируем
+            if os.path.isabs(file_path_attr) and os.path.exists(file_path_attr):
+                shutil.copy(file_path_attr, ogg_path)
+            else:
+                # Стандартный случай: скачиваем по file_path
+                await message.bot.download_file(file_path_attr, ogg_path)
+        else:
+            # Фолбэк: вообще не трогаем file_path, качаем по file_id
+            await message.bot.download_file_by_id(message.voice.file_id, ogg_path)
+    except Exception as e:
+        logging.exception("modulsound: ошибка при загрузке голосового файла")
+        try:
+            await message.answer(
+                f"❌ Ошибка при загрузке голосового сообщения: {type(e).__name__}: {e}",
+                reply_markup=get_sound_keyboard()
+            )
+        except Exception:
+            pass
+        VOICE_MODE.discard(chat_id)
+        if os.path.exists(ogg_path):
+            try:
+                os.remove(ogg_path)
+            except Exception:
+                pass
+        return
+
     wav_path = ogg_path.replace(".ogg", ".wav")
-    subprocess.run([FFMPEG_PATH, "-y", "-i", ogg_path, wav_path], check=True)
-    os.remove(ogg_path)
+
+    # Если ffmpeg не найден — не пытаемся конвертировать
+    if not FFMPEG_PATH:
+        msg = "ffmpeg.exe не найден, не могу конвертировать голосовое сообщение в WAV для воспроизведения на компьютере."
+        try:
+            await message.answer(msg, reply_markup=get_sound_keyboard())
+        except Exception:
+            pass
+        if os.path.exists(ogg_path):
+            try:
+                os.remove(ogg_path)
+            except Exception:
+                pass
+        VOICE_MODE.discard(chat_id)
+        return
+
+    # Конвертация в WAV
+    try:
+        subprocess.run(
+            [FFMPEG_PATH, "-y", "-i", ogg_path, wav_path],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+    except subprocess.CalledProcessError as e:
+        logging.exception("modulsound: ffmpeg ошибка при конвертации голосового")
+        try:
+            await message.answer(
+                "❌ Ошибка ffmpeg при конвертации голосового сообщения:\n"
+
+                f"{e.stderr or e.stdout or str(e)}",
+                reply_markup=get_sound_keyboard()
+            )
+        except Exception:
+            pass
+        if os.path.exists(ogg_path):
+            try:
+                os.remove(ogg_path)
+            except Exception:
+                pass
+        VOICE_MODE.discard(chat_id)
+        return
+    finally:
+        if os.path.exists(ogg_path):
+            try:
+                os.remove(ogg_path)
+            except Exception:
+                pass
+
     LAST_VOICE[chat_id] = wav_path
     LAST_FILE[chat_id] = wav_path
-    await message.answer("Голосовое сообщение сохранено. Можете воспроизвести на компьютере:", reply_markup=get_playback_keyboard())
+    await message.answer(
+        "Голосовое сообщение сохранено. Можете воспроизвести на компьютере:",
+        reply_markup=get_playback_keyboard()
+    )
+
 
 # Регистрация хендлеров
 def register_handlers(dp: Dispatcher):
+    """Регистрация хендлеров модуля звука/особых функций."""
+
+    async def _safe_call(handler, message: types.Message, context: str):
+        """Обёртка для любого обработчика этого модуля.
+
+        Любая неожиданная ошибка:
+        - логируется;
+        - не роняет бота;
+        - отправляет в чат понятное сообщение.
+        """
+        try:
+            return await handler(message)
+        except Exception as e:
+            logging.exception("modulsound: ошибка в обработчике %s", context)
+            try:
+                await message.answer(
+                    f"❌ Ошибка в модуле «Особые функции» ({context}): {type(e).__name__}: {e}",
+                    reply_markup=get_sound_keyboard()
+                )
+            except Exception:
+                # Если даже это упало — уже совсем беда, но бота не валим.
+                pass
+
     @dp.message_handler(lambda message: message.text == "Особые функции")
     async def cmd_special_handler(message: types.Message):
-        await cmd_special(message)
+        # Если при инициализации были предупреждения (например, нет ffmpeg),
+        # сразу покажем их один раз при входе в модуль.
+        if INIT_ERRORS:
+            try:
+                err_text = "\n".join(f"- {err}" for err in INIT_ERRORS)
+                await message.answer(
+                    "⚠️ Модуль «Особые функции» загрузился с предупреждениями:\n" + err_text
+                )
+            except Exception:
+                pass
+
+        await _safe_call(cmd_special, message, "команда «Особые функции»")
 
     @dp.message_handler(
         lambda message:
             message.text in [
-                "Синтез речи", "Отправить голос", "Очистить sound", "Очистить videos", "Громкость",
+                "Синтез речи", "Отправить голос", "Очистить sound", "Очистить videos",
                 "Снимок с камеры", "Видео с камеры", "Вернуться",
-                "Уменьшить громкость", "Увеличить громкость", "Включить звук", "Выключить звук",
-                "Вернуться в функции", "На главную", "Отмена", "Воспроизвести на компьютере",
-                "Сменить устройство воспроизведения"
+                "Отмена", "Воспроизвести на компьютере"
             ]
-            or message.chat.id in TTS_STATE or message.chat.id in VOICE_MODE or message.chat.id in VIDEO_STATE or message.chat.id in SNAPSHOT_STATE or message.chat.id in PLAYBACK_STATE or message.chat.id in AUDIO_OUTPUT_STATE,
+            or message.chat.id in TTS_STATE
+            or message.chat.id in VOICE_MODE
+            or message.chat.id in VIDEO_STATE
+            or message.chat.id in SNAPSHOT_STATE
+            or message.chat.id in PLAYBACK_STATE,
         content_types=['text']
     )
     async def button_handler_wrapper(message: types.Message):
-        await button_handler(message)
+        await _safe_call(button_handler, message, "кнопки/состояния")
 
     @dp.message_handler(lambda message: message.chat.id in VOICE_MODE, content_types=['voice'])
     async def voice_handler_wrapper(message: types.Message):
-        await voice_handler(message)
+        await _safe_call(voice_handler, message, "голосовое сообщение")
+
 # Обёртки с обработкой ошибок для видео-функций
 async def stream_timelife(chat_id, bot):
     try:

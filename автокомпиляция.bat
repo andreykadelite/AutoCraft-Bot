@@ -13,13 +13,18 @@ if exist "%SCRIPT_DIR%build" rd /s /q "%SCRIPT_DIR%build"
 if exist "%SCRIPT_DIR%dist"  rd /s /q "%SCRIPT_DIR%dist"
 if exist "%SCRIPT_DIR%__pycache__" rd /s /q "%SCRIPT_DIR%__pycache__"
 
+REM 🧹 Очистка старого кэша comtypes.gen (обёртки SAPI от текущей системы)
+REM Оставляем только __init__.py, чтобы Nuitka не тащил старые модули в EXE
+echo 🧹 Очистка кэша comtypes.gen...
+python -c "import os,shutil,comtypes; gen_dir=os.path.join(os.path.dirname(comtypes.__file__),'gen'); print('Cleaning comtypes.gen at', gen_dir); [shutil.rmtree(os.path.join(gen_dir,n),ignore_errors=True) if os.path.isdir(os.path.join(gen_dir,n)) else (os.remove(os.path.join(gen_dir,n)) if n not in ('__init__.py','__pycache__') else None) for n in (os.listdir(gen_dir) if os.path.isdir(gen_dir) else [])]"
+
 REM Убедись, что зависимости установлены:
-REM pip install pywin32 aiogram aiohttp magic_filter psutil speedtest-cli pyautogui gTTS pyttsx3 comtypes pycaw opencv-python numpy sounddevice soundfile py-cpuinfo WMI pydub Pillow mss selenium requests
+REM pip install pywin32 aiogram aiohttp magic_filter psutil speedtest-cli pyautogui gTTS pyttsx3 edge-tts comtypes pycaw opencv-python numpy sounddevice soundfile py-cpuinfo WMI pydub Pillow mss selenium requests
 
 python -m nuitka ^
     --standalone ^
     --onefile ^
-    --windows-console-mode=disable ^
+    --windows-console-mode=hide ^
     --plugin-enable=pyqt5 ^
     --include-qt-plugins=sensible ^
     --include-package=aiogram ^
@@ -30,6 +35,7 @@ python -m nuitka ^
     --include-package=pyautogui ^
     --include-package=gtts ^
     --include-package=pyttsx3 ^
+    --include-package=edge_tts ^
     --include-package=comtypes ^
     --include-package=pycaw ^
     --include-package=cv2 ^
@@ -61,6 +67,9 @@ python -m nuitka ^
     --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\avcodec-61.dll=avcodec-61.dll" ^
     --include-data-file="%SCRIPT_DIR%serverapibot.zip=serverapibot.zip" ^
     --include-data-file="%SCRIPT_DIR%Python.zip=Python.zip" ^
+    --include-data-file="%SCRIPT_DIR%nircmd-x64\NirCmd.chm=nircmd-x64\NirCmd.chm" ^
+    --include-data-file="%SCRIPT_DIR%nircmd-x64\nircmd.exe=nircmd-x64\nircmd.exe" ^
+    --include-data-file="%SCRIPT_DIR%nircmd-x64\nircmdc.exe=nircmd-x64\nircmdc.exe" ^
     "%SCRIPT_DIR%src\bot-ok.py"
 
 echo ✅ Готово! Упаковано и отправлено в космос.

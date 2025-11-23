@@ -62,7 +62,6 @@ import psutil
 import cpuinfo  # Новый импорт для точной информации о процессоре
 from wmi import WMI  # Новый импорт для точной информации об ОС на Windows
 import speedtest
-import pyautogui
 import logging  # новый импорт для стандартного логирования
 
 # Добавляем импорт для обработки исключения остановки
@@ -935,17 +934,6 @@ def run_bot():
         except Exception as e:
             return f"Ошибка теста скорости: {str(e)}"
 
-    def clean_old_screenshots():
-        screenshots_dir = os.path.join(base_dir, "screenshots")
-        files = sorted(
-            [os.path.join(screenshots_dir, f) for f in os.listdir(screenshots_dir)
-             if os.path.isfile(os.path.join(screenshots_dir, f))],
-            key=os.path.getctime
-        )
-        while len(files) > 500:
-            os.remove(files[0])
-            files.pop(0)
-
     # ------------------------- Авторизация и старт -------------------------
     @dp.message_handler(lambda message: message.from_user.id not in authorized_users, content_types=types.ContentTypes.ANY)
     async def check_pin(message: types.Message):
@@ -1056,19 +1044,7 @@ def run_bot():
         await message.answer("Измерение скорости, подождите...")
         await message.answer(test_speed())
 
-    @dp.message_handler(lambda message: message.text == "Скриншот")
-    async def take_screenshot(message: types.Message):
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"screenshot_{timestamp}.png"
-        path = os.path.join(base_dir, "screenshots", filename)
-        screenshot = pyautogui.screenshot()
-        screenshot.save(path)
-        clean_old_screenshots()
-        write_com_log(f"Пользователь {message.from_user.id} сделал скриншот: {filename}.")
-        with open(path, "rb") as photo:
-            await current_bot.send_photo(message.chat.id, photo)
-
-    # ------------------------- Дополнительно -------------------------
+# ------------------------- Дополнительно -------------------------
     @dp.message_handler(lambda message: message.text == "Дополнительно")
     async def additional_menu(message: types.Message):
         power_mode[message.from_user.id] = False

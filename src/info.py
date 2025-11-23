@@ -1,4 +1,4 @@
-VERSION = "1.1.6"
+VERSION = "1.1.7beta1"
 HELP_TEXT = f"""AutoCraft Bot v{VERSION} ** “AutoCraft Bot — автоматизация без границ”** — твой персональный ассистент в Telegram и на десктопе. Возможно, тут и там попадутся баги — welcome to beta life! 😉
 
 ---
@@ -270,7 +270,7 @@ Python.zip лежит в папке с проектом.
 
 CONTACT_TEXT = """
 
-CONTACT_TEXT = """Телеграм: @Cyberlinkboom
+CONTACT_TEXT = """Телеграм: @zotovsmol
 Электронная почта: andreykadelite@ya.ru
 https://github.com/andreykadelite/AutoCraft-Bot
 По багам, улучшениям и предложениям пишите в Telegram или на электронную почту."""
