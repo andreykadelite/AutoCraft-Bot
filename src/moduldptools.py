@@ -40,7 +40,7 @@ else:
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-log_dir = os.path.join(base_dir, 'лог')
+log_dir = os.path.join(base_dir, 'log')
 
 os.makedirs(log_dir, exist_ok=True)
 
@@ -86,6 +86,88 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
+# Реестр главного меню (динамическое "Главное меню").
+# Если mainmenu_registry отсутствует, модуль продолжит работать как раньше.
+try:
+    from mainmenu_registry import register_main_item
+except ImportError:
+    register_main_item = None
+
+
+# Реестр меню «Дополнительно» (динамическое "Дополнительно").
+# Если additional_registry отсутствует, модуль продолжит работать как раньше.
+try:
+    from additional_registry import register_additional
+except ImportError:
+    register_additional = None
+
+
+def _register_additional_items():
+    """
+    Регистрирует пункты этого модуля в реестре меню «Дополнительно».
+
+    Это позволяет не править другие модули: клавиатура «Дополнительно»
+    собирается из реестра автоматически.
+    """
+    if register_additional is None:
+        return
+
+    items = [
+        ("dptools_help", "Справка", "Справка", 10, "Справка по командам и возможностям бота"),
+        ("dptools_notes", "Заметки", "Заметки", 20, "Создание и чтение заметок"),
+        ("dptools_send_files", "Отправить файлы", "Отправить файлы", 30, "Режим приёма файлов от пользователя"),
+        ("dptools_receive_files", "Прием файлов", "Прием файлов", 40, "Отправка файлов из папки infiles"),
+        ("dptools_power", "Питание", "Питание", 50, "Питание: выключение, перезагрузка, сон и т.д."),
+        ("dptools_contact", "Связь с разработчиком", "Связь с разработчиком", 60, "Контактная информация разработчика"),
+    ]
+
+    for key, title, trigger, order, desc in items:
+        try:
+            register_additional(
+                key=key,
+                title=title,
+                trigger_text=trigger,
+                group="additional",
+                order=order,
+                description=desc,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                f"Не удалось зарегистрировать пункт '{title}' в меню «Дополнительно».",
+                exc_info=True,
+            )
+
+
+
+def _register_mainmenu_item():
+    """
+    Регистрирует кнопку 'Дополнительно' в реестре главного меню.
+
+    Кнопка:
+    - title:        "Дополнительно" (то, что видит пользователь)
+    - trigger_text: "Дополнительно" (то, что обрабатывает handler)
+    - group:        "main"
+    """
+    if register_main_item is None:
+        return
+
+    try:
+        register_main_item(
+            key="additional_root",
+            title="Дополнительно",
+            trigger_text="Дополнительно",
+            group="main",
+            order=25,
+            description="Дополнительные инструменты: заметки, файлы, питание"
+        )
+    except Exception:
+        # Не роняем модуль, если что-то пошло не так при регистрации.
+        logging.getLogger(__name__).warning(
+            "Не удалось зарегистрировать кнопку 'Дополнительно' в главном меню",
+            exc_info=True,
+        )
+
 # РџС‹С‚Р°РµРјСЃСЏ РёРјРїРѕСЂС‚РёСЂРѕРІР°С‚СЊ С„СѓРЅРєС†РёСЋ Р»РѕРіРёСЂРѕРІР°РЅРёСЏ РёР· РѕСЃРЅРѕРІРЅРѕРіРѕ РјРѕРґСѓР»СЏ,
 
 # РµСЃР»Рё РЅРµ СѓРґР°С‘С‚СЃСЏ вЂ” РёСЃРїРѕР»СЊР·СѓРµРј Р»РѕРєР°Р»СЊРЅС‹Р№ logger.
@@ -119,6 +201,9 @@ def get_max_file_size(message):
         return 50 * 1024 * 1024, "50 МБ"
 
 def register_dptools_handlers(dp, base_dir, note_mode, pending_note, file_mode, infiles_mode, power_mode, pending_power_action, get_additional_keyboard):
+    # При регистрации обработчиков регистрируем кнопку 'Дополнительно' в главном меню.
+    _register_mainmenu_item()
+    _register_additional_items()
 
     infiles_tasks = {}
 

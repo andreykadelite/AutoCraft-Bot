@@ -64,8 +64,11 @@ def load_config():
         'data_dir': os.path.join(SERVER_ROOT, 'data'),
         'temp_dir': os.path.join(SERVER_ROOT, 'temp'),
         'exe_path': os.path.join(SERVER_ROOT, 'telegram-bot-api.exe'),
-        'auto_start': 'False',
-        'log_max_size': '1',
+        'auto_start': 'False',        'log_max_size': '1',
+        'ui_max_lines': '2000',
+        'api_max_lines': '5000',
+        'log_flush_ms': '200',
+        'api_log_to_file': 'False',
         'auto_detect_paths': 'False',  # <--- новый флаг
     }
     if not os.path.exists(CONFIG_PATH):
@@ -139,8 +142,11 @@ def save_config(settings):
         'data_dir': settings['data_dir'],
         'temp_dir': settings['temp_dir'],
         'exe_path': settings['exe_path'] or os.path.join(SERVER_ROOT, 'telegram-bot-api.exe'),
-        'auto_start': str(settings['auto_start']),
-        'log_max_size': str(settings['log_max_size']),
+        'auto_start': str(settings['auto_start']),        'log_max_size': str(settings['log_max_size']),
+        'ui_max_lines': str(settings.get('ui_max_lines', 2000)),
+        'api_max_lines': str(settings.get('api_max_lines', 5000)),
+        'log_flush_ms': str(settings.get('log_flush_ms', 200)),
+        'api_log_to_file': str(settings.get('api_log_to_file', False)),
         'auto_detect_paths': str(settings.get('auto_detect_paths', False)),  # <--- сохраняем флаг
     }
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -216,7 +222,26 @@ class MainWindow(QMainWindow):
         self.proc.errorOccurred.connect(self.handle_error)
         self.proc.finished.connect(self.handle_finished)
 
+        # Буферизация логов, чтобы GUI не умирал со временем (анти-фриз)
+        self._ui_pending = []
+        self._api_pending = []
+        self._ui_file_pending = []
+        self._api_file_pending = []
+        self._api_out_partial = ""
+        self._api_err_partial = ""
+
         self.init_ui()
+
+        # Таймеры для "мягкого" обновления логов
+        self._log_flush_timer = QTimer(self)
+        self._log_flush_timer.timeout.connect(self._flush_log_buffers)
+        self._log_flush_timer.start(200)
+
+        # Таймер записи логов в файл (чтобы не дергать диск на каждую строку)
+        self._file_flush_timer = QTimer(self)
+        self._file_flush_timer.timeout.connect(self._flush_log_files)
+        self._file_flush_timer.start(1000)
+
         self.load_settings()  # подтянем и сразу применим автопоиск при необходимости
 
         # Автостарт сервера при старте приложения
@@ -344,6 +369,43 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.log_size_spin, row, 1, 1, 1)
         lbl2 = QLabel("МБ")
         grid.addWidget(lbl2, row, 2)
+        row += 1
+
+        # Log UI/API list limits and flush interval (anti-freeze)
+        lbl = QLabel("Макс. строк UI-логов:")
+        lbl.setToolTip("Ограничение количества строк в окне UI логов (для скорости)")
+        grid.addWidget(lbl, row, 0)
+        self.ui_max_lines_spin = QSpinBox()
+        self.ui_max_lines_spin.setAccessibleName("Поле ввода лимита строк UI логов")
+        self.ui_max_lines_spin.setAccessibleDescription("Максимальное количество строк в панели UI логов")
+        self.ui_max_lines_spin.setRange(200, 200000)
+        grid.addWidget(self.ui_max_lines_spin, row, 1, 1, 2)
+        row += 1
+
+        lbl = QLabel("Макс. строк API-логов:")
+        lbl.setToolTip("Ограничение количества строк в окне API логов (для скорости)")
+        grid.addWidget(lbl, row, 0)
+        self.api_max_lines_spin = QSpinBox()
+        self.api_max_lines_spin.setAccessibleName("Поле ввода лимита строк API логов")
+        self.api_max_lines_spin.setAccessibleDescription("Максимальное количество строк в панели API логов")
+        self.api_max_lines_spin.setRange(200, 200000)
+        grid.addWidget(self.api_max_lines_spin, row, 1, 1, 2)
+        row += 1
+
+        lbl = QLabel("Обновление логов (мс):")
+        lbl.setToolTip("Как часто обновлять окна логов. Меньше = быстрее обновляется, но больше нагрузка.")
+        grid.addWidget(lbl, row, 0)
+        self.flush_ms_spin = QSpinBox()
+        self.flush_ms_spin.setAccessibleName("Поле ввода интервала обновления логов")
+        self.flush_ms_spin.setAccessibleDescription("Интервал обновления окон логов в миллисекундах")
+        self.flush_ms_spin.setRange(50, 5000)
+        grid.addWidget(self.flush_ms_spin, row, 1, 1, 2)
+        row += 1
+
+        self.api_to_file_cb = QCheckBox("Сохранять API-логи в файл (console)")
+        self.api_to_file_cb.setAccessibleName("Флажок сохранения API логов в файл")
+        self.api_to_file_cb.setAccessibleDescription("Если включено, вывод процесса telegram-bot-api будет писаться в файл рядом с data_dir")
+        grid.addWidget(self.api_to_file_cb, row, 0, 1, 3)
         row += 1
 
         # Data Directory
@@ -502,23 +564,141 @@ class MainWindow(QMainWindow):
         # Реакция на переключение автопоиска путей
         self.auto_paths_cb.toggled.connect(self.apply_auto_paths_if_needed)
 
+        # Реакция на настройки логов (применяем сразу, без перезапуска)
+        self.ui_max_lines_spin.valueChanged.connect(self._apply_log_runtime_settings)
+        self.api_max_lines_spin.valueChanged.connect(self._apply_log_runtime_settings)
+        self.flush_ms_spin.valueChanged.connect(self._apply_log_runtime_settings)
+        self.api_to_file_cb.toggled.connect(self._apply_log_runtime_settings)
+
     # ------------- Вспомогательные методы -------------
     def add_log(self, text):
-        item = QListWidgetItem(text)
-        self.log_output.addItem(item)
-        self.log_output.setCurrentItem(item)
-        self.log_output.scrollToItem(item)
-        # Ротация и запись логов UI в файл
+        """Добавляет строку в UI-лог (буферизованно, чтобы не фризило GUI)."""
         try:
-            if hasattr(self, 'log_size_spin'):
-                if os.path.exists(self.log_file_path) and os.path.getsize(self.log_file_path) > self.log_size_spin.value() * 1024 * 1024:
-                    with open(self.log_file_path, 'w', encoding='utf-8'):
-                        pass
+            s = str(text)
+        except Exception:
+            s = repr(text)
+        self._ui_pending.append(s)
+        self._ui_file_pending.append(s)
+
+    def _apply_log_runtime_settings(self):
+        """Применяет настройки логов сразу (интервал таймера и т.п.)."""
+        try:
+            ms = int(self.flush_ms_spin.value())
+        except Exception:
+            ms = 200
+        ms = max(50, min(5000, ms))
+        try:
+            self._log_flush_timer.setInterval(ms)
         except Exception:
             pass
+        # можно сразу чуть подрезать, если лимиты уменьшили
+        self._flush_log_buffers()
+
+    def _is_scroll_at_bottom(self, widget):
         try:
-            with open(self.log_file_path, 'a', encoding='utf-8') as lf:
-                lf.write(text + '\n')
+            sb = widget.verticalScrollBar()
+            if sb is None:
+                return True
+            return sb.value() >= (sb.maximum() - 2)
+        except Exception:
+            return True
+
+    def _trim_listwidget(self, widget, max_lines: int):
+        """Обрезает старые строки сверху быстро."""
+        try:
+            cnt = widget.count()
+            excess = cnt - max_lines
+            if excess > 0:
+                model = widget.model()
+                # Быстрее, чем takeItem в цикле
+                model.removeRows(0, excess)
+        except Exception:
+            pass
+
+    def _flush_log_buffers(self):
+        """Пакетно добавляет накопившиеся логи в списки (анти-тормоза)."""
+        # UI logs
+        try:
+            if self._ui_pending:
+                at_bottom = self._is_scroll_at_bottom(self.log_output)
+                lines = self._ui_pending[:]
+                self._ui_pending.clear()
+
+                self.log_output.setUpdatesEnabled(False)
+                self.log_output.addItems(lines)
+                max_ui = int(self.ui_max_lines_spin.value()) if hasattr(self, 'ui_max_lines_spin') else 2000
+                self._trim_listwidget(self.log_output, max_ui)
+                if at_bottom:
+                    self.log_output.scrollToBottom()
+                self.log_output.setUpdatesEnabled(True)
+        except Exception:
+            pass
+
+        # API logs
+        try:
+            if self._api_pending:
+                at_bottom = self._is_scroll_at_bottom(self.api_log_output)
+                lines = self._api_pending[:]
+                self._api_pending.clear()
+
+                self.api_log_output.setUpdatesEnabled(False)
+                self.api_log_output.addItems(lines)
+                max_api = int(self.api_max_lines_spin.value()) if hasattr(self, 'api_max_lines_spin') else 5000
+                self._trim_listwidget(self.api_log_output, max_api)
+                if at_bottom:
+                    self.api_log_output.scrollToBottom()
+                self.api_log_output.setUpdatesEnabled(True)
+        except Exception:
+            pass
+
+    def _truncate_if_too_big(self, path: str, max_bytes: int):
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > max_bytes:
+                with open(path, 'w', encoding='utf-8'):
+                    pass
+        except Exception:
+            pass
+
+    def _flush_log_files(self):
+        """Пишет накопившиеся логи в файлы (редко, чтобы не грузить диск)."""
+        try:
+            data_dir = self.data_edit.text().strip() if hasattr(self, 'data_edit') else os.path.join(SERVER_ROOT, 'data')
+            if not data_dir:
+                data_dir = os.path.join(SERVER_ROOT, 'data')
+            os.makedirs(data_dir, exist_ok=True)
+        except Exception:
+            data_dir = os.path.join(SERVER_ROOT, 'data')
+
+        ui_path = os.path.join(data_dir, 'telegram-bot-api-ui.log')
+        api_path = os.path.join(data_dir, 'telegram-bot-api-console.log')
+
+        try:
+            max_mb = int(self.log_size_spin.value()) if hasattr(self, 'log_size_spin') else 1
+        except Exception:
+            max_mb = 1
+        max_bytes = max(1, max_mb) * 1024 * 1024
+
+        # UI file
+        try:
+            if self._ui_file_pending:
+                self._truncate_if_too_big(ui_path, max_bytes)
+                with open(ui_path, 'a', encoding='utf-8', errors='replace') as lf:
+                    lf.write('\n'.join(self._ui_file_pending) + '\n')
+                self._ui_file_pending.clear()
+        except Exception:
+            pass
+
+        # API file (optional)
+        try:
+            if hasattr(self, 'api_to_file_cb') and self.api_to_file_cb.isChecked():
+                if self._api_file_pending:
+                    self._truncate_if_too_big(api_path, max_bytes)
+                    with open(api_path, 'a', encoding='utf-8', errors='replace') as af:
+                        af.write('\n'.join(self._api_file_pending) + '\n')
+                    self._api_file_pending.clear()
+            else:
+                # Если выключили запись, не держим буфер в памяти
+                self._api_file_pending.clear()
         except Exception:
             pass
 
@@ -538,10 +718,17 @@ class MainWindow(QMainWindow):
             self.exe_edit.setText(p)
 
     def add_api_log(self, text):
-        """Добавляет строку в панель логов telegram-bot-api."""
-        item = QListWidgetItem(text)
-        self.api_log_output.addItem(item)
-        self.api_log_output.scrollToItem(item)
+        """Добавляет строку в API-лог (буферизованно)."""
+        try:
+            s = str(text)
+        except Exception:
+            s = repr(text)
+        self._api_pending.append(s)
+        try:
+            if hasattr(self, 'api_to_file_cb') and self.api_to_file_cb.isChecked():
+                self._api_file_pending.append(s)
+        except Exception:
+            pass
 
     def _ensure_paths(self, settings, auto_flag):
         """
@@ -598,6 +785,10 @@ class MainWindow(QMainWindow):
             'exe_path': self.exe_edit.text().strip(),
             'auto_start': self.auto_start_cb.isChecked(),
             'log_max_size': str(self.log_size_spin.value()),
+            'ui_max_lines': str(self.ui_max_lines_spin.value()),
+            'api_max_lines': str(self.api_max_lines_spin.value()),
+            'log_flush_ms': str(self.flush_ms_spin.value()),
+            'api_log_to_file': self.api_to_file_cb.isChecked(),
             'auto_detect_paths': self.auto_paths_cb.isChecked(),
         }
         settings, changed = self._ensure_paths(settings, self.auto_paths_cb.isChecked())
@@ -627,6 +818,15 @@ class MainWindow(QMainWindow):
         self.log_size_spin.setValue(int(cfg.get('log_max_size', '1')))
         self.auto_paths_cb.setChecked(cfg.get('auto_detect_paths', 'False') == 'True')
 
+        # Новые настройки логов
+        self.ui_max_lines_spin.setValue(int(cfg.get('ui_max_lines', '2000')))
+        self.api_max_lines_spin.setValue(int(cfg.get('api_max_lines', '5000')))
+        self.flush_ms_spin.setValue(int(cfg.get('log_flush_ms', '200')))
+        self.api_to_file_cb.setChecked(cfg.get('api_log_to_file', 'False') == 'True')
+
+        # Применим интервалы/лимиты сразу
+        self._apply_log_runtime_settings()
+
         # Автоподстановка сразу после загрузки, если включен флаг
         if self.auto_paths_cb.isChecked():
             self.apply_auto_paths_if_needed()
@@ -645,6 +845,10 @@ class MainWindow(QMainWindow):
             'exe_path': self.exe_edit.text().strip(),
             'auto_start': self.auto_start_cb.isChecked(),
             'log_max_size': str(self.log_size_spin.value()),
+            'ui_max_lines': str(self.ui_max_lines_spin.value()),
+            'api_max_lines': str(self.api_max_lines_spin.value()),
+            'log_flush_ms': str(self.flush_ms_spin.value()),
+            'api_log_to_file': self.api_to_file_cb.isChecked(),
             'auto_detect_paths': self.auto_paths_cb.isChecked(),
         }
         # Если включён автопоиск — поправим пути перед сохранением
@@ -679,6 +883,10 @@ class MainWindow(QMainWindow):
             'exe_path': self.exe_edit.text().strip(),
             'auto_start': self.auto_start_cb.isChecked(),
             'log_max_size': str(self.log_size_spin.value()),
+            'ui_max_lines': str(self.ui_max_lines_spin.value()),
+            'api_max_lines': str(self.api_max_lines_spin.value()),
+            'log_flush_ms': str(self.flush_ms_spin.value()),
+            'api_log_to_file': self.api_to_file_cb.isChecked(),
             'auto_detect_paths': self.auto_paths_cb.isChecked(),
         }
         # Применяем автопоиск при необходимости
@@ -732,18 +940,21 @@ class MainWindow(QMainWindow):
         self.proc.setWorkingDirectory(SERVER_ROOT)
         self.proc.start(exe, args)
 
-        # Запуск внешнего watchdog-процесса (если он предусмотрен внешним скриптом)
+        # Запуск внешнего watchdog-процесса (актуально для EXE/Nuitka).
+        # В режиме разработки (python.exe) не запускаем, чтобы не плодить процессы с неизвестным аргументом.
         try:
-            DETACHED_PROCESS = 0x00000008
-            proc_pid = self.proc.processId()
-            # Пример: запускаем тот же Python с параметрами — внешняя логика должна обработать
-            subprocess.Popen(
-                [sys.executable, "--api-watchdog", str(os.getpid()), str(proc_pid)],
-                creationflags=DETACHED_PROCESS
-            )
-            self.add_log('Watchdog-запущен')
+            if getattr(sys, "frozen", False) or ("NUITKA_ONEFILE_PARENT" in os.environ):
+                DETACHED_PROCESS = 0x00000008
+                proc_pid = self.proc.processId()
+                subprocess.Popen(
+                    [sys.executable, "--api-watchdog", str(os.getpid()), str(proc_pid)],
+                    creationflags=DETACHED_PROCESS
+                )
+                self.add_log("Watchdog-запущен")
+            else:
+                self.add_log("Watchdog: dev-режим (python) — пропускаю запуск.")
         except Exception as e:
-            self.add_log(f'Ошибка запуска Watchdog: {e}')
+            self.add_log(f"Ошибка запуска Watchdog: {e}")
 
         if not self.proc.waitForStarted(3000):
             QMessageBox.critical(self, "Ошибка", "Не удалось запустить процесс.")
@@ -764,14 +975,35 @@ class MainWindow(QMainWindow):
             return
 
     def handle_stdout(self):
-        text = bytes(self.proc.readAllStandardOutput()).decode(self.encoding, errors='replace')
-        for line in text.splitlines():
-            self.add_api_log(line)
+        raw = bytes(self.proc.readAllStandardOutput())
+        if not raw:
+            return
+        chunk = raw.decode(self.encoding, errors='replace')
+        buf = self._api_out_partial + chunk
+        parts = buf.splitlines(True)
+        self._api_out_partial = ""
+        for part in parts:
+            if part.endswith(("\n", "\r")):
+                self.add_api_log(part.rstrip("\r\n"))
+            else:
+                # кусок строки без переноса
+                self._api_out_partial += part
+
 
     def handle_stderr(self):
-        text = bytes(self.proc.readAllStandardError()).decode(self.encoding, errors='replace')
-        for line in text.splitlines():
-            self.add_api_log(f"<Ошибка> {line}")
+        raw = bytes(self.proc.readAllStandardError())
+        if not raw:
+            return
+        chunk = raw.decode(self.encoding, errors='replace')
+        buf = self._api_err_partial + chunk
+        parts = buf.splitlines(True)
+        self._api_err_partial = ""
+        for part in parts:
+            if part.endswith(("\n", "\r")):
+                self.add_api_log(f"<Ошибка> {part.rstrip()}")
+            else:
+                self._api_err_partial += part
+
 
     def handle_error(self, error):
         if getattr(self, 'user_initiated_stop', False):
@@ -810,6 +1042,13 @@ class MainWindow(QMainWindow):
             if not self.proc.waitForFinished(3000):
                 self.proc.kill()
 
+        # добиваем хвосты логов
+        try:
+            self._flush_log_buffers()
+            self._flush_log_files()
+        except Exception:
+            pass
+
     def minimize_window(self):
         """Полностью скрыть окно настроек (не в трей и не в панель задач)."""
         try:
@@ -824,6 +1063,12 @@ class MainWindow(QMainWindow):
             self.proc.terminate()
             if not self.proc.waitForFinished(3000):
                 self.proc.kill()
+        # добиваем хвосты логов
+        try:
+            self._flush_log_buffers()
+            self._flush_log_files()
+        except Exception:
+            pass
         event.accept()
 
 

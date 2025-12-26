@@ -13,6 +13,126 @@ import threading
 import logging
 import asyncio
 
+# ----------------- Регистрация пункта "Плагины" в меню «Дополнительно» -----------------
+def _register_plugins_in_additional_menu():
+    """Регистрирует кнопку «Плагины» в динамическом меню «Дополнительно».
+    Если реестр отсутствует — ничего не делает (совместимость).
+    """
+    try:
+        from additional_registry import register_additional
+    except Exception:
+        try:
+            from moduls.additional_registry import register_additional  # type: ignore
+        except Exception:
+            return
+
+    try:
+        register_additional(
+            key="plugins",
+            title="Плагины",
+            trigger_text="Плагины",
+            order=30,
+            description="Менеджер плагинов",
+        )
+    except Exception:
+        # Никогда не ломаем запуск бота из-за меню
+        pass
+
+
+_register_plugins_in_additional_menu()
+
+# ----------------- Регистрация кнопки «Список плагинов» в ГЛАВНОМ меню -----------------
+def _register_plugins_list_in_main_menu():
+    """Регистрирует кнопку «Список плагинов» в динамическом ГЛАВНОМ меню.
+    Если реестр главного меню отсутствует — ничего не делает (совместимость).
+
+    Важно:
+    - регистрируем именно «Список плагинов», чтобы быстро открывать список из главного меню;
+    - обработчик на текст «Список плагинов» уже должен существовать в проекте,
+      либо будет добавлен отдельно (мы здесь регистрируем только кнопку/пункт меню).
+    """
+    try:
+        from menu_registry.mainmenu_registry import register_main_item
+    except Exception:
+        try:
+            from mainmenu_registry import register_main_item  # type: ignore
+        except Exception:
+            try:
+                from moduls.menu_registry.mainmenu_registry import register_main_item  # type: ignore
+            except Exception:
+                return
+
+    try:
+        register_main_item(
+            key="plugins_list",
+            title="Список плагинов",
+            trigger_text="Список плагинов",
+            group="main",
+            order=35,
+            description="Быстрый доступ к списку плагинов",
+        )
+    except Exception:
+        # Никогда не ломаем запуск бота из-за меню
+        pass
+
+
+_register_plugins_list_in_main_menu()
+
+
+
+# ----------------- Регистрация меню менеджера плагинов в реестре -----------------
+def _register_plugins_menu_in_plugins_registry():
+    """
+    Регистрирует пункты меню менеджера плагинов в реестре menu_registry/plugins_menu_registry.py.
+
+    Важно:
+    - Если реестр отсутствует — ничего не делает (совместимость).
+    - Ничего не ломает, не требует изменений в других модулях.
+    - Кнопка «Вернуться» НЕ регистрируется: она добавляется фиксировано клавиатурой (keymenu).
+    """
+    try:
+        # ожидаемый путь: base_dir/menu_registry/plugins_menu_registry.py
+        from menu_registry.plugins_menu_registry import register_plugin_menu_item
+    except Exception:
+        try:
+            # fallback, если импортируют без пакета
+            from plugins_menu_registry import register_plugin_menu_item  # type: ignore
+        except Exception:
+            try:
+                # fallback на случай, если проект собран иначе
+                from moduls.menu_registry.plugins_menu_registry import register_plugin_menu_item  # type: ignore
+            except Exception:
+                return
+
+    try:
+        # Регистрируем ТОЛЬКО корневые пункты меню менеджера плагинов
+        register_plugin_menu_item(key="plugins_list", title="Список плагинов", trigger_text="Список плагинов",
+                                      group="plugins_menu", order=20, description="Показать список установленных плагинов")
+        register_plugin_menu_item(key="plugins_reload", title="Перезагрузить плагины", trigger_text="Перезагрузить плагины",
+                                  group="plugins_menu", order=25, description="Перезагрузить плагины")
+        # (подменю типа "Проверить/Установить/Да/Нет" сюда не добавляем).
+        register_plugin_menu_item(key="plugins_full_restart", title="Полный перезапуск", trigger_text="Полный перезапуск",
+                                  group="plugins_menu", order=30, description="Полный перезапуск приложения и локального API")
+        register_plugin_menu_item(key="plugins_autostart", title="Настроить автозапуск", trigger_text="Настроить автозапуск",
+                                  group="plugins_menu", order=40, description="Включение/выключение автозапуска плагинов")
+        register_plugin_menu_item(key="plugins_zip_install", title="Установка плагинов", trigger_text="Установка плагинов",
+                                  group="plugins_menu", order=50, description="Установка плагина из ZIP")
+        register_plugin_menu_item(key="plugins_download", title="Скачать плагин", trigger_text="Скачать плагин",
+                                  group="plugins_menu", order=60, description="Скачать плагин архивом")
+        register_plugin_menu_item(key="plugins_reset", title="Сброс настроек плагинов", trigger_text="Сброс настроек плагинов",
+                                  group="plugins_menu", order=70, description="Сброс настроек плагинов")
+        register_plugin_menu_item(key="plugins_delete", title="Удаление плагинов", trigger_text="Удаление плагинов",
+                                  group="plugins_menu", order=80, description="Удаление плагинов с резервной копией или без")
+        register_plugin_menu_item(key="plugins_backups", title="Резервные копии", trigger_text="Резервные копии",
+                                  group="plugins_menu", order=90, description="Создание/восстановление резервных копий")
+    except Exception:
+        # Никогда не ломаем запуск бота из-за реестра меню
+        pass
+
+
+_register_plugins_menu_in_plugins_registry()
+
+
 # --------- Вспомогательные для логов перезапуска ----------
 def _ts():
     import datetime
@@ -84,6 +204,71 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 os.makedirs(PLUGIN_DIR, exist_ok=True)
 
 # ------------------------ Вспомогательные функции ------------------------
+
+# --------- Импорт управления браузером из папки moduls ----------
+def _guess_base_dir():
+    """Определяем базовую папку проекта (рядом с exe/главным скриптом)."""
+    try:
+        if getattr(sys, "frozen", False):
+            return os.path.dirname(sys.executable)
+    except Exception:
+        pass
+
+    # Если этот файл лежит в папке moduls, базовая папка на уровень выше
+    try:
+        here = os.path.abspath(__file__)
+        parent = os.path.dirname(here)
+        if os.path.basename(parent).lower() == "moduls":
+            return os.path.dirname(parent)
+    except Exception:
+        pass
+
+    # Fallback: текущая рабочая папка (bot-ok обычно делает os.chdir(base_dir))
+    try:
+        return os.getcwd()
+    except Exception:
+        return os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv else os.path.abspath(os.curdir)
+
+def _ensure_moduls_on_syspath():
+    """Гарантируем, что папка moduls стоит в начале sys.path для корректного импорта."""
+    base_dir = _guess_base_dir()
+    moduls_dir = os.path.join(base_dir, "moduls")
+    try:
+        if os.path.isdir(moduls_dir):
+            if moduls_dir in sys.path:
+                # поднимем в начало (приоритет над корнем/другими путями)
+                sys.path.remove(moduls_dir)
+            sys.path.insert(0, moduls_dir)
+            try:
+                import importlib
+                importlib.invalidate_caches()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return moduls_dir
+
+def _get_browser_ctrl():
+    """Возвращает CTRL из nostartrunmodulbrowsrem, строго из папки moduls (если доступно)."""
+    # 1) Если модуль уже загружен где-то в процессе, берём именно его (важно для сохранения состояния!)
+    for name in ("nostartrunmodulbrowsrem", "moduls.nostartrunmodulbrowsrem"):
+        try:
+            m = sys.modules.get(name)
+            if m is not None:
+                ctrl = getattr(m, "CTRL", None)
+                if ctrl is not None:
+                    return ctrl
+        except Exception:
+            pass
+
+    # 2) Иначе поднимаем moduls в sys.path и импортируем по имени
+    _ensure_moduls_on_syspath()
+    try:
+        import importlib
+        m = importlib.import_module("nostartrunmodulbrowsrem")
+        return getattr(m, "CTRL", None)
+    except Exception:
+        return None
 
 def force_rmtree(path):
     """
@@ -780,7 +965,7 @@ def register_handlers(dp):
 
         # МЯГКО ЗАКРОЕМ УПРАВЛЯЕМЫЙ БРАУЗЕР (НЕ МЕШАЕТ ОТПРАВКЕ СООБЩЕНИЙ)
         try:
-            from modulbrowsrem import CTRL as BROWSER_CTRL  # API управлялки браузером
+            BROWSER_CTRL = _get_browser_ctrl()  # CTRL из moduls/nostartrunmodulbrowsrem.py
             selected = None
             try:
                 selected = BROWSER_CTRL.get_selected()

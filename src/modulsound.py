@@ -2,6 +2,7 @@ import asyncio
 import glob
 import logging
 import math
+import re
 import os
 import shutil
 import subprocess
@@ -20,8 +21,34 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from gtts import gTTS
 from keymenu import get_additional_keyboard, get_main_keyboard
 
+# --- Регистрация кнопки в динамическом меню «Дополнительно» ---
+# Делается мягко: если реестр не найден, модуль не падает.
+try:
+    from additional_registry import register_additional  # type: ignore
+
+    register_additional(
+        key="special_functions",
+        title="Особые функции",
+        trigger_text="Особые функции",
+        order=60,
+        description="Модуль звука/видео/синтеза речи и прочих спец-возможностей",
+    )
+except Exception:
+    # Важно: не роняем модуль, если additional_registry отсутствует или ещё не инициализирован.
+    pass
+
 # Список предупреждений инициализации модуля (например, если не найден ffmpeg)
 INIT_ERRORS = []
+# --- Дисклеймер безопасности ---
+# Показывается пользователю при входе в модуль «Особые функции» (один раз на чат за сессию бота).
+DISCLAIMER_TEXT = """Внимание.
+Модуль «Особые функции» предоставляет доступ к мультимедиа и системным возможностям (звук, микрофон, камера, запись экрана, синтез речи).
+• Используйте функции только на своём устройстве или при наличии явного разрешения владельца.
+• Не применяйте модуль для скрытой записи/наблюдения, вмешательства в работу системы или причинения вреда.
+• Автор/разработчик не несёт ответственности за последствия использования. Вы действуете законно и на свой риск."""
+DISCLAIMER_SHOWN = set()
+
+
 # Определяем базовую папку: при сборке в exe (Nuitka/pyinstaller) и при запуске из .py
 if getattr(sys, 'frozen', False):
     base_dir = os.getcwd()
@@ -289,6 +316,32 @@ def init_tts_engines(force: bool = False):
     try:
         import edge_tts as _edge_tts  # type: ignore
         EDGE_TTS_MODULE = _edge_tts
+
+        # В декабре 2025 Microsoft внесла изменения в Edge Read Aloud API (лимиты/аутентификация),
+        # из-за чего старые версии edge-tts часто падают с NoAudioReceived.
+        # Поэтому мягко предупреждаем, если версия пакета слишком старая.
+        try:
+            from importlib import metadata as _metadata  # py3.8+
+            _edge_ver = _metadata.version("edge-tts")
+        except Exception:
+            _edge_ver = getattr(_edge_tts, "__version__", "") or ""
+
+        def _ver_tuple(v: str):
+            parts = [int(x) for x in re.findall(r"\d+", v)[:3]]
+            while len(parts) < 3:
+                parts.append(0)
+            return tuple(parts)
+
+        if _edge_ver:
+            try:
+                if _ver_tuple(_edge_ver) < (7, 2, 4):
+                    TTS_IMPORT_ERRORS.append(
+                        f"edge-tts версия {_edge_ver} может не работать после изменений Microsoft (декабрь 2025). "
+                        f"Рекомендуется обновить минимум до 7.2.4+."
+                    )
+            except Exception:
+                pass
+
         edge_voices = {
             "ru-RU-SvetlanaNeural (женский)": "ru-RU-SvetlanaNeural",
             "ru-RU-DmitryNeural (мужской)": "ru-RU-DmitryNeural",
@@ -342,15 +395,284 @@ def get_tts_setup_keyboard(has_available_engines: bool):
     return kb
 
 
+def _split_text_utf8(text: str, max_bytes: int) -> list:
+    """Режем текст на куски по лимиту UTF-8 байт.
+    Пытаемся резать по предложениям/словам, чтобы речь звучала нормально.
+    """
+    # нормализуем переносы строк, но сохраняем паузы
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"[\t ]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if not cleaned:
+        return []
+
+    # сначала режем по предложениям
+    # NB: это эвристика, но для русского обычно хватает.
+    sentences = re.split(r"(?<=[\.!\?…])\s+", cleaned)
+    chunks = []
+    buf = ""
+
+    def _fits(s: str) -> bool:
+        return len(s.encode("utf-8")) <= max_bytes
+
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        if not buf:
+            if _fits(s):
+                buf = s
+            else:
+                # очень длинное "предложение" режем по словам
+                words = s.split()
+                wbuf = ""
+                for w in words:
+                    cand = (wbuf + " " + w).strip()
+                    if _fits(cand):
+                        wbuf = cand
+                    else:
+                        if wbuf:
+                            chunks.append(wbuf)
+                        wbuf = w
+                if wbuf:
+                    chunks.append(wbuf)
+                buf = ""
+            continue
+
+        cand = (buf + " " + s).strip()
+        if _fits(cand):
+            buf = cand
+        else:
+            chunks.append(buf)
+            if _fits(s):
+                buf = s
+            else:
+                # снова режем по словам
+                words = s.split()
+                wbuf = ""
+                for w in words:
+                    cand2 = (wbuf + " " + w).strip()
+                    if _fits(cand2):
+                        wbuf = cand2
+                    else:
+                        if wbuf:
+                            chunks.append(wbuf)
+                        wbuf = w
+                if wbuf:
+                    chunks.append(wbuf)
+                buf = ""
+
+    if buf:
+        chunks.append(buf)
+
+    # финальная страховка: убираем пустые
+    return [c for c in chunks if c and c.strip()]
+
+
+def _ffmpeg_concat_mp3(parts: list, out_path: str) -> bool:
+    """Склеить mp3-части через ffmpeg concat demuxer. Возвращает True при успехе."""
+    if not parts:
+        return False
+    if len(parts) == 1:
+        try:
+            if os.path.abspath(parts[0]) != os.path.abspath(out_path):
+                shutil.copyfile(parts[0], out_path)
+            return True
+        except Exception:
+            return False
+
+    if not FFMPEG_PATH or not os.path.isfile(FFMPEG_PATH):
+        return False
+
+    list_path = out_path + ".__concat__.txt"
+    try:
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in parts:
+                p_abs = os.path.abspath(p)
+                # экранируем одинарные кавычки для ffmpeg concat list
+                p_abs = p_abs.replace("'", "\\'")
+                f.write(f"file '{p_abs}'\n")
+
+        cmd = [
+            FFMPEG_PATH,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-c",
+            "copy",
+            out_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        return proc.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 1024
+    finally:
+        try:
+            if os.path.exists(list_path):
+                os.remove(list_path)
+        except Exception:
+            pass
+
+
+async def _edge_tts_save(communicate, out_path: str):
+    """Сохранить результат edge-tts. Предпочитаем communicate.save(), иначе stream()."""
+    if hasattr(communicate, "save"):
+        await communicate.save(out_path)
+        return
+
+    # fallback
+    with open(out_path, "wb") as f:
+        async for chunk in communicate.stream():
+            if chunk.get("type") == "audio":
+                f.write(chunk.get("data", b""))
+
+
+def _edge_tts_create_communicate(text: str, voice_id: str):
+    """Создать edge_tts.Communicate с совместимостью по сигнатурам."""
+    # В разных версиях edge-tts сигнатура могла отличаться.
+    try:
+        return EDGE_TTS_MODULE.Communicate(text=text, voice=voice_id)
+    except TypeError:
+        try:
+            return EDGE_TTS_MODULE.Communicate(text, voice=voice_id)
+        except TypeError:
+            return EDGE_TTS_MODULE.Communicate(text, voice_id)
+
+
 async def synthesize_edge_tts(text: str, voice_id: str, file_path: str):
-    """Синтез через edge_tts в указанный файл."""
+    """Синтез через edge_tts в указанный файл.
+
+    После изменений Microsoft (декабрь 2025) появились более жёсткие ограничения:
+    - лимит длительности (около 10 минут) на один запрос,
+    - более строгая нарезка/размер чанков запроса.
+    Из-за этого даже корректные параметры иногда приводят к NoAudioReceived.
+    Здесь добавлены: безопасная нарезка текста, повторы, склейка частей.
+    """
     if EDGE_TTS_MODULE is None:
         raise RuntimeError("edge-tts не инициализирован")
-    communicate = EDGE_TTS_MODULE.Communicate(text, voice_id)
-    with open(file_path, "wb") as f:
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                f.write(chunk["data"])
+
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Пустой текст для синтеза")
+
+    os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+
+    # С запасом ниже 4096 байт (и учитываем UTF-8 для кириллицы)
+    # Слишком большие куски часто приводят к NoAudioReceived после декабрьских изменений.
+    primary_limit = 2800
+    fallback_limit = 1600
+
+    def _is_noaudio(exc: Exception) -> bool:
+        return exc.__class__.__name__ == "NoAudioReceived" or "NoAudioReceived" in repr(exc)
+
+    async def _synth_one_chunk(chunk_text: str, out_path: str, try_voice: str, attempts: int = 3):
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                communicate = _edge_tts_create_communicate(chunk_text, try_voice)
+                await _edge_tts_save(communicate, out_path)
+                if os.path.isfile(out_path) and os.path.getsize(out_path) > 1024:
+                    return
+                # если файл почти пустой — считаем, что аудио не пришло
+                raise RuntimeError("edge-tts вернул пустой/слишком маленький аудиофайл")
+            except Exception as e:
+                last_exc = e
+                # короткая пауза с ростом
+                await asyncio.sleep(0.25 * attempt)
+        raise last_exc or RuntimeError("edge-tts synthesis failed")
+
+    # режем текст на части (даже если получится 1 часть)
+    chunks = _split_text_utf8(text, primary_limit)
+
+    # если почему-то не получилось разрезать — пробуем как есть
+    if not chunks:
+        chunks = [text]
+
+    parts = []
+    try:
+        # При ошибке иногда помогает смена голоса, поэтому держим маленький fallback-список
+        voice_fallbacks = [voice_id]
+        for v in ("ru-RU-SvetlanaNeural", "ru-RU-DmitryNeural", "ru-RU-DariyaNeural"):
+            if v != voice_id:
+                voice_fallbacks.append(v)
+
+        for i, chunk in enumerate(chunks):
+            part_path = file_path + f".__part{i:03d}.mp3"
+            ok = False
+            last_error = None
+            for v in voice_fallbacks[:2]:  # не перебираем бесконечно, только 1 fallback
+                try:
+                    await _synth_one_chunk(chunk, part_path, v, attempts=3)
+                    ok = True
+                    break
+                except Exception as e:
+                    last_error = e
+
+            if not ok and last_error and _is_noaudio(last_error):
+                # 2-я попытка: режем сильнее и синтезируем уже "подчасти"
+                subchunks = _split_text_utf8(chunk, fallback_limit) or [chunk]
+                # если первая часть уже что-то создала, чистим
+                if os.path.exists(part_path):
+                    try:
+                        os.remove(part_path)
+                    except Exception:
+                        pass
+                # синтезим во временные mp3 и потом сольём в part_path
+                subparts = []
+                for j, sub in enumerate(subchunks):
+                    sub_path = file_path + f".__part{i:03d}_sub{j:03d}.mp3"
+                    await _synth_one_chunk(sub, sub_path, voice_id, attempts=3)
+                    subparts.append(sub_path)
+                # склейка подчастей
+                if not _ffmpeg_concat_mp3(subparts, part_path):
+                    # fallback: простое склеивание mp3-фреймов (работает не всегда, но лучше чем ничего)
+                    with open(part_path, "wb") as out_f:
+                        for sp in subparts:
+                            with open(sp, "rb") as in_f:
+                                out_f.write(in_f.read())
+                # чистим subparts
+                for sp in subparts:
+                    try:
+                        if os.path.exists(sp):
+                            os.remove(sp)
+                    except Exception:
+                        pass
+
+                if not os.path.isfile(part_path) or os.path.getsize(part_path) <= 1024:
+                    raise last_error
+
+            if not os.path.isfile(part_path) or os.path.getsize(part_path) <= 1024:
+                raise RuntimeError("edge-tts: аудио часть не создана")
+
+            parts.append(part_path)
+
+        # Если частей несколько, склеиваем в итоговый файл
+        if len(parts) == 1:
+            shutil.move(parts[0], file_path)
+            parts = []
+            return
+
+        if _ffmpeg_concat_mp3(parts, file_path):
+            return
+
+        # fallback без ffmpeg
+        with open(file_path, "wb") as out_f:
+            for p in parts:
+                with open(p, "rb") as in_f:
+                    out_f.write(in_f.read())
+    finally:
+        # уборка частей
+        for p in parts:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
 
 async def attempt_tts_installation(message: types.Message):
@@ -377,9 +699,9 @@ async def attempt_tts_installation(message: types.Message):
     )
 
     commands = [
-        [sys.executable, "-m", "pip", "install", "--upgrade", "pyttsx3", "pywin32", "edge-tts"],
-        ["pip", "install", "--upgrade", "pyttsx3", "pywin32", "edge-tts"],
-        ["python", "-m", "pip", "install", "--upgrade", "pyttsx3", "pywin32", "edge-tts"],
+        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "pyttsx3", "pywin32", "edge-tts>=7.2.4"],
+        ["pip", "install", "--upgrade", "--no-cache-dir", "pyttsx3", "pywin32", "edge-tts>=7.2.4"],
+        ["python", "-m", "pip", "install", "--upgrade", "--no-cache-dir", "pyttsx3", "pywin32", "edge-tts>=7.2.4"],
     ]
     success = False
     for cmd in commands:
@@ -410,7 +732,7 @@ def get_sound_keyboard():
     # Row 1: TTS
     kb.row(KeyboardButton("Синтез речи"), KeyboardButton("Отправить голос"))
     # Row 2: Microphone
-    kb.row(KeyboardButton("Звук с микрофона"), KeyboardButton("Управление браузером"))
+    kb.row(KeyboardButton("Звук с микрофона"))
     # Row 3: Camera functions
     kb.row(KeyboardButton("Снимок с камеры"), KeyboardButton("Видео с камеры"), KeyboardButton("Видео с экрана"))
     # Row 4: Cleanup
@@ -1240,6 +1562,15 @@ def register_handlers(dp: Dispatcher):
 
     @dp.message_handler(lambda message: message.text == "Особые функции")
     async def cmd_special_handler(message: types.Message):
+
+        # Дисклеймер безопасности: показываем один раз на чат за сессию бота.
+        if message.chat.id not in DISCLAIMER_SHOWN:
+            try:
+                await message.answer(DISCLAIMER_TEXT)
+            except Exception:
+                pass
+            DISCLAIMER_SHOWN.add(message.chat.id)
+
         # Если при инициализации были предупреждения (например, нет ffmpeg),
         # сразу покажем их один раз при входе в модуль.
         if INIT_ERRORS:

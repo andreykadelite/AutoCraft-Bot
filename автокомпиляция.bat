@@ -8,6 +8,9 @@ echo 🚀 Компиляция началась...
 REM === Папка проекта ===
 set "SCRIPT_DIR=%~dp0"
 
+REM Добавляем src\moduls и src\gui_win в PYTHONPATH, чтобы Nuitka видел пакеты
+set "PYTHONPATH=%SCRIPT_DIR%src\moduls;%SCRIPT_DIR%src\gui_win;%PYTHONPATH%"
+
 REM (необязательно) подчистить старые выхлопы
 if exist "%SCRIPT_DIR%build" rd /s /q "%SCRIPT_DIR%build"
 if exist "%SCRIPT_DIR%dist"  rd /s /q "%SCRIPT_DIR%dist"
@@ -70,6 +73,11 @@ python -m nuitka ^
     --include-data-file="%SCRIPT_DIR%nircmd-x64\NirCmd.chm=nircmd-x64\NirCmd.chm" ^
     --include-data-file="%SCRIPT_DIR%nircmd-x64\nircmd.exe=nircmd-x64\nircmd.exe" ^
     --include-data-file="%SCRIPT_DIR%nircmd-x64\nircmdc.exe=nircmd-x64\nircmdc.exe" ^
+    --include-package=moduls ^
+    --include-package=network_module ^
+    --include-package=gui_win ^
+    --include-plugin-directory="%SCRIPT_DIR%src\moduls" ^
+    --include-plugin-directory="%SCRIPT_DIR%src\gui_win" ^
     "%SCRIPT_DIR%src\bot-ok.py"
 
 echo ✅ Готово! Упаковано и отправлено в космос.

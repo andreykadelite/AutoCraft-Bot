@@ -34,18 +34,13 @@ if "--api-watchdog" in sys.argv:
 
 import logging
 import sys
+import logging
+import sys
 from pathlib import Path
 
-
-# Глобальный обработчик ненехваченных исключений
-def handle_exception(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-    logger.exception('Необработанное исключение', exc_info=(exc_type, exc_value, exc_traceback))
-    sys.exit(1)
-
-sys.excepthook = handle_exception
+# Глобальный обработчик ненехваченных исключений (вынесен в logging_system.py)
+import logging_system as logsys
+logsys.install_excepthook()
 
 
 import os
@@ -54,26 +49,39 @@ import time
 import threading
 import asyncio
 import subprocess
-import socket
 import platform
 from datetime import datetime
 
-import psutil
-import cpuinfo  # Новый импорт для точной информации о процессоре
-from wmi import WMI  # Новый импорт для точной информации об ОС на Windows
-import speedtest
 import logging  # новый импорт для стандартного логирования
 
 # Добавляем импорт для обработки исключения остановки
 from aiogram.utils import exceptions
 
-# Глобальная переменная для накопления лог-сообщений
-pending_log_messages = []
-# Буфер логов до авторизации в Telegram
-pending_tg_logs = []
-# Максимум 1000 записей, чтобы не раздувать память
-PENDING_TG_MAX = 1000
+# -----------------------------------------------------
+# Логирование вынесено в отдельный модуль: logging_system.py
+# -----------------------------------------------------# Буферы логов (до старта GUI/до авторизации)
+pending_log_messages = logsys.pending_log_messages
+pending_tg_logs = logsys.pending_tg_logs
+PENDING_TG_MAX = logsys.PENDING_TG_MAX
 
+# Аудит доступа (показывается после авторизации даже при выключенном дебаге)
+auth_audit_events = logsys.auth_audit_events
+add_auth_audit = logsys.add_auth_audit
+
+# Важные события до авторизации (дайджест)
+important_events = logsys.important_events
+add_important_event = logsys.add_important_event
+
+# Краткая информация о подключении (заполняется позже, см. start_bot)
+connection_summary = "не определено"
+
+# Проксируем отчёт после авторизации, чтобы он видел актуальную сводку подключения
+async def send_post_auth_report(message, debug_enabled):
+    return await logsys.send_post_auth_report(
+        message,
+        debug_enabled=debug_enabled,
+        connection_summary=connection_summary,
+    )
 
 gui_ready = False  # станет True, когда MainWindow подключится и проглотит буфер логов
 # -----------------------------------------------------
@@ -245,33 +253,22 @@ try:
         _f.write(f"marker_file={_MARKER_FILE} marker_dir={_read_install_root_marker()!r}\n")
 except Exception:
     pass
-# Настройка логирования (модифицировано): запись логов при включенном дебаге в папку 'лог'
+# Настройка логирования (вынесено в logging_system.py)
 import configparser
-API_SECTION = 'api_server'
-API_USE_STANDARD_KEY = 'use_standard_api'
 
+API_SECTION = "api_server"
+API_USE_STANDARD_KEY = "use_standard_api"
 
-conf = configparser.ConfigParser()
-conf.read((_CONFIG_PATH_OVERRIDE or str(Path(base_dir) / 'config.ini')), encoding='utf-8')
-debug_enabled = conf.getboolean('credentials', 'debug', fallback=False)
-if debug_enabled:
-    log_dir = Path(base_dir) / 'лог'
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / Path(sys.executable).with_suffix('.log').name
-    handlers = [logging.FileHandler(log_file, mode='w', encoding='utf-8'), logging.StreamHandler(sys.stdout)]
-    log_level = logging.DEBUG
-else:
-    handlers = [logging.StreamHandler(sys.stdout)]
-    log_level = logging.INFO
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s %(levelname)-8s %(name)s:%(lineno)d — %(message)s',
-    handlers=handlers
+debug_enabled, logger = logsys.configure_bootstrap_logging(
+    base_dir=base_dir,
+    config_path=(_CONFIG_PATH_OVERRIDE or str(Path(base_dir) / "config.ini")),
+    config_section="credentials",
+    stdout=sys.stdout,
 )
-logger = logging.getLogger()
 
 
-folders = ["лог", "notes", "files", "screenshots", "infiles", "plugins"]
+
+folders = ["log", "notes", "files", "screenshots", "infiles", "plugins"]
 for folder in folders:
     path = os.path.join(base_dir, folder)
     if not os.path.exists(path):
@@ -313,7 +310,7 @@ from aiogram.utils import executor
 from PyQt5.QtWidgets import (
     QApplication
 )
-from PyQt5.QtCore import Qt, QObject, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer
 from PyQt5.QtGui import QIcon
 
 # -----------------------------------------------------
@@ -339,117 +336,130 @@ autostart_mode = {}  # Для настройки автозапуска плаг
 
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
-current_time_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-bot_log_file = os.path.join(base_dir, "лог", f"log_{current_time_str}_бот.txt")
-com_log_file = os.path.join(base_dir, "лог", f"log_{current_time_str}_ком.txt")
-plugin_log_file = os.path.join(base_dir, "лог", f"log_{current_time_str}_плагинов.txt")
-error_log_file = os.path.join(base_dir, "лог", f"log_{current_time_str}_ошибок.txt")
+# -----------------------------------------------------
+# Логирование приложения (файлы/буферы/GUI) — теперь через logging_system.py
+# -----------------------------------------------------
 
-# -----------------------------------------------------
-# 6. Механизм передачи логов в GUI (сигналы)
-# -----------------------------------------------------
+# Мини-эмиттер для GUI (сигналы). GUI слушает log_emitter.log_message
 class LogEmitter(QObject):
     log_message = pyqtSignal(str)
 
 log_emitter = LogEmitter()
 
-class SignalHandler(logging.Handler):
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            # Пытаемся отправить в GUI, если он слушает
+# Инициализация файловых логов + привязка к GUI/буферам
+logsys.bind_gui(
+    log_emitter=log_emitter,
+    pending_log_messages_ref=pending_log_messages,
+    pending_tg_logs_ref=pending_tg_logs,
+    gui_ready_getter=lambda: gui_ready,
+)
+logsys.init_app_logging(base_dir=base_dir)
+
+# Экспортируем имена как раньше, чтобы остальной код не трогать
+bot_log_file = logsys.bot_log_file
+com_log_file = logsys.com_log_file
+plugin_log_file = logsys.plugin_log_file
+error_log_file = logsys.error_log_file
+debug_log_file = logsys.debug_log_file
+
+create_logger = logsys.create_logger
+bot_logger = logsys.bot_logger
+com_logger = logsys.com_logger
+plugin_logger = logsys.plugin_logger
+error_logger = logsys.error_logger
+debug_logger = logsys.debug_logger
+
+write_bot_log = logsys.write_bot_log
+write_com_log = logsys.write_com_log
+write_plugin_log = logsys.write_plugin_log
+write_error_log = logsys.write_error_log
+write_debug_log = logsys.write_debug_log
+trace_calls = logsys.trace_calls
+
+
+# -----------------------------------------------------
+# CMD module # -----------------------------------------------------
+class _DynamicDict(dict):
+    __slots__ = ("_module_name", "_attr_name")
+    def __init__(self, module_name: str, attr_name: str):
+        super().__init__()
+        self._module_name = module_name
+        self._attr_name = attr_name
+
+    def _target(self):
+        mod = sys.modules.get(self._module_name)
+        if mod is not None and hasattr(mod, self._attr_name):
             try:
-                log_emitter.log_message.emit(msg)
+                t = getattr(mod, self._attr_name)
+                if isinstance(t, dict):
+                    return t
             except Exception:
                 pass
-            # Буфер GUI: только до готовности GUI, INFO+ и без подряд-дубликатов
-            if record.levelno >= logging.INFO:
-                try:
-                    if not gui_ready:
-                        if not pending_log_messages or pending_log_messages[-1] != msg:
-                            pending_log_messages.append(msg)
-                except Exception:
-                    pass
-            # Буфер для Telegram: всегда до авторизации, INFO+ и без подряд-дубликатов
-            if record.levelno >= logging.INFO:
-                try:
-                    if not pending_tg_logs or pending_tg_logs[-1] != msg:
-                        pending_tg_logs.append(msg)
-                        # ограничиваем размер буфера
-                        if len(pending_tg_logs) > PENDING_TG_MAX:
-                            del pending_tg_logs[:len(pending_tg_logs)-PENDING_TG_MAX]
-                except Exception:
-                    pass
-        except Exception:
-            self.handleError(record)
-formatter = logging.Formatter('[%(name)s] %(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        return self
 
-def create_logger(logger_name, log_file, level=logging.INFO):
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(level)
-    logger.handlers.clear()
-    # Файловый хэндлер
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    # Хэндлер для отправки по сигналу (в GUI/в буферы)
-    signal_handler = SignalHandler()
-    signal_handler.setFormatter(formatter)
-    logger.addHandler(signal_handler)
-    # Не пускаем записи наверх, чтобы не плодить дубликаты
-    logger.propagate = False
-    return logger
+    def get(self, key, default=None):
+        t = self._target()
+        if t is self:
+            return super().get(key, default)
+        return t.get(key, default)
 
-# -----------------------------------------------------
-# Debug feature (added)
-# -----------------------------------------------------
-bot_logger = create_logger("БОТ", bot_log_file)
-com_logger = create_logger("КОМ", com_log_file)
-plugin_logger = create_logger("ПЛАГИН", plugin_log_file)
-error_logger = create_logger("ОШИБКА", error_log_file, level=logging.ERROR)
+    def __getitem__(self, key):
+        t = self._target()
+        if t is self:
+            return super().__getitem__(key)
+        return t[key]
 
-def get_error_description(error_msg: str) -> str:
-    if "Не удалось установить" in error_msg:
-        return "Ошибка установки зависимости может возникнуть из-за проблем с сетью или неправильного имени пакета."
-    elif "Не удалось обновить pip" in error_msg:
-        return "Обновление pip может не удаваться из-за отсутствия прав или проблем с интернет-соединением."
-    elif "Не удалось прочитать" in error_msg:
-        return "Ошибка чтения файла может быть вызвана повреждением файла или отсутствием доступа."
-    elif "При импортировании" in error_msg:
-        return "Ошибка импорта модуля может быть вызвана синтаксическими ошибками или отсутствием зависимостей."
-    elif "init_plugin" in error_msg:
-        return "Ошибка инициализации плагина может быть связана с некорректной реализацией функции."
-    elif "Не удалось выполнить pip freeze" in error_msg:
-        return "Ошибка выполнения pip freeze может возникнуть из-за проблем с окружением."
-    elif "Не удалось удалить папку плагина" in error_msg:
-        return "Ошибка удаления папки может возникнуть из-за отсутствия прав доступа или блокировки файлов."
-    else:
-        return "Описание ошибки не определено. Проверьте входные данные и системные настройки."
+    def __setitem__(self, key, value):
+        t = self._target()
+        if t is self:
+            return super().__setitem__(key, value)
+        t[key] = value
 
-def write_error_log(entry: str):
-    description = get_error_description(entry)
-    error_logger.error(f"{entry} | {description}")
+    def pop(self, key, default=None):
+        t = self._target()
+        if t is self:
+            return super().pop(key, default)
+        return t.pop(key, default)
 
-def write_bot_log(entry: str):
-    bot_logger.info(entry)
-    if "[ОШИБКА]" in entry:
-        write_error_log(entry)
+    def setdefault(self, key, default=None):
+        t = self._target()
+        if t is self:
+            return super().setdefault(key, default)
+        return t.setdefault(key, default)
 
-def write_com_log(entry: str):
-    com_logger.info(entry)
-    if "[ОШИБКА]" in entry:
-        write_error_log(entry)
+    def __contains__(self, key):
+        t = self._target()
+        if t is self:
+            return super().__contains__(key)
+        return key in t
 
-def write_plugin_log(entry: str):
-    plugin_logger.info(entry)
-    if "[ОШИБКА]" in entry:
-        write_error_log(entry)
+    def __len__(self):
+        t = self._target()
+        if t is self:
+            return super().__len__()
+        return len(t)
 
-import modulcmd
+    def items(self):
+        t = self._target()
+        if t is self:
+            return super().items()
+        return t.items()
+
+    def keys(self):
+        t = self._target()
+        if t is self:
+            return super().keys()
+        return t.keys()
+
+    def values(self):
+        t = self._target()
+        if t is self:
+            return super().values()
+        return t.values()
 
 # Expose cmd_mode and in_cmd_menu for gui imports
-cmd_mode = modulcmd.cmd_mode
-in_cmd_menu = modulcmd.in_cmd_menu
+cmd_mode = _DynamicDict("modulcmd", "cmd_mode")
+in_cmd_menu = _DynamicDict("modulcmd", "in_cmd_menu")
 # -----------------------------------------------------
 # 6.1. Менеджер плагинов с поддержкой изоляции через отдельные venv
 # -----------------------------------------------------
@@ -461,6 +471,7 @@ import shutil
 
 PLUGIN_DIR = os.path.join(base_dir, "plugins")
 loaded_plugins = {}  # { "имя_плагина": {"modules": [...], "meta": {...}, "venv_site": <site-packages> } }
+plugins_autostart_completed = False  # флаг, что автозапуск плагинов завершился
 
 def notify(dp: Dispatcher, chat_id, text: str):
     try:
@@ -611,6 +622,10 @@ def save_autostart_config(plugins_list):
     write_bot_log("Конфигурация автозапуска плагинов сохранена в config.ini")
 
 async def auto_start_plugins(dp: Dispatcher):
+    global plugins_autostart_completed
+    # Перед автозапуском явно сбрасываем флаг завершения,
+    # чтобы при повторном запуске не использовать старое значение.
+    plugins_autostart_completed = False
     await asyncio.sleep(5)
     autostart_list = load_autostart_config()
     available = scan_available_plugins()
@@ -670,12 +685,128 @@ async def auto_start_plugins(dp: Dispatcher):
         else:
             write_bot_log(f"[ПРЕДУПРЕЖДЕНИЕ] Плагин {plugin} для автозапуска не найден.")
     write_bot_log("Автозапуск плагинов завершён.")
+    # Помечаем, что автозапуск плагинов завершился.
+    plugins_autostart_completed = True
 
 # -----------------------------------------------------
 # 7. Функция запуска бота (в отдельном потоке)
 # -----------------------------------------------------
 def run_bot():
     from keymenu import get_main_keyboard, get_additional_keyboard
+
+    # Реестр главного меню: динамическая проверка перед показом клавиатуры после авторизации.
+    try:
+        from mainmenu_registry import get_main_items as get_mainmenu_items
+    except ImportError:
+        get_mainmenu_items = None
+
+
+    async def wait_for_mainmenu_items(
+            timeout: float = 15.0,
+            interval: float = 0.5,
+            stable_checks: int = 3
+    ) -> bool:
+        """Ждём, пока модули зарегистрируют свои пункты в главном меню.
+
+        Логика:
+        - ждём появления хотя бы одного пункта;
+        - затем ждём, пока количество пунктов подряд несколько раз не изменяется
+          (чтобы все модули успели зарегистрироваться);
+        - если по таймауту так и не появилось ни одного пункта — возвращаем False.
+        """
+        if get_mainmenu_items is None:
+            return False
+
+        end = time.time() + timeout
+        last_count = None
+        stable_steps = 0
+
+        while time.time() < end:
+            try:
+                items = get_mainmenu_items(group="main") or []
+                count = len(items)
+            except Exception:
+                items = []
+                count = 0
+
+            if count > 0:
+                if last_count is None or count != last_count:
+                    # количество пунктов изменилось — считаем, что что‑то ещё догружается
+                    last_count = count
+                    stable_steps = 1
+                else:
+                    # количество пунктов то же самое, увеличиваем счётчик стабильности
+                    stable_steps += 1
+
+                # считаем, что всё загрузилось, когда несколько циклов подряд
+                # количество пунктов не меняется
+                if stable_steps >= stable_checks:
+                    return True
+
+            await asyncio.sleep(interval)
+
+        # Таймаут: если к этому моменту хоть что‑то успело зарегистрироваться —
+        # всё равно возвращаем True, иначе False.
+        try:
+            items = get_mainmenu_items(group="main") or []
+            return len(items) > 0
+        except Exception:
+            return False
+
+    async def send_authorized_with_menu(message: types.Message):
+        """
+        Отправляет сообщение об успешной авторизации и клавиатуру главного меню.
+
+        Важно: в EXE некоторые модули могут одновременно отправлять свои стартовые отчёты,
+        из-за чего ReplyKeyboard может «съехать». Поэтому:
+        - СНАЧАЛА быстро отправляем меню пользователю
+        - А проверку «пустоты» меню делаем отдельной задачей, чтобы не тормозить цепочку
+        """
+        keyboard = None
+        try:
+            keyboard = get_main_keyboard()
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] Не удалось сформировать клавиатуру главного меню: {e}")
+
+        # Быстро подтверждаем авторизацию
+        try:
+            if keyboard is not None:
+                await message.answer("Вы авторизовались.", reply_markup=keyboard)
+            else:
+                await message.answer("Вы авторизовались.")
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] Не удалось отправить сообщение об авторизации: {e}")
+
+        # Тихая проверка наполненности меню (не блокирует основной сценарий)
+        async def _warn_if_menu_empty():
+            try:
+                has_menu = await wait_for_mainmenu_items(timeout=15.0, interval=0.5, stable_checks=3)
+            except Exception:
+                return
+            if not has_menu:
+                try:
+                    warn = (
+                        "Главное меню пока пустое: модули ещё не зарегистрировали свои кнопки. "
+                        "Если через пару секунд ничего не появится, просто напиши /start."
+                    )
+                    kb = None
+                    try:
+                        kb = get_main_keyboard()
+                    except Exception:
+                        kb = None
+                    if kb is not None:
+                        await message.answer(warn, reply_markup=kb)
+                    else:
+                        await message.answer(warn)
+                except Exception:
+                    pass
+
+        try:
+            asyncio.create_task(_warn_if_menu_empty())
+        except Exception:
+            pass
+
+
     write_bot_log("Бот запускается...")
 
     # Загрузка учетных данных из credentials.ini
@@ -686,14 +817,18 @@ def run_bot():
         config["telegram_api"] = {"address": "", "port": ""}
         _save_config()
 
+    # Добавляем секцию api_server (флаг use_standard_api), если отсутствует.
+    # GUI сохраняет этот флаг именно в секцию [api_server], поэтому бот читает оттуда.
+    if not config.has_section(API_SECTION):
+        config[API_SECTION] = {API_USE_STANDARD_KEY: "false"}
+        _save_config()
+
     # Load debug status from config.ini
     global debug_enabled
+    global connection_summary
     debug_enabled = config.getboolean(CONFIG_SECTION, 'debug', fallback=False)
+    logsys.set_debug_enabled(debug_enabled)
     if debug_enabled:
-        # Auto-start tracing for bot
-        sys.settrace(trace_calls)
-        threading.settrace(trace_calls)
-        write_debug_log("Debug tracing auto-start at bot launch.")
         write_com_log("Дебаг включен из config.ini при запуске.")
     if allowed_ids_str:
         try:
@@ -709,12 +844,15 @@ def run_bot():
 
     # Проверяем настройку GUI: использование стандартного Telegram API сервера
     use_standard_api = config.getboolean(API_SECTION, API_USE_STANDARD_KEY, fallback=False)
+    # К какому серверу реально подключились (показываем после авторизации)
+    connection_summary = "стандартный Telegram API сервер"
     if use_standard_api:
         write_bot_log("Настройка GUI: использование стандартного Telegram API сервера")
         current_bot = Bot(token=TOKEN, loop=loop)
         try:
             bot_info = loop.run_until_complete(current_bot.get_me())
             write_bot_log(f"Бот подключён через стандартный сервер: {bot_info.first_name} (@{bot_info.username})")
+            connection_summary = f"стандартный Telegram API сервер | {bot_info.first_name} (@{bot_info.username})"
         except Exception as e:
             write_bot_log(f"[ОШИБКА] Не удалось подключиться к стандартному серверу: {e}")
     else:
@@ -743,6 +881,7 @@ def run_bot():
                     bot_info = loop.run_until_complete(tmp_bot.get_me())
                     write_bot_log("Успешно подключено к локальному Telegram API серверу")
                     write_bot_log(f"Бот подключён: {bot_info.first_name} (@{bot_info.username})")
+                    connection_summary = f"локальный Telegram API сервер ({api_server}) | {bot_info.first_name} (@{bot_info.username})"
                     current_bot = tmp_bot
                     server_connected = True
                     break
@@ -756,6 +895,7 @@ def run_bot():
                 try:
                     bot_info = loop.run_until_complete(current_bot.get_me())
                     write_bot_log(f"Бот подключён через стандартный сервер: {bot_info.first_name} (@{bot_info.username})")
+                    connection_summary = f"стандартный Telegram API сервер | {bot_info.first_name} (@{bot_info.username})"
                 except Exception as e:
                     write_bot_log(f"[ОШИБКА] Не удалось получить информацию о боте: {e}")
         else:
@@ -764,14 +904,121 @@ def run_bot():
             try:
                 bot_info = loop.run_until_complete(current_bot.get_me())
                 write_bot_log(f"Бот подключён: {bot_info.first_name} (@{bot_info.username})")
+                connection_summary = f"стандартный Telegram API сервер | {bot_info.first_name} (@{bot_info.username})"
             except Exception as e:
                 write_bot_log(f"[ОШИБКА] Не удалось получить информацию о боте: {e}")
 
     dp = Dispatcher(current_bot)
-    modulcmd.register_handlers(dp)
     setattr(current_bot, "dispatcher", dp)
+
+    # === ВАЖНО: защита авторизации ===
+    # В EXE некоторые модули могут регистрировать «широкие» хэндлеры и/или отменять обработку,
+    # из-за чего PIN/старт иногда не доходит до этого скрипта. Поэтому хэндлер авторизации
+    # регистрируем ДО загрузки модулей и дополнительно блокируем дальнейшую обработку.
+    try:
+        from aiogram.dispatcher.handler import CancelHandler
+    except Exception:
+        try:
+            from aiogram.dispatcher import CancelHandler
+        except Exception:
+            CancelHandler = None
+
+    _post_auth_in_progress = set()
+
+    async def _post_auth_sequence(msg: types.Message):
+        """После авторизации: отправить пост-лог и «прикрепить» главное меню последним сообщением."""
+        uid = msg.from_user.id if msg.from_user else None
+        if uid is not None and uid in _post_auth_in_progress:
+            return
+        if uid is not None:
+            _post_auth_in_progress.add(uid)
+
+        try:
+            # 1) Пост-отчёт (лог/сводка/аудит)
+            try:
+                await send_post_auth_report(msg, debug_enabled=debug_enabled)
+            except Exception as e:
+                write_bot_log(f"[ОШИБКА] send_post_auth_report: {e}")
+
+            # 2) Дать модульным отчётам «пролиться» и потом вернуть клавиатуру наверх
+            try:
+                await asyncio.sleep(1.0)
+            except Exception:
+                pass
+
+            try:
+                kb = get_main_keyboard()
+                await msg.answer("Главное меню ✅", reply_markup=kb)
+            except Exception as e:
+                write_bot_log(f"[ОШИБКА] Не удалось отправить главное меню после авторизации: {e}")
+                try:
+                    await msg.answer("Главное меню ✅")
+                except Exception:
+                    pass
+        finally:
+            if uid is not None:
+                _post_auth_in_progress.discard(uid)
+
+    @dp.message_handler(lambda message: message.from_user.id not in authorized_users, content_types=types.ContentTypes.ANY)
+    async def check_pin(message: types.Message):
+        user_id = message.from_user.id
+
+        # Если задан список разрешённых аккаунтов — режем всех остальных сразу
+        if allowed_accounts and user_id not in allowed_accounts:
+            write_bot_log(f"Попытка авторизации неразрешённого пользователя {user_id}.")
+            add_auth_audit(f"Запрещённый пользователь {user_id} попытался авторизоваться.")
+            try:
+                await message.answer("Доступ запрещён: ваш ID не входит в список разрешённых.")
+            finally:
+                if CancelHandler:
+                    raise CancelHandler()
+            return
+
+        # Если PIN включён — просим его, иначе авторизуем сразу
+        if PIN_CODE:
+            # Нечего проверять (не текст/пусто) или /start
+            if not getattr(message, "text", None) or message.text.strip() in ["/start", "start"]:
+                try:
+                    await message.answer("Введите PIN-код:")
+                finally:
+                    if CancelHandler:
+                        raise CancelHandler()
+                return
+
+            entered_pin = message.text.strip()
+            if entered_pin != PIN_CODE:
+                write_bot_log(f"Неудачная попытка авторизации пользователя {user_id} с неправильным PIN.")
+                add_auth_audit(f"Пользователь {user_id} ввёл неверный PIN.")
+                try:
+                    await message.answer("Неверный PIN-код. Попробуйте ещё раз.")
+                finally:
+                    if CancelHandler:
+                        raise CancelHandler()
+                return
+
+        # Успешная авторизация
+        authorized_users.add(user_id)
+
+        # 1) Сразу выдаём меню (чтобы юзер видел клавиатуру, даже если дальше пойдёт «флуд» от модулей)
+        await send_authorized_with_menu(message)
+
+        # 2) Пост-отчёт и финальный «пин» клавиатуры делаем задачей, чтобы ничего не зависало
+        try:
+            asyncio.create_task(_post_auth_sequence(message))
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] Не удалось запланировать пост-отчёт после авторизации: {e}")
+            try:
+                await _post_auth_sequence(message)
+            except Exception:
+                pass
+
+        # Не даём другим хэндлерам (включая модульные) обработать PIN-сообщение
+        if CancelHandler:
+            raise CancelHandler()
+
     import Moduls_manager_ext
     Moduls_manager_ext.register_handlers(dp)
+
 
     # --- ЭКСТРЕННАЯ КОМАНДА ---
     @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "hrp" and message.from_user.id in authorized_users)
@@ -789,262 +1036,14 @@ def run_bot():
         keyboard = get_main_keyboard()
         await message.answer("Экстренное завершение текущего режима. Возвращаюсь в главное меню.", reply_markup=keyboard)
 
-    def get_os_status():
-        """
-        Возвращает точную информацию об ОС для Windows через WMI и для других ОС через platform.uname().
-        """
-        try:
-            if platform.system() == "Windows":
-                w = WMI()
-                os_info = w.Win32_OperatingSystem()[0]
-                name = os_info.Caption.strip()
-                version = os_info.Version
-                arch = os_info.OSArchitecture
-                return f"ОС: {name} (Версия {version}, {arch})"
-            else:
-                uname = platform.uname()
-                return f"ОС: {uname.system} {uname.release} ({uname.version}), {uname.machine}"
-        except Exception as e:
-            write_bot_log(f"[ОШИБКА] get_os_status: {e}")
-            # fallback to original implementation
-            return f"ОС: {platform.system()} {platform.release()} ({platform.version()})"
-
-    def get_cpu_status():
-        """
-        Возвращает точную информацию о процессоре: модель, загрузку, ядра и частоту (через WMI на Windows).
-        """
-        try:
-            if platform.system() == "Windows":
-                w = WMI()
-                cpu_w = w.Win32_Processor()[0]
-                name = cpu_w.Name.strip()
-                cores = cpu_w.NumberOfCores
-                threads = cpu_w.NumberOfLogicalProcessors
-                usage = psutil.cpu_percent(interval=1)
-                freq = cpu_w.MaxClockSpeed  # MaxClockSpeed в МГц
-                return (
-                    f"CPU: {name}\n"
-                    f"Загрузка: {usage}%\n"
-                    f"Ядер: {cores} физ., {threads} лог.\n"
-                    f"Частота: {freq} МГц"
-                )
-            else:
-                cpu_usage = psutil.cpu_percent(interval=1)
-                physical_cores = psutil.cpu_count(logical=False)
-                total_cores = psutil.cpu_count(logical=True)
-                cpu_freq = psutil.cpu_freq()
-                if cpu_freq:
-                    current_freq = f"{cpu_freq.current:.2f}"
-                else:
-                    current_freq = "Недоступно"
-                return (
-                    f"CPU: {platform.processor()}\n"
-                    f"Загрузка: {cpu_usage}%\n"
-                    f"Ядер: {physical_cores} физ., {total_cores} лог.\n"
-                    f"Частота: {current_freq} МГц"
-                )
-        except Exception as e:
-            write_bot_log(f"[ОШИБКА] get_cpu_status: {e}")
-            # fallback to original implementation
-            cpu_usage = psutil.cpu_percent(interval=1)
-            physical_cores = psutil.cpu_count(logical=False)
-            total_cores = psutil.cpu_count(logical=True)
-            cpu_freq = psutil.cpu_freq()
-            if cpu_freq:
-                current_freq = f"{cpu_freq.current:.2f}"
-            else:
-                current_freq = "Недоступно"
-            return (
-                f"CPU: {platform.processor()}\n"
-                f"Загрузка: {cpu_usage}%\n"
-                f"Ядер: {physical_cores} физ., {total_cores} лог.\n"
-                f"Частота: {current_freq} МГц"
-            )
-
-    def get_ram_status():
-        ram = psutil.virtual_memory()
-        return (
-            f"RAM: {round(ram.total/(1024**3), 2)} ГБ общий, "
-            f"{round(ram.used/(1024**3), 2)} ГБ использовано, "
-            f"{round(ram.available/(1024**3), 2)} ГБ доступно\n"
-            f"Загрузка: {ram.percent}%"
-        )
-
-    def get_disk_status():
-        partitions = psutil.disk_partitions()
-        result = []
-        for partition in partitions:
-            try:
-                usage = psutil.disk_usage(partition.mountpoint)
-                result.append(
-                    f"Диск {partition.device} ({partition.fstype}, {partition.mountpoint}):\n"
-                    f"  {round(usage.total/(1024**3),2)} ГБ всего, "
-                    f"{round(usage.used/(1024**3),2)} ГБ использовано ({usage.percent}%), "
-                    f"{round(usage.free/(1024**3),2)} ГБ свободно"
-                )
-            except Exception:
-                result.append(f"Диск {partition.device}: недоступно")
-        return "\n".join(result)
-
-    def get_network_status():
-        hostname = socket.gethostname()
-        net_if_stats = psutil.net_if_stats()
-        net_if_addrs = psutil.net_if_addrs()
-        connected_interface_details = []
-        internal_ip = None
-        for iface, stats in net_if_stats.items():
-            if stats.isup:
-                addrs = net_if_addrs.get(iface, [])
-                ipv4_found = False
-                info_list = []
-                for addr in addrs:
-                    if addr.family == socket.AF_INET:
-                        if not addr.address.startswith("127."):
-                            ipv4_found = True
-                            info_list.append(f"IPv4: {addr.address}")
-                    elif addr.family == socket.AF_INET6:
-                        info_list.append(f"IPv6: {addr.address}")
-                    elif hasattr(socket, 'AF_PACKET') and addr.family == socket.AF_PACKET:
-                        info_list.append(f"MAC: {addr.address}")
-                if ipv4_found:
-                    connected_interface_details.append(f"{iface}: " + ", ".join(info_list))
-                    if internal_ip is None:
-                        for addr in addrs:
-                            if addr.family == socket.AF_INET and not addr.address.startswith("127."):
-                                internal_ip = addr.address
-                                break
-        if not internal_ip:
-            try:
-                internal_ip = socket.gethostbyname(hostname)
-            except Exception:
-                internal_ip = "Не удалось получить"
-        try:
-            external_ip = subprocess.check_output("curl -s ifconfig.me", shell=True).decode("utf-8").strip()
-        except Exception:
-            external_ip = "Не удалось получить"
-        return hostname, internal_ip, external_ip, connected_interface_details
-
-    def test_speed():
-        try:
-            st = speedtest.Speedtest()
-            st.get_best_server()
-            download = st.download() / 1_000_000
-            upload = st.upload() / 1_000_000
-            return f"Скорость: загрузка {round(download,2)} Мбит/с, отправка {round(upload,2)} Мбит/с"
-        except Exception as e:
-            return f"Ошибка теста скорости: {str(e)}"
-
     # ------------------------- Авторизация и старт -------------------------
-    @dp.message_handler(lambda message: message.from_user.id not in authorized_users, content_types=types.ContentTypes.ANY)
-    async def check_pin(message: types.Message):
-        user_id = message.from_user.id
-        if allowed_accounts:
-            if user_id not in allowed_accounts:
-                write_bot_log(f"Попытка авторизации неразрешённого пользователя {user_id}.")
-                await message.answer("Доступ запрещён: ваш ID не входит в список разрешённых.")
-                return
-            if PIN_CODE:
-                if not message.text or message.text.strip() in ["/start", "start"]:
-                    await message.answer("Введите PIN-код:")
-                    return
-                if message.text.strip() == PIN_CODE:
-                    authorized_users.add(user_id)
-                    keyboard = get_main_keyboard()
-                    await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                    if pending_tg_logs:
-                        await message.answer("Пока вы не были авторизованы, вот что произошло:")
-                        log_text = "\n".join(pending_tg_logs)
-                        max_chunk = 4000
-                        chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-                        for chunk in chunks:
-                            await message.answer(chunk)
-                        pending_tg_logs.clear()
-                    status_str = "включен" if debug_enabled else "выключен"
-                    await message.answer(f"Статус дебага: {status_str}.")
-                else:
-                    write_bot_log(f"Неудачная попытка авторизации пользователя {user_id} с неправильным PIN: {message.text.strip()}")
-                    await message.answer("Неверный PIN-код. Попробуйте ещё раз.")
-            else:
-                authorized_users.add(user_id)
-                keyboard = get_main_keyboard()
-                await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                if pending_tg_logs:
-                    await message.answer("Пока вы не были авторизованы, вот что произошло:")
-                    log_text = "\n".join(pending_tg_logs)
-                    max_chunk = 4000
-                    chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-                    for chunk in chunks:
-                        await message.answer(chunk)
-                    pending_tg_logs.clear()
-                    status_str = "включен" if debug_enabled else "выключен"
-                    await message.answer(f"Статус дебага: {status_str}.")
-        else:
-            if PIN_CODE:
-                if not message.text or message.text.strip() in ["/start", "start"]:
-                    await message.answer("Введите PIN-код:")
-                    return
-                if message.text.strip() == PIN_CODE:
-                    authorized_users.add(user_id)
-                    keyboard = get_main_keyboard()
-                    await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                    if pending_tg_logs:
-                        await message.answer("Пока вы не были авторизованы, вот что произошло:")
-                        log_text = "\n".join(pending_tg_logs)
-                        max_chunk = 4000
-                        chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-                        for chunk in chunks:
-                            await message.answer(chunk)
-                        pending_tg_logs.clear()
-                    status_str = "включен" if debug_enabled else "выключен"
-                    await message.answer(f"Статус дебага: {status_str}.")
-                else:
-                    write_bot_log(f"Неудачная попытка авторизации пользователя {user_id} с неправильным PIN: {message.text.strip()}")
-                    await message.answer("Неверный PIN-код. Попробуйте ещё раз.")
-            else:
-                authorized_users.add(user_id)
-                keyboard = get_main_keyboard()
-                await message.answer("Вы авторизовались.", reply_markup=keyboard)
-                if pending_tg_logs:
-                    await message.answer("Пока вы не были авторизованы, вот что произошло:")
-                    log_text = "\n".join(pending_tg_logs)
-                    max_chunk = 4000
-                    chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-                    for chunk in chunks:
-                        await message.answer(chunk)
-                    pending_tg_logs.clear()
-                    status_str = "включен" if debug_enabled else "выключен"
-                    await message.answer(f"Статус дебага: {status_str}.")
-
     @dp.message_handler(commands=['start'])
     async def start_command(message: types.Message):
         keyboard = get_main_keyboard()
         await message.answer("Выберите действие:", reply_markup=keyboard)
         write_bot_log(f"Пользователь {message.from_user.id} выдал команду /start.")
 
-    # ------------------------- Основные кнопки (статус, скриншоты) -------------------------
-    @dp.message_handler(lambda message: message.text == "Статус сервера")
-    async def server_status(message: types.Message):
-        write_com_log(f"Пользователь {message.from_user.id} запросил статус сервера.")
-        await message.answer(get_os_status())
-        await message.answer(get_cpu_status())
-        await message.answer(get_ram_status())
-        await message.answer(get_disk_status())
-
-    @dp.message_handler(lambda message: message.text == "Статус сети")
-    async def network_status(message: types.Message):
-        write_com_log(f"Пользователь {message.from_user.id} запросил статус сети.")
-        hostname, internal_ip, external_ip, interface_details = get_network_status()
-        if interface_details:
-            for detail in interface_details:
-                await message.answer("Интерфейс:\n" + detail)
-        else:
-            await message.answer("Нет подключённых интерфейсов")
-        await message.answer(f"Внутренний IP: {internal_ip}")
-        await message.answer(f"Внешний IP: {external_ip}")
-        await message.answer("Измерение скорости, подождите...")
-        await message.answer(test_speed())
-
-# ------------------------- Дополнительно -------------------------
+    # ------------------------- Дополнительно -------------------------
     @dp.message_handler(lambda message: message.text == "Дополнительно")
     async def additional_menu(message: types.Message):
         power_mode[message.from_user.id] = False
@@ -1067,148 +1066,9 @@ def run_bot():
         keyboard = get_main_keyboard()
         await message.answer("Возвращаюсь в главное меню.", reply_markup=keyboard)
 
+    
     # ------------------------- Логи -------------------------
-    @dp.message_handler(lambda message: message.text and message.text.strip().lower() == "лог")
-    async def log_menu(message: types.Message):
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        buttons = ["лог устройства", "лог бота", "лог менеджера плагинов", "лог ошибок", "дебаг", "назад бота"]
-        keyboard.add(*buttons)
-        await message.answer("Выберите тип лога:", reply_markup=keyboard)
-
-    @dp.message_handler(lambda message: message.text == "лог устройства")
-    async def device_log(message: types.Message):
-        write_bot_log(f"Пользователь {message.from_user.id} запросил лог устройства.")
-        try:
-            with open(com_log_file, "r", encoding="utf-8") as f:
-                log_text = f.read()
-            if not log_text.strip():
-                log_text = "Лог устройства: логов нет."
-            max_chunk = 4000
-            chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-            for chunk in chunks:
-                await message.answer(chunk)
-        except Exception as e:
-            await message.answer(f"Ошибка чтения лога устройства: {str(e)}")
-
-    @dp.message_handler(lambda message: message.text == "лог бота")
-    async def bot_log_handler(message: types.Message):
-        write_bot_log(f"Пользователь {message.from_user.id} запросил лог бота.")
-        try:
-            with open(bot_log_file, "r", encoding="utf-8") as f:
-                log_text = f.read()
-            if not log_text.strip():
-                log_text = "Лог бота: логов нет."
-            max_chunk = 4000
-            chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-            for chunk in chunks:
-                await message.answer(chunk)
-        except Exception as e:
-            await message.answer(f"Ошибка чтения лога бота: {str(e)}")
-
-    @dp.message_handler(lambda message: message.text == "лог менеджера плагинов")
-    async def plugin_log_handler(message: types.Message):
-        write_bot_log(f"Пользователь {message.from_user.id} запросил лог менеджера плагинов.")
-        try:
-            with open(plugin_log_file, "r", encoding="utf-8") as f:
-                log_text = f.read()
-            if not log_text.strip():
-                log_text = "Лог менеджера плагинов: логов нет."
-            max_chunk = 4000
-            chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-            for chunk in chunks:
-                await message.answer(chunk)
-        except Exception as e:
-            await message.answer(f"Ошибка чтения лога менеджера плагинов: {str(e)}")
-
-    @dp.message_handler(lambda message: message.text == "лог ошибок")
-    async def error_log_handler(message: types.Message):
-        write_bot_log(f"Пользователь {message.from_user.id} запросил лог ошибок.")
-        try:
-            with open(error_log_file, "r", encoding="utf-8") as f:
-                log_text = f.read()
-            if not log_text.strip():
-                log_text = "Ошибок нет."
-            max_chunk = 4000
-            chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-            for chunk in chunks:
-                await message.answer(chunk)
-        except Exception as e:
-            await message.answer(f"Ошибка чтения лога ошибок: {str(e)}")
-
-    @dp.message_handler(lambda message: message.text == "дебаг")
-    async def debug_menu(message: types.Message):
-        write_com_log(f"Пользователь {message.from_user.id} открыл меню дебага.")
-        # Отправляем статус дебага
-        status_str = "включен" if debug_enabled else "выключен"
-        await message.answer(f"Статус дебага: {status_str}.")
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        keyboard.add("Вкл дебаг", "Выкл дебаг")
-        keyboard.add("Прочитать лог дебага", "Назад в меню логов")
-        await message.answer("Меню дебага:", reply_markup=keyboard)
-
-    @dp.message_handler(lambda message: message.text == "Вкл дебаг")
-    async def enable_debug(message: types.Message):
-        global debug_enabled
-        if debug_enabled:
-            await message.answer("Дебаг уже включен.")
-        else:
-            debug_enabled = True
-            write_com_log(f"Пользователь {message.from_user.id} включил дебаг.")
-            await message.answer("Дебаг включен.")
-            # Сохраняем статус в config.ini
-            if CONFIG_SECTION not in config:
-                config[CONFIG_SECTION] = {}
-            config[CONFIG_SECTION]['debug'] = 'True'
-            _save_config()
-            write_bot_log("Статус дебага сохранён в config.ini")
-            # Запускаем трассировку
-            sys.settrace(trace_calls)
-            threading.settrace(trace_calls)
-            write_debug_log("Debug tracing started by user.")
-            await debug_menu(message)
-
-    @dp.message_handler(lambda message: message.text == "Выкл дебаг")
-    async def disable_debug(message: types.Message):
-        global debug_enabled
-        if not debug_enabled:
-            await message.answer("Дебаг уже выключен.")
-        else:
-            debug_enabled = False
-            write_com_log(f"Пользователь {message.from_user.id} выключил дебаг.")
-            await message.answer("Дебаг выключен.")
-            # Сохраняем статус в config.ini
-            if CONFIG_SECTION not in config:
-                config[CONFIG_SECTION] = {}
-            config[CONFIG_SECTION]['debug'] = 'False'
-            _save_config()
-            write_bot_log("Статус дебага сохранён в config.ini")
-            await debug_menu(message)
-
-    @dp.message_handler(lambda message: message.text == "Прочитать лог дебага")
-    async def read_debug_log(message: types.Message):
-        write_com_log(f"Пользователь {message.from_user.id} запросил лог дебага.")
-        try:
-            with open(debug_log_file, "r", encoding="utf-8") as f:
-                log_text = f.read()
-            if not log_text.strip():
-                log_text = "Лог дебага: логов нет."
-            max_chunk = 4000
-            chunks = [log_text[i:i+max_chunk] for i in range(0, len(log_text), max_chunk)]
-            for chunk in chunks:
-                await message.answer(chunk)
-        except Exception as e:
-            await message.answer(f"Ошибка чтения лога дебага: {str(e)}")
-
-    @dp.message_handler(lambda message: message.text == "Назад в меню логов")
-    async def back_from_debug_menu(message: types.Message):
-        await log_menu(message)
-        write_com_log(f"Пользователь {message.from_user.id} вернулся в меню логов из дебага.")
-
-    @dp.message_handler(lambda message: message.text == "назад бота")
-    async def back_from_log_menu(message: types.Message):
-        await additional_menu(message)
-        write_bot_log(f"Пользователь {message.from_user.id} вышел из меню логов.")
-
+    # Вынесено в отдельный модуль: startrunmodul_logmenu.py
     # ----------------------- Меню плагинов -----------------------
     @dp.message_handler(lambda m: m.text == "Плагины")
     async def plugins_menu_handler(message: types.Message):
@@ -1517,67 +1377,79 @@ def _save_config():
 # 10. Импорт графического интерфейса из файла gui.py
 # -----------------------------------------------------
 from gui import MainWindow
-
-debug_enabled = False
-debug_log_file = os.path.join(base_dir, "лог", f"log_{current_time_str}_debаг.txt")
-debug_logger = create_logger("DEBUG", debug_log_file, level=logging.DEBUG)
-def write_debug_log(entry: str):
-    if debug_enabled:
-        debug_logger.debug(entry)
-
-# ----------------------------------------
-# Debug tracing for functions и переменных
-# ----------------------------------------
-def trace_calls(frame, event, arg):
-    if not debug_enabled:
-        return
-    filename = frame.f_code.co_filename
-    # Трассируем только в рамках приложения
-    if not filename.startswith(base_dir):
-        return
-    name = frame.f_code.co_name
-    modname = frame.f_globals.get("__name__", "")
-    if modname.startswith("logging") or name in ("trace_calls", "write_debug_log"):
-        return
-    if event == "call":
-        write_debug_log(f"Calling {name}")
-    elif event == "return":
-        write_debug_log(f"Returned from {name}")
-    return trace_calls
-
-# Enable tracing if debug is enabled
-if debug_enabled:
-    write_debug_log("Debug enabled: starting trace")
-    sys.settrace(trace_calls)
-    threading.settrace(trace_calls)
-
 if __name__ == "__main__":
     import subprocess
+
+    # Настройки heartbeat для контроля зависаний GUI/бота
+    HEARTBEAT_FILE = os.path.join(base_dir, "log", "heartbeat_main.txt")
+    HEARTBEAT_INTERVAL_SEC = 5          # как часто дочерний процесс пишет "я жив"
+    HANG_TIMEOUT_SEC = 60               # сколько секунд без heartbeat считаем зависанием
+    STARTUP_GRACE_SEC = 60              # на запуск GUI/бота даём минуту
+    HEARTBEAT_CHECK_INTERVAL_SEC = 5    # как часто вотчер проверяет heartbeat
+
     # Если запущено с --child, то стартуем GUI/бота
     if "--child" in sys.argv:
         try:
+            # Функция для обновления heartbeat-файла
+            def _update_heartbeat():
+                try:
+                    os.makedirs(os.path.join(base_dir, "log"), exist_ok=True)
+                    with open(HEARTBEAT_FILE, "w", encoding="utf-8") as hb:
+                        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                        hb.write(ts)
+                except Exception:
+                    # Ошибку heartbeat не считаем фатальной
+                    pass
+
             write_bot_log("Запуск приложения. Инициализация GUI.")
+            _update_heartbeat()
+
             app = QApplication(sys.argv)
+
+            # Таймер, который регулярно помечает, что GUI жив.
+            # Если главный поток зависнет, таймер перестанет тикать.
+            heartbeat_timer = QTimer()
+            heartbeat_timer.setInterval(HEARTBEAT_INTERVAL_SEC * 1000)
+            heartbeat_timer.timeout.connect(_update_heartbeat)
+            heartbeat_timer.start()
+
             window = MainWindow()
             window.show()
             write_bot_log("GUI инициализирован.")
             ret = app.exec_()
             write_bot_log(f"GUI закрыт с кодом: {ret}")
+
+            # При нормальном выходе уберём heartbeat, чтобы вотчер
+            # не считал старый файл актуальным.
+            try:
+                if os.path.exists(HEARTBEAT_FILE):
+                    os.remove(HEARTBEAT_FILE)
+            except Exception:
+                pass
+
             sys.exit(ret)
         except Exception:
             write_bot_log(f"[ОШИБКА] Критическая ошибка в GUI:\n{traceback.format_exc()}")
+            # На всякий случай сбросим heartbeat
+            try:
+                if os.path.exists(HEARTBEAT_FILE):
+                    os.remove(HEARTBEAT_FILE)
+            except Exception:
+                pass
             sys.exit(1)
     else:
         # Режим watchdog по умолчанию
-        log_path = os.path.join(base_dir, "лог", "watchdog.log")
-        # Load debug flag for watchdog logging
+        log_path = os.path.join(base_dir, "log", "watchdog.log")
+        # Перечитываем config.ini, чтобы узнать актуальный флаг debug
         try:
             config.read(CONFIG_FILE, encoding='utf-8')
             debug_enabled = config.getboolean(CONFIG_SECTION, 'debug', fallback=False)
         except Exception:
             debug_enabled = False
+        # Применяем флаг в системе логирования
+        logsys.set_debug_enabled(debug_enabled)
         def log(msg: str):
-            # Only write watchdog logs if debug is enabled
+            # Логи вотчера пишем только при включённом debug, чтобы не засорять диск
             if not debug_enabled:
                 return
             max_size_mb = 5
@@ -1586,26 +1458,42 @@ if __name__ == "__main__":
                     os.replace(log_path, log_path + ".old")
             except Exception:
                 pass
-            with open(log_path, "a", encoding="utf-8") as f:
-                ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"{ts} {msg}\n")
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                    f.write(f"{ts} {msg}\n")
+            except Exception:
+                # последнюю линию лучше проглотить, чтобы вотчер не упал из-за проблем с диском
+                pass
 
-        def spawn_child():
-            exe_path = sys.executable
-            if is_frozen():
-                base = exe_path
-                cmd = [base, "--child"]
-            else:
-                python = exe_path
-                script = os.path.abspath(sys.argv[0])
-                cmd = [python, script, "--child"]
-            log(f"▶️ [watchdog] Запускаем бота: {cmd}")
-            return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore', cwd=base_dir)
-
-        
-def spawn_child_passthrough():
+        def _kill_telegram_api_processes():
             """
-            Запуск дочернего процесса с ПРОКИДЫВАНИЕМ исходных аргументов (например, --tray, --config),
+            Пытаемся аккуратно остановить локальный Telegram API сервер перед перезапуском бота.
+            Это максимально приближено к поведению кнопки "Полный перезапуск".
+            """
+            try:
+                for p in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
+                    name = (p.info.get("name") or "").lower()
+                    exe = (p.info.get("exe") or "").lower()
+                    cmdline = " ".join(p.info.get("cmdline") or []).lower()
+                    if "telegram-bot-api" in name or "telegram-bot-api" in exe or "telegram-bot-api" in cmdline:
+                        try:
+                            log(f"[watchdog] Найдён процесс Telegram API pid={p.pid}, пробуем завершить...")
+                            p.terminate()
+                            try:
+                                p.wait(timeout=10)
+                                log(f"[watchdog] Процесс Telegram API pid={p.pid} завершён terminate().")
+                            except psutil.TimeoutExpired:
+                                log(f"[watchdog] Telegram API pid={p.pid} не завершился, посылаем kill().")
+                                p.kill()
+                        except Exception as e:
+                            log(f"[watchdog] Ошибка при завершении Telegram API pid={p.pid}: {e}")
+            except Exception as e:
+                log(f"[watchdog] Ошибка при поиске процессов Telegram API: {e}")
+
+        def spawn_child_passthrough():
+            """
+            Запуск дочернего процесса с прокидыванием исходных аргументов (например, --tray, --config),
             исключая служебные флаги вотчера (--child, --api-watchdog <pid1> <pid2>).
             """
             exe_path = sys.executable
@@ -1643,26 +1531,103 @@ def spawn_child_passthrough():
                 cwd=base_dir
             )
 
-restart_count = 0
-MAX_RESTARTS = 5
+        def _pump_child_output(proc):
+            """Читает stdout дочернего процесса и пишет его в лог вотчера (если включён debug)."""
+            try:
+                if proc.stdout is None:
+                    return
+                for line in proc.stdout:
+                    try:
+                        line = line.rstrip()
+                    except Exception:
+                        pass
+                    if line:
+                        log(f"[BOT] {line}")
+            except Exception as e:
+                log(f"[watchdog] Ошибка чтения stdout дочернего процесса: {e}")
 
-while True:
-    proc = spawn_child_passthrough()
-    for line in proc.stdout:
-        line = line.rstrip()
-        log(f"[BOT] {line}")
-    code = proc.wait()
-    log(f"⚠️ [watchdog] Процесс бота завершился с кодом {code}")
-    if code == 0:
-        log("🛑 [watchdog] Код 0 — считаем, что юзер закрыл приложение. Завершаемся.")
-        sys.exit(0)
-    elif code == 42:
-        log("♻️ [watchdog] Получен код 42 — полный рестарт. Запускаем сразу новый процесс.")
-        continue
-    else:
-        restart_count += 1
-        log(f"♻️ [watchdog] Bot crashed (code={code}). Restart #{restart_count}/{MAX_RESTARTS} через 3 сек...")
-        if restart_count >= MAX_RESTARTS:
-            log(f"♻️ [watchdog] Достигнут лимит рестартов ({MAX_RESTARTS}). Останавливаемся.")
-            sys.exit(code)
-        time.sleep(3)
+        restart_count = 0
+        MAX_RESTARTS = 5
+
+        while True:
+            log("▶️ [watchdog] Старт нового дочернего процесса.")
+            proc = spawn_child_passthrough()
+
+            # Поток для чтения stdout дочернего процесса
+            reader_thread = threading.Thread(target=_pump_child_output, args=(proc,), daemon=True)
+            reader_thread.start()
+
+            start_time = time.time()
+            last_heartbeat_ok = start_time
+
+            code = None
+
+            while True:
+                # Проверяем, не завершился ли уже процесс
+                code = proc.poll()
+                if code is not None:
+                    break
+
+                now = time.time()
+
+                # Проверка heartbeat
+                try:
+                    if os.path.exists(HEARTBEAT_FILE):
+                        hb_mtime = os.path.getmtime(HEARTBEAT_FILE)
+                        if hb_mtime > last_heartbeat_ok:
+                            last_heartbeat_ok = hb_mtime
+                except Exception as e:
+                    log(f"[watchdog] Ошибка доступа к heartbeat-файлу: {e}")
+
+                no_heartbeat_time = now - last_heartbeat_ok
+                alive_time = now - start_time
+
+                # Не мучаем процесс в течение фазы запуска
+                if alive_time > STARTUP_GRACE_SEC and no_heartbeat_time > HANG_TIMEOUT_SEC:
+                    log(f"⚠️ [watchdog] Дочерний процесс не подаёт признаков жизни {int(no_heartbeat_time)} сек. Считаем, что GUI завис.")
+                    # Пытаемся сначала остановить локальный Telegram API сервер
+                    _kill_telegram_api_processes()
+                    # Затем убиваем зависший процесс бота
+                    try:
+                        proc.kill()
+                        log("[watchdog] Зависший дочерний процесс убит через kill().")
+                    except Exception as e:
+                        log(f"[watchdog] Ошибка при kill зависшего процесса: {e}")
+                    try:
+                        code = proc.wait(timeout=10)
+                    except Exception:
+                        code = -1
+                    break
+
+                time.sleep(HEARTBEAT_CHECK_INTERVAL_SEC)
+
+            # Дожидаемся завершения потока чтения логов (но не бесконечно)
+            try:
+                reader_thread.join(timeout=5)
+            except Exception:
+                pass
+
+            if code is None:
+                try:
+                    code = proc.wait(timeout=1)
+                except Exception:
+                    code = -1
+
+            log(f"⚠️ [watchdog] Процесс бота завершился с кодом {code}")
+
+            if code == 0:
+                log("🛑 [watchdog] Код 0 — считаем, что пользователь закрыл приложение. Завершаемся.")
+                sys.exit(0)
+            elif code == 42:
+                log("♻️ [watchdog] Получен код 42 — полный рестарт. Останавливаем локальный API (если есть) и сразу запускаем новый процесс.")
+                _kill_telegram_api_processes()
+                # сразу продолжаем цикл без увеличения счётчика рестартов
+                continue
+            else:
+                restart_count += 1
+                log(f"♻️ [watchdog] Bot crashed/hanged (code={code}). Restart #{restart_count}/{MAX_RESTARTS} через 3 сек...")
+                _kill_telegram_api_processes()
+                if restart_count >= MAX_RESTARTS:
+                    log(f"♻️ [watchdog] Достигнут лимит рестартов ({MAX_RESTARTS}). Останавливаемся.")
+                    sys.exit(code if isinstance(code, int) else 1)
+                time.sleep(3)

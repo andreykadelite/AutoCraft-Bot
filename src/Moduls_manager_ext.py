@@ -1,10 +1,162 @@
 import os
+import sys
 import time
 import threading
 import importlib
 import asyncio
+import configparser
 from aiogram import Dispatcher
 from keymenu import get_additional_keyboard
+
+
+def _ensure_menu_registry_on_syspath():
+    """
+    Гарантирует, что папка menu_registry доступна для импортов.
+
+    Зачем:
+    - Реестры/меню перенесены в menu_registry.
+    - В обычном Python и в Nuitka путь к проекту может отличаться.
+    - Добавляем menu_registry в sys.path, чтобы модули внутри были видны
+      как top-level (utilities_registry, utilites, plugins_menu_registry и т.п.)
+      и чтобы работали fallback-импорты (что особенно важно в EXE).
+
+    Ничего не ломает: просто добавляет существующие пути в начало sys.path.
+    """
+    possible = []
+
+    # 1) base_dir из __main__ (если есть)
+    try:
+        import __main__
+        base_dir = getattr(__main__, "base_dir", None)
+        if base_dir:
+            possible.append(os.path.join(base_dir, "menu_registry"))
+    except Exception:
+        pass
+
+    # 2) рядом с этим файлом
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        possible.append(os.path.join(here, "menu_registry"))
+    except Exception:
+        pass
+
+    # 3) рядом с exe (Nuitka/обычный запуск)
+    try:
+        exe_dir = os.path.dirname(os.path.abspath(getattr(sys, "executable", "") or ""))
+        if exe_dir:
+            possible.append(os.path.join(exe_dir, "menu_registry"))
+    except Exception:
+        pass
+
+    # 4) текущая рабочая директория
+    try:
+        possible.append(os.path.join(os.getcwd(), "menu_registry"))
+    except Exception:
+        pass
+
+    for p in possible:
+        try:
+            if p and os.path.isdir(p) and p not in sys.path:
+                sys.path.insert(0, p)
+        except Exception:
+            continue
+
+
+# Добавляем menu_registry в sys.path как можно раньше
+_ensure_menu_registry_on_syspath()
+
+# Подсказка Nuitka: статически "засветить" реестры/меню, чтобы их проще было включать.
+# Эти импорты безопасны: если файлов нет — просто игнорируем.
+try:
+    import utilities_registry  # noqa: F401
+except Exception:
+    pass
+try:
+    import plugins_menu_registry  # noqa: F401
+except Exception:
+    pass
+
+
+
+# Глобальное хранилище результатов импорта (для debug-отчёта)
+_import_results_lock = threading.Lock()
+_import_results = None
+
+
+def _set_import_results_list(lst):
+    global _import_results
+    with _import_results_lock:
+        _import_results = lst
+
+
+def _get_import_results_list():
+    with _import_results_lock:
+        return _import_results
+
+
+def _log_import_result(module_name: str, success: bool, error: Exception | None = None):
+    """Записывает результат загрузки модуля в общий список (если он активен)."""
+    results = _get_import_results_list()
+    if results is not None:
+        results.append((module_name, success, error))
+
+
+def is_debug_enabled() -> bool:
+    """
+    Определяем, включён ли debug-режим.
+
+    1) Пробуем взять из __main__ атрибуты DEBUG / debug / debug_mode.
+    2) Пробуем взять из __main__.config (если есть) опцию 'debug' в любой секции.
+    3) Читаем config.ini рядом с base_dir или рядом с этим модулем и ищем опцию 'debug'.
+    Если ничего не нашли / ошибка — считаем, что debug выключен.
+    """
+    base_dir = None
+    try:
+        import __main__
+        # Прямые флаги в __main__
+        for attr in ("DEBUG", "debug", "debug_mode"):
+            if hasattr(__main__, attr):
+                return bool(getattr(__main__, attr))
+
+        # Конфиг, если main его уже прочитал
+        cfg = getattr(__main__, "config", None)
+        if cfg is not None:
+            try:
+                for section in cfg.sections():
+                    if cfg.has_option(section, "debug"):
+                        return cfg.getboolean(section, "debug", fallback=False)
+            except Exception:
+                pass
+
+        base_dir = getattr(__main__, "base_dir", None)
+    except Exception:
+        base_dir = None
+
+    # Пробуем сами прочитать config.ini
+    parser = configparser.ConfigParser()
+    config_paths = []
+
+    if base_dir:
+        config_paths.append(os.path.join(base_dir, "config.ini"))
+
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        config_paths.append(os.path.join(here, "config.ini"))
+    except Exception:
+        pass
+
+    for path in config_paths:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            parser.read(path, encoding="utf-8")
+            for section in parser.sections():
+                if parser.has_option(section, "debug"):
+                    return parser.getboolean(section, "debug", fallback=False)
+        except Exception:
+            continue
+
+    return False
 
 
 def check_auth():
@@ -16,6 +168,7 @@ def check_auth():
 
 
 def remove_handlers_from_module(dp: Dispatcher, module_name: str):
+    """Аккуратно удаляет ранее зарегистрированные handlers конкретного модуля."""
     try:
         def is_from_module(h):
             callback_fn = getattr(h, "callback", None) or getattr(h, "handler", None)
@@ -35,6 +188,7 @@ def remove_handlers_from_module(dp: Dispatcher, module_name: str):
 
 
 def reorder_plugin_handlers(dp: Dispatcher):
+    """Пытаемся поднять modulpsw повыше в цепочке обработчиков."""
     try:
         def is_plugin_handler(h):
             callback_fn = getattr(h, "callback", None) or getattr(h, "handler", None)
@@ -51,95 +205,73 @@ def reorder_plugin_handlers(dp: Dispatcher):
 
 
 def import_modulpsw(dp: Dispatcher):
+    module_name = "modulpsw"
     try:
-        modulpsw = importlib.import_module("modulpsw")
-        remove_handlers_from_module(dp, "modulpsw")
+        modulpsw = importlib.import_module(module_name)
+        remove_handlers_from_module(dp, module_name)
         if hasattr(modulpsw, "register_handlers"):
             modulpsw.register_handlers(dp)
             reorder_plugin_handlers(dp)
-    except Exception:
-        pass
+        _log_import_result(module_name, True, None)
+    except Exception as e:
+        _log_import_result(module_name, False, e)
 
 
 def import_modulset(dp: Dispatcher):
+    module_name = "modulset"
     try:
-        modulset = importlib.import_module("modulset")
+        modulset = importlib.import_module(module_name)
         if hasattr(modulset, "register_handlers"):
             modulset.register_handlers(dp)
-    except Exception:
-        pass
+        _log_import_result(module_name, True, None)
+    except Exception as e:
+        _log_import_result(module_name, False, e)
 
 
 def import_modulcon(dp: Dispatcher):
+    module_name = "modulcon"
     try:
-        modulcon = importlib.import_module("modulcon")
+        modulcon = importlib.import_module(module_name)
         if hasattr(modulcon, "register_handlers"):
             modulcon.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulpowershell(dp: Dispatcher):
-    try:
-        modulpowershell = importlib.import_module("modulpowershell")
-        if hasattr(modulpowershell, "register_handlers"):
-            modulpowershell.register_handlers(dp)
-    except Exception:
-        pass
+        _log_import_result(module_name, True, None)
+    except Exception as e:
+        _log_import_result(module_name, False, e)
 
 
 def import_utilites(dp: Dispatcher):
+    """
+    Импорт и регистрация обработчиков утилит.
+
+    Важно:
+    - Файлы утилит/реестра теперь могут лежать в menu_registry.
+      Мы заранее добавляем menu_registry в sys.path (см. _ensure_menu_registry_on_syspath),
+      поэтому обычный импорт 'utilites' будет работать даже если файл физически в menu_registry.
+    - Ничего не ломаем: если по какой-то причине 'utilites' не найден,
+      пробуем альтернативный импорт как пакет.
+    """
+    module_name = "utilites"
     try:
-        utilites = importlib.import_module("utilites")
+        try:
+            utilites = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            utilites = importlib.import_module("menu_registry.utilites")
         if hasattr(utilites, "register_handlers"):
             utilites.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulwinlogs(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulwinlogs после авторизации.
-    """
-    try:
-        modulwinlogs = importlib.import_module("modulwinlogs")
-        if hasattr(modulwinlogs, "register_handlers"):
-            modulwinlogs.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulbatrun(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulbatrun после авторизации.
-    """
-    try:
-        mod_batrun = importlib.import_module("modulbatrun")
-        if hasattr(mod_batrun, "register_handlers"):
-            mod_batrun.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulwinrun(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulwinrun после авторизации.
-    """
-    try:
-        modulwinrun = importlib.import_module("modulwinrun")
-        if hasattr(modulwinrun, "register_handlers"):
-            modulwinrun.register_handlers(dp)
-    except Exception:
-        pass
-
+        _log_import_result(module_name, True, None)
+    except Exception as e:
+        _log_import_result(module_name, False, e)
 
 def import_moduldptools(dp: Dispatcher):
     """
     Импорт и регистрация обработчиков из moduldptools после авторизации.
+
+    Важно: модуль ожидает некоторые переменные/состояния из __main__.
     """
+    module_name = "moduldptools"
     try:
         import __main__
-        moduldptools = importlib.import_module("moduldptools")
+        moduldptools = importlib.import_module(module_name)
         if hasattr(moduldptools, "register_dptools_handlers"):
             moduldptools.register_dptools_handlers(
                 dp,
@@ -152,176 +284,186 @@ def import_moduldptools(dp: Dispatcher):
                 __main__.pending_power_action,
                 get_additional_keyboard
             )
-    except Exception:
-        pass
-
-
-def import_modulscrin(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulscrin после авторизации.
-    """
-    try:
-        modulescrin = importlib.import_module("modulscrin")
-        if hasattr(modulescrin, "register_handlers"):
-            modulescrin.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulscreenshot(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulscreenshot после авторизации.
-    """
-    try:
-        modulscreenshot = importlib.import_module("modulscreenshot")
-        if hasattr(modulscreenshot, "register_handlers"):
-            modulscreenshot.register_handlers(dp)
-    except Exception:
-        pass
+        _log_import_result(module_name, True, None)
+    except Exception as e:
+        _log_import_result(module_name, False, e)
 
 
 def import_modulsound(dp: Dispatcher):
+    module_name = "modulsound"
     try:
-        modulsound = importlib.import_module("modulsound")
+        modulsound = importlib.import_module(module_name)
         if hasattr(modulsound, "register_handlers"):
             modulsound.register_handlers(dp)
-    except Exception:
-        pass
+        _log_import_result(module_name, True, None)
+    except Exception as e:
+        _log_import_result(module_name, False, e)
 
 
-def import_modulmicrosendsound(dp: Dispatcher):
+def import_Moduls_manager_sys_ext(dp: Dispatcher):
     """
-    Импорт и регистрация обработчиков из modulmicrosendsound после авторизации.
+    Импорт и регистрация обработчиков из Moduls_manager_sys_ext (системные расширения).
+    Вызывается до авторизации пользователя.
+
+    Логика:
+    - пытаемся найти папку "moduls" рядом с base_dir (__main__.base_dir) и рядом с этим файлом;
+    - добавляем найденные пути в sys.path;
+    - пробуем несколько вариантов импорта, чтобы работало и в обычном Python, и в Nuitka:
+        * "Moduls_manager_sys_ext"
+        * "moduls.Moduls_manager_sys_ext"
+    - если модуль найден и у него есть register_handlers(dp), вызываем её;
+    - результат логируем в общий debug-отчёт через _log_import_result.
     """
+    module_name_plain = "Moduls_manager_sys_ext"
+    module_name_pkg = "moduls.Moduls_manager_sys_ext"
+
     try:
-        micros = importlib.import_module("modulmicrosendsound")
-        if hasattr(micros, "register_handlers"):
-            micros.register_handlers(dp)
+        import __main__
     except Exception:
-        pass
+        __main__ = None  # type: ignore
 
+    # Кандидаты путей к папке moduls
+    possible_paths = []
 
-def import_modulvolume_menu(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulvolume_menu после авторизации.
-    """
+    # 1) base_dir/moduls
     try:
-        volume_menu = importlib.import_module("modulvolume_menu")
-        if hasattr(volume_menu, "register_handlers"):
-            volume_menu.register_handlers(dp)
+        base_dir = getattr(__main__, "base_dir", None) if __main__ is not None else None
     except Exception:
-        pass
+        base_dir = None
 
+    if base_dir:
+        possible_paths.append(os.path.join(base_dir, "moduls"))
 
-# --- Новые функции для ваших модулей ---
-def import_modulopenchat(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulopenchat после авторизации.
-    """
+    # 2) moduls рядом с этим файлом
     try:
-        openchat = importlib.import_module("modulopenchat")
-        if hasattr(openchat, "register_handlers"):
-            openchat.register_handlers(dp)
+        here = os.path.dirname(os.path.abspath(__file__))
+        possible_paths.append(os.path.join(here, "moduls"))
     except Exception:
         pass
 
+    # Добавляем существующие пути в sys.path
+    for p in possible_paths:
+        try:
+            if p and os.path.isdir(p) and p not in sys.path:
+                sys.path.insert(0, p)
+        except Exception:
+            continue
 
-def import_modulsendmess(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulsendmess после авторизации.
-    """
+    loaded = False
+    last_error: Exception | None = None
+
+    for name in (module_name_plain, module_name_pkg):
+        try:
+            mod_sys_ext = importlib.import_module(name)
+            if hasattr(mod_sys_ext, "register_handlers"):
+                mod_sys_ext.register_handlers(dp)
+            _log_import_result("Moduls_manager_sys_ext", True, None)
+            loaded = True
+            break
+        except ModuleNotFoundError as e:
+            last_error = e
+            continue
+        except Exception as e:
+            last_error = e
+            break
+
+    if not loaded:
+        _log_import_result("Moduls_manager_sys_ext", False, last_error)
+
+
+async def _send_debug_report(dp: Dispatcher, results: list[tuple[str, bool, Exception | None]]):
+    """Отправляет в Telegram сводку по загрузке модулей, если включён debug."""
     try:
-        sendmess = importlib.import_module("modulsendmess")
-        if hasattr(sendmess, "register_handlers"):
-            sendmess.register_handlers(dp)
+        if not is_debug_enabled():
+            return
+
+        lines: list[str] = ["🧩 Отчёт загрузки модулей (debug):"]
+
+        if not results:
+            lines.append("Список модулей пуст.")
+        else:
+            ok_count = sum(1 for _, ok, _ in results if ok)
+            fail_count = sum(1 for _, ok, _ in results if not ok)
+            lines.append(f"Успешно: {ok_count}, с ошибками: {fail_count}")
+            lines.append("")
+
+            for name, ok, error in results:
+                if ok:
+                    lines.append(f"✅ {name}")
+                else:
+                    if error is None:
+                        lines.append(f"❌ {name} — ошибка без деталей.")
+                    else:
+                        err_text = f"{type(error).__name__}: {error}"
+                        if len(err_text) > 200:
+                            err_text = err_text[:197] + "..."
+                        lines.append(f"❌ {name} — {err_text}")
+
+        text = "\n".join(lines)
+
+        # Кому слать: все authorized_users
+        try:
+            from __main__ import authorized_users
+            targets = []
+            if isinstance(authorized_users, (list, tuple, set)):
+                targets = list(authorized_users)
+            elif isinstance(authorized_users, dict):
+                targets = list(authorized_users.keys())
+            elif authorized_users:
+                targets = [authorized_users]
+            else:
+                targets = []
+        except Exception:
+            targets = []
+
+        # Подстраховка: если вдруг authorized_users нет / пуст
+        if not targets:
+            try:
+                import __main__
+                for attr in ("OWNER_ID", "owner_id", "CHAT_ID", "chat_id"):
+                    if hasattr(__main__, attr):
+                        targets.append(getattr(__main__, attr))
+                        break
+            except Exception:
+                pass
+
+        for chat_id in targets:
+            try:
+                await dp.bot.send_message(chat_id=chat_id, text=text)
+            except Exception:
+                pass
     except Exception:
         pass
-
-
-def import_modulbrowsrem(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulbrowsrem после авторизации.
-    """
-    try:
-        browsrem = importlib.import_module("modulbrowsrem")
-        if hasattr(browsrem, "register_handlers"):
-            browsrem.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulprocesses(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulprocesses после авторизации.
-    """
-    try:
-        modulprocesses = importlib.import_module("modulprocesses")
-        if hasattr(modulprocesses, "register_handlers"):
-            modulprocesses.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulservices(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulservices после авторизации.
-    """
-    try:
-        modulservices = importlib.import_module("modulservices")
-        if hasattr(modulservices, "register_handlers"):
-            modulservices.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulfilemanager(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulfmtg (файловый менеджер) после авторизации.
-    """
-    try:
-        modulfilemanager = importlib.import_module("modulfmtg")
-        if hasattr(modulfilemanager, "register_handlers"):
-            modulfilemanager.register_handlers(dp)
-    except Exception:
-        pass
-
-
-def import_modulnetwork(dp: Dispatcher):
-    """
-    Импорт и регистрация обработчиков из modulnetwork (модуль работы с сетью) после авторизации.
-    """
-    try:
-        modulnetwork = importlib.import_module("modulnetwork")
-        if hasattr(modulnetwork, "register_handlers"):
-            modulnetwork.register_handlers(dp)
-    except Exception:
-        pass
-# --- Конец новых функций ---
 
 
 async def import_all_plugins(dp: Dispatcher):
-    import_modulpsw(dp)             # 1. psw
-    import_modulset(dp)             # 2. set
-    import_modulcon(dp)             # 3. con
-    import_modulpowershell(dp)      # 4. powershell
-    import_utilites(dp)             # 5. утилиты
-    import_modulwinlogs(dp)         # 6. просмотр логов Windows
-    import_modulbatrun(dp)          # 7. работа с BAT
-    import_modulwinrun(dp)          # 8. режим Win+R
-    import_moduldptools(dp)         # 9. dptools
-    import_modulscrin(dp)           # 10. scrin (старый модуль, если есть)
-    import_modulscreenshot(dp)      # 11. новый модуль скриншотов
-    import_modulsound(dp)           # 12. звук
-    import_modulmicrosendsound(dp)  # 13. микрозвук
-    import_modulvolume_menu(dp)     # 14. меню громкости
-    # Подключаем ваши новые модули:
-    import_modulopenchat(dp)        # 15. openchat
-    import_modulsendmess(dp)        # 16. sendmess
-    import_modulbrowsrem(dp)        # 17. browsrem
-    import_modulprocesses(dp)       # 18. процессы
-    import_modulservices(dp)        # 19. службы
-    import_modulfilemanager(dp)     # 20. файловый менеджер (modulfmtg)
-    import_modulnetwork(dp)         # 21. модуль работы с сетью
+    """
+    Импорт модулей после авторизации пользователя.
+
+    По вашему запросу из менеджера удалены 19 модулей, которые в debug-отчёте
+    грузились с ошибками (ModuleNotFoundError). Теперь здесь остаются только те,
+    что реально загружаются успешно.
+    """
+    existing = _get_import_results_list()
+    if isinstance(existing, list):
+        results = existing
+    else:
+        results: list[tuple[str, bool, Exception | None]] = []
+        _set_import_results_list(results)
+
+    # Список успешных модулей (по вашему debug-отчёту)
+    import_modulpsw(dp)
+    import_modulset(dp)
+    import_modulcon(dp)
+    import_utilites(dp)
+    import_moduldptools(dp)
+    import_modulsound(dp)
+
+    # Отключаем глобальный список, чтобы случайные вызовы не писались в старый отчёт
+    _set_import_results_list(None)
+
+    # и если debug включён — шлём отчёт в Telegram
+    await _send_debug_report(dp, results)
 
 
 def wait_for_bot_loop(dp: Dispatcher):
@@ -337,6 +479,30 @@ def authorization_monitor(dp: Dispatcher):
 
 
 def register_handlers(dp: Dispatcher):
+    """
+    Стартовая точка главного менеджера.
+
+    Здесь:
+    - инициализируем общий список результатов импортов (для debug-отчёта);
+    - пробуем импортировать системный менеджер из папки moduls до авторизации;
+    - запускаем поток, который будет ждать авторизации и импортировать остальные модули.
+    """
+    # Готовим список результатов для всех импортов (включая системный менеджер)
+    try:
+        if _get_import_results_list() is None:
+            _set_import_results_list([])
+    except Exception:
+        pass
+
+    # Импортируем менеджер системных расширений из папки moduls до авторизации пользователя
+    try:
+        import_Moduls_manager_sys_ext(dp)
+    except Exception as e:
+        try:
+            _log_import_result("Moduls_manager_sys_ext", False, e)
+        except Exception:
+            pass
+
     threading.Thread(
         target=authorization_monitor,
         args=(dp,),

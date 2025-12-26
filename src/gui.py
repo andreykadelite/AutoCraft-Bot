@@ -8,9 +8,35 @@ import info
 import gui_serverapi
 import collections  # <-- for recent-log de-dup window
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QGridLayout, QLabel, QLineEdit, QPushButton,
-    QPlainTextEdit, QTextEdit, QTextBrowser, QSystemTrayIcon, QMenu, QAction, QStyle, QStyleFactory, QSizePolicy,
-    QMessageBox, QDialog, QVBoxLayout, QDialogButtonBox, QCheckBox, QFrame, QHBoxLayout, QGroupBox, QRadioButton)
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QGridLayout,
+    QSplitter,
+    QScrollArea,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QPlainTextEdit,
+    QTextEdit,
+    QTextBrowser,
+    QSystemTrayIcon,
+    QMenu,
+    QAction,
+    QStyle,
+    QStyleFactory,
+    QSizePolicy,
+    QMessageBox,
+    QDialog,
+    QVBoxLayout,
+    QDialogButtonBox,
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QGroupBox,
+    QRadioButton)
+
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QEvent
 from PyQt5.QtGui import QIcon, QPalette, QColor, QFont, QTextCursor
 from windows_startup import (
@@ -29,6 +55,18 @@ from windows_startup import (
     detect_autorun,
     _is_windows,
 )
+
+# --- GUI sub-windows (kept separate for easier editing) ---
+from gui_win.functions_window import create_functions_button
+
+# Nuitka/анализатор: модуль справки должен попасть в сборку, но импорт — только по кнопке.
+try:
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        import gui_win.help_window  # noqa: F401
+except Exception:
+    pass
+
 
 # === Accessible radio button: arrows move focus only; Enter/Space selects ===
 
@@ -216,111 +254,80 @@ class BotConfirmDialog(QDialog):
         self.bot_name_field.setText(f"Подключиться к боту: {bot_name}?")
 
 
-class HelpDialog(QDialog):
-    def __init__(self, parent=None):
+
+
+class ResponsiveButtonGrid(QWidget):
+    """Адаптивная сетка кнопок: автоматически раскладывает виджеты по N колонкам.
+    Полезно, когда окно становится узким: кнопки не уезжают за край и не превращаются в кашу.
+    """
+    def __init__(self, buttons, columns=3, parent=None):
         super().__init__(parent)
-        self.setObjectName("helpDialog")
-        self.setWindowTitle("Справка")
-        self.setModal(True)
-        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        self.setAccessibleName("Окно справки")
-        self.setAccessibleDescription("Описание возможностей программы и контакты поддержки")
-        self.setMinimumSize(560, 420)
-        self.setSizeGripEnabled(True)
+        self._buttons = list(buttons or [])
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(8)
+        self._cols = 0
+        self.relayout(max(1, int(columns)))
 
-        if parent:
-            try:
-                self.setPalette(parent.palette())
-                if parent.styleSheet():
-                    self.setStyleSheet(parent.styleSheet())
-            except Exception:
-                pass
+    def relayout(self, columns: int):
+        columns = max(1, int(columns))
+        if columns == self._cols:
+            return
+        self._cols = columns
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 16)
-        layout.setSpacing(12)
+        # Снимаем всё из layout, но сами виджеты НЕ удаляем.
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                self._grid.removeWidget(w)
 
-        header = QLabel("Справка")
-        header.setObjectName("helpDialogHeader")
-        header.setAccessibleName("Заголовок справки")
-        header.setAccessibleDescription("Заголовок окна справки")
-        header.setAlignment(Qt.AlignLeft)
-        header.setStyleSheet("font-size: 16pt; font-weight: 600;")
-        layout.addWidget(header)
+        for i, btn in enumerate(self._buttons):
+            r = i // columns
+            c = i % columns
+            self._grid.addWidget(btn, r, c)
 
-        divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        divider.setFrameShadow(QFrame.Sunken)
-        divider.setAccessibleName("Разделитель")
-        layout.addWidget(divider)
+        for c in range(columns):
+            self._grid.setColumnStretch(c, 1)
 
-        self.text_view = QTextBrowser()
-        self.text_view.setObjectName("helpDialogText")
-        self.text_view.setReadOnly(True)
-        help_text = info.CONTACT_TEXT.strip() + "\n\n" + info.HELP_TEXT.strip()
-        set_markdown = getattr(self.text_view, "setMarkdown", None)
-        if callable(set_markdown):
-            try:
-                set_markdown(help_text)
-            except Exception:
-                self.text_view.setPlainText(help_text)
-        else:
-            self.text_view.setPlainText(help_text)
-        self.text_view.setAccessibleName("Текст справки")
-        self.text_view.setAccessibleDescription("Подробная справка и контакты поддержки")
-        self.text_view.setFocusPolicy(Qt.StrongFocus)
-        self.text_view.setTabChangesFocus(True)
-        self.text_view.setFrameShape(QFrame.NoFrame)
-        self.text_view.setTextInteractionFlags(
-            Qt.TextSelectableByKeyboard
-            | Qt.TextSelectableByMouse
-            | Qt.LinksAccessibleByKeyboard
-            | Qt.LinksAccessibleByMouse
-        )
-        self.text_view.setOpenExternalLinks(True)
-        self.text_view.setLineWrapMode(QTextEdit.WidgetWidth)
-        self.text_view.document().setDefaultFont(QFont("Segoe UI", 10))
-        layout.addWidget(self.text_view)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.Close)
-        close_btn = button_box.button(QDialogButtonBox.Close)
-        close_btn.setText("Закрыть")
-        close_btn.setAccessibleName("Закрыть справку")
-        close_btn.setAccessibleDescription("Закрывает окно справки")
-        close_btn.setDefault(True)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-
-        self.setTabOrder(self.text_view, close_btn)
-        self.text_view.moveCursor(QTextCursor.Start)
-        self.text_view.ensureCursorVisible()
-        self.text_view.setFocus(Qt.TabFocusReason)
-
+    def buttons(self):
+        return list(self._buttons)
 
 class MainWindow(QMainWindow):
     def __init__(self):
+
         super().__init__()
+
+        # --- App-level look & feel -------------------------------------------------
         app = QApplication.instance()
         if app:
             app.setQuitOnLastWindowClosed(False)
             app.setStyle(QStyleFactory.create('Fusion'))
+
             dark_palette = QPalette()
-            dark_palette.setColor(QPalette.Window, QColor(45,45,45))
-            dark_palette.setColor(QPalette.WindowText, QColor(220,220,220))
-            dark_palette.setColor(QPalette.Base, QColor(30,30,30))
-            dark_palette.setColor(QPalette.AlternateBase, QColor(45,45,45))
-            dark_palette.setColor(QPalette.ToolTipBase, QColor(255,255,220))
-            dark_palette.setColor(QPalette.ToolTipText, QColor(0,0,0))
-            dark_palette.setColor(QPalette.Text, QColor(220,220,220))
-            dark_palette.setColor(QPalette.Button, QColor(45,45,45))
-            dark_palette.setColor(QPalette.ButtonText, QColor(220,220,220))
-            dark_palette.setColor(QPalette.Highlight, QColor(42,130,218))
-            dark_palette.setColor(QPalette.HighlightedText, QColor(255,255,255))
+            dark_palette.setColor(QPalette.Window, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.Base, QColor(30, 30, 30))
+            dark_palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 220))
+            dark_palette.setColor(QPalette.ToolTipText, QColor(0, 0, 0))
+            dark_palette.setColor(QPalette.Text, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.Button, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
             app.setPalette(dark_palette)
             app.setFont(QFont('Segoe UI', 10))
-        screen_geom = QApplication.primaryScreen().availableGeometry()
-        self.resize(int(screen_geom.width()*0.8), int(screen_geom.height()*0.8))
-        self.setMinimumSize(600, 500)
+
+        # --- Window sizing (adaptive by default) -----------------------------------
+        try:
+            screen_geom = QApplication.primaryScreen().availableGeometry()
+            self.resize(int(screen_geom.width() * 0.82), int(screen_geom.height() * 0.82))
+        except Exception:
+            self.resize(900, 720)
+
+        self.setMinimumSize(620, 520)
+
         self.setStyleSheet("""
             QWidget {
                 background-color: #2d2d2d;
@@ -328,23 +335,40 @@ class MainWindow(QMainWindow):
                 font-family: 'Segoe UI', Tahoma, sans-serif;
                 font-size: 10pt;
             }
+
+            QGroupBox {
+                border: 1px solid #555555;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                font-weight: 600;
+            }
+
             QPushButton {
                 background-color: #444444;
                 color: #ffffff;
                 border: none;
-                border-radius: 5px;
-                padding: 6px 12px;
+                border-radius: 6px;
+                padding: 8px 12px;
+                min-height: 30px;
             }
             QPushButton:hover {
                 background-color: #555555;
             }
-            QLineEdit, QPlainTextEdit {
+
+            QLineEdit, QPlainTextEdit, QTextBrowser, QTextEdit {
                 background-color: #3c3c3c;
                 border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px;
+                border-radius: 6px;
+                padding: 6px;
                 color: #ffffff;
             }
+
             QMenu {
                 background-color: #2d2d2d;
                 color: #dddddd;
@@ -352,16 +376,60 @@ class MainWindow(QMainWindow):
             QMenu::item:selected {
                 background-color: #555555;
             }
+
+            QSplitter::handle {
+                background-color: #3a3a3a;
+            }
         """)
+
         self.setWindowTitle(f"AutoCraft Bot v{info.VERSION}")
-        self.setGeometry(100, 100, 600, 550)
+
+        # --- Central layout: splitter + scroll (real adaptive UI) ------------------
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
-        layout = QGridLayout(central_widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(12)
 
-        # Token input
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setSpacing(10)
+
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        root_layout.addWidget(self.splitter)
+
+        # Top: settings (inside scroll area, so small screens don't suffer)
+        self.top_scroll = QScrollArea()
+        self.top_scroll.setWidgetResizable(True)
+        self.top_scroll.setFrameShape(QFrame.NoFrame)
+        self.splitter.addWidget(self.top_scroll)
+
+        top_container = QWidget()
+        self.top_scroll.setWidget(top_container)
+        top_layout = QVBoxLayout(top_container)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(10)
+
+        # Bottom: logs/status
+        bottom_container = QWidget()
+        bottom_layout = QVBoxLayout(bottom_container)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(8)
+        self.splitter.addWidget(bottom_container)
+        self.splitter.setStretchFactor(1, 1)
+
+        # --- Inputs: Connection ----------------------------------------------------
+        conn_group = QGroupBox("Подключение")
+        conn_group.setAccessibleName("Группа: подключение")
+        conn_group.setAccessibleDescription("Настройки подключения к Telegram-боту: токен, PIN и список разрешённых ID")
+
+        conn_form = QFormLayout(conn_group)
+        conn_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        try:
+            conn_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        except Exception:
+            pass
+        conn_form.setHorizontalSpacing(12)
+        conn_form.setVerticalSpacing(10)
+
         token_label = QLabel("Токен:")
         token_label.setAccessibleName("Метка токена")
         token_label.setAccessibleDescription("Метка для поля ввода токена бота")
@@ -372,7 +440,6 @@ class MainWindow(QMainWindow):
         self.token_edit.setToolTip("Поле ввода токена")
         self.token_edit.setFocus()
 
-        # PIN input
         pin_label = QLabel("PIN-код:")
         pin_label.setAccessibleName("Метка PIN-кода")
         pin_label.setAccessibleDescription("Метка для поля ввода PIN-кода")
@@ -383,7 +450,6 @@ class MainWindow(QMainWindow):
         self.pin_edit.setPlaceholderText("Введите PIN-код")
         self.pin_edit.setToolTip("Поле ввода PIN-кода")
 
-        # Allowed account IDs input
         account_ids_label = QLabel("ID аккаунтов:")
         account_ids_label.setAccessibleName("Метка ID аккаунтов")
         account_ids_label.setAccessibleDescription("Метка для поля ввода ID аккаунтов (через запятую)")
@@ -393,7 +459,25 @@ class MainWindow(QMainWindow):
         self.account_ids_edit.setPlaceholderText("Например: 1234567, 1234567890")
         self.account_ids_edit.setToolTip("Поле ввода ID аккаунтов")
 
-        # Address input (Telegram API server)
+        conn_form.addRow(token_label, self.token_edit)
+        conn_form.addRow(pin_label, self.pin_edit)
+        conn_form.addRow(account_ids_label, self.account_ids_edit)
+        top_layout.addWidget(conn_group)
+
+        # --- Inputs: Telegram API --------------------------------------------------
+        api_group = QGroupBox("Telegram API")
+        api_group.setAccessibleName("Группа: Telegram API")
+        api_group.setAccessibleDescription("Настройки сервера Telegram API: адрес, порт и выбор стандартного сервера")
+
+        api_form = QFormLayout(api_group)
+        api_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        try:
+            api_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        except Exception:
+            pass
+        api_form.setHorizontalSpacing(12)
+        api_form.setVerticalSpacing(10)
+
         address_label = QLabel("Адрес API:")
         address_label.setAccessibleName("Метка адреса API")
         address_label.setAccessibleDescription("Метка для поля ввода адреса Telegram API сервера")
@@ -403,15 +487,18 @@ class MainWindow(QMainWindow):
         self.address_edit.setPlaceholderText("Введите адрес API")
         self.address_edit.setToolTip("Поле ввода адреса API")
 
-        # Port input (Telegram API server)
         port_label = QLabel("Порт API:")
         port_label.setAccessibleName("Метка порта API")
         port_label.setAccessibleDescription("Метка для поля ввода порта Telegram API сервера")
         self.port_edit = QLineEdit()
-        # Checkbox to lock API fields
+        self.port_edit.setAccessibleName("Поле ввода порта API")
+        self.port_edit.setAccessibleDescription("Введите порт Telegram API сервера")
+        self.port_edit.setPlaceholderText("Введите порт API")
+        self.port_edit.setToolTip("Поле ввода порта API")
+
         self.lock_api_checkbox = QCheckBox("Использовать стандартный сервер Telegram API")
         self.lock_api_checkbox.setAccessibleName("Чекбокс: использовать стандартный сервер Telegram API")
-        self.lock_api_checkbox.setAccessibleDescription("Если установлен, будут использоваться стандартные адрес и порт Telegram API сервера, а поля адреса и порта будут недоступны для редактирования")
+        self.lock_api_checkbox.setAccessibleDescription("Если установлен, будут использоваться стандартные адрес и порт Telegram API сервера, а поля адреса и порта станут недоступны")
         self.lock_api_checkbox.setToolTip("Использовать стандартный сервер Telegram API")
         lock = load_lock_api_fields()
         self.lock_api_checkbox.setChecked(lock)
@@ -419,61 +506,176 @@ class MainWindow(QMainWindow):
         self.port_edit.setEnabled(not lock)
         self.lock_api_checkbox.stateChanged.connect(self.on_lock_api_checkbox_changed)
 
-        self.port_edit.setAccessibleName("Поле ввода порта API")
-        self.port_edit.setAccessibleDescription("Введите порт Telegram API сервера")
-        self.port_edit.setPlaceholderText("Введите порт API")
-        self.port_edit.setToolTip("Поле ввода порта API")
+        self.api_settings_button = QPushButton("Настройки API сервера")
+        self.api_settings_button.setAccessibleName("Кнопка: Настройки API сервера")
+        self.api_settings_button.setAccessibleDescription("Открыть окно настроек локального Telegram API сервера")
+        self.api_settings_button.clicked.connect(self.open_api_server_settings)
 
-        # Save and Connect button
+        api_form.addRow(address_label, self.address_edit)
+        api_form.addRow(port_label, self.port_edit)
+        api_form.addRow(self.lock_api_checkbox)
+
+        api_footer = QWidget()
+        api_footer_l = QHBoxLayout(api_footer)
+        api_footer_l.setContentsMargins(0, 0, 0, 0)
+        api_footer_l.setSpacing(8)
+        api_footer_l.addWidget(self.api_settings_button)
+        api_footer_l.addStretch(1)
+        api_form.addRow(api_footer)
+
+        top_layout.addWidget(api_group)
+
+        # --- Buttons: Primary action ----------------------------------------------
+        control_group = QGroupBox("Управление")
+        control_group.setAccessibleName("Группа: управление")
+        control_group.setAccessibleDescription("Основные действия: сохранить и подключить, перезапуск, сброс, справка, трей, выход")
+
+        control_layout = QVBoxLayout(control_group)
+        control_layout.setContentsMargins(10, 10, 10, 10)
+        control_layout.setSpacing(10)
+
         self.save_run_button = QPushButton("Сохранить и подключить")
         self.save_run_button.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
         self.save_run_button.setAccessibleName("Кнопка: Сохранить и подключить")
-        self.save_run_button.setAccessibleDescription("Нажмите для сохранения настроек и подключения бота после проверки корректности ввода")
+        self.save_run_button.setAccessibleDescription("Сохранить настройки и подключить бота")
         self.save_run_button.setToolTip("Сохранить и подключить")
         self.save_run_button.clicked.connect(self.save_and_run_bot)
 
-        # Other control buttons
         self.toggle_button = QPushButton("Перезапустить бота")
         self.toggle_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self.toggle_button.setAccessibleName("Кнопка: Перезапустить бота")
-        self.toggle_button.setAccessibleDescription("Нажмите для перезапуска бота")
+        self.toggle_button.setAccessibleDescription("Перезапустить бота")
         self.toggle_button.setToolTip("Перезапустить бота")
         self.toggle_button.clicked.connect(self.restart_bot)
 
         self.reset_button = QPushButton("Сброс")
         self.reset_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserStop))
         self.reset_button.setAccessibleName("Кнопка: Сброс")
-        self.reset_button.setAccessibleDescription("Сброс настроек бота, очистка логов и перезапись файла с учетными данными")
+        self.reset_button.setAccessibleDescription("Сброс настроек бота и очистка логов")
         self.reset_button.setToolTip("Сброс")
         self.reset_button.clicked.connect(self.reset_bot)
 
         self.help_button = QPushButton("Справка")
         self.help_button.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))
         self.help_button.setAccessibleName("Кнопка: Справка")
-        self.help_button.setAccessibleDescription("Нажмите для просмотра справки")
+        self.help_button.setAccessibleDescription("Открыть справку")
         self.help_button.setToolTip("Справка")
         self.help_button.clicked.connect(self.show_help)
 
-        self.exit_button = QPushButton("Выход")
-        self.exit_button.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
-        self.exit_button.setAccessibleName("Кнопка: Выход")
-        self.exit_button.setAccessibleDescription("Нажмите для выхода из приложения")
-        self.exit_button.setToolTip("Выход")
-        self.exit_button.clicked.connect(self.exit_app)
+        # Кнопка и окно «Функции» вынесены в отдельный файл gui_win/functions_window.py
+        self.functions_button = create_functions_button(self)
 
         self.minimize_tray_button = QPushButton("Свернуть в трей")
         self.minimize_tray_button.setIcon(self.style().standardIcon(QStyle.SP_TitleBarMinButton))
         self.minimize_tray_button.setAccessibleName("Кнопка: Свернуть в трей")
-        self.minimize_tray_button.setAccessibleDescription("Нажмите для сворачивания приложения в системный трей")
+        self.minimize_tray_button.setAccessibleDescription("Свернуть приложение в системный трей")
         self.minimize_tray_button.setToolTip("Свернуть в трей")
         self.minimize_tray_button.clicked.connect(self.hide_to_tray)
 
+        self.exit_button = QPushButton("Выход")
+        self.exit_button.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
+        self.exit_button.setAccessibleName("Кнопка: Выход")
+        self.exit_button.setAccessibleDescription("Выйти из приложения")
+        self.exit_button.setToolTip("Выход")
+        self.exit_button.clicked.connect(self.exit_app)
+
+        control_layout.addWidget(self.save_run_button)
+
+        # Адаптивная сетка вторичных кнопок: 3/2/1 колонки в зависимости от ширины окна
+        self._control_buttons_grid = ResponsiveButtonGrid(
+            [self.toggle_button, self.reset_button, self.help_button, self.functions_button, self.minimize_tray_button, self.exit_button],
+            columns=3
+        )
+        control_layout.addWidget(self._control_buttons_grid)
+
+        top_layout.addWidget(control_group)
+
+        # --- Autostart -------------------------------------------------------------
+        autostart_group = QGroupBox("Автозапуск Windows")
+        autostart_group.setAccessibleName("Группа: автозапуск")
+        autostart_group.setAccessibleDescription("Настройки автозапуска программы вместе с Windows")
+
+        autostart_layout = QVBoxLayout(autostart_group)
+        autostart_layout.setContentsMargins(10, 10, 10, 10)
+        autostart_layout.setSpacing(10)
+
+        self.autorun_checkbox = QCheckBox("Запускать вместе с Windows")
+        self.autorun_checkbox.setFocusPolicy(Qt.StrongFocus)
+        self.autorun_checkbox.setAccessibleName("Чекбокс: запускать программу вместе с Windows")
+        self.autorun_checkbox.setAccessibleDescription("Если включено, программа будет запускаться при входе в Windows")
+
+        self.start_tray_checkbox = QCheckBox("Запуск сразу в трее")
+        self.start_tray_checkbox.setFocusPolicy(Qt.StrongFocus)
+        self.start_tray_checkbox.setAccessibleName("Чекбокс: запуск сразу в трее")
+        self.start_tray_checkbox.setAccessibleDescription("Если включено, при автозапуске окно не будет показано")
+
+        self.method_group = QGroupBox("Способ автозапуска")
+        self.method_group.setAccessibleName("Группа: способ автозапуска")
+        self.method_group.setAccessibleDescription("Выберите способ автозапуска: Автовыбор, Папка Автозагрузка, Реестр.")
+
+        self.method_auto = A11yRadioButton("Автовыбор (каскадом)")
+        self.method_auto.setAccessibleName("Переключатель: Автовыбор способа")
+
+        self.method_startup = A11yRadioButton("Папка «Автозагрузка» (ярлык/бат)")
+        self.method_startup.setAccessibleName("Переключатель: Папка Автозагрузка")
+
+        self.method_registry = A11yRadioButton("Реестр (HKCU\\Run)")
+        self.method_registry.setAccessibleName("Переключатель: Реестр HKCU Run")
+
+        method_layout = QVBoxLayout(self.method_group)
+        method_layout.addWidget(self.method_auto)
+        method_layout.addWidget(self.method_startup)
+        method_layout.addWidget(self.method_registry)
+
+        # Навигационная группа для радиокнопок метода автозапуска
+        self.method_radios = [self.method_auto, self.method_startup, self.method_registry]
+        for _rb in self.method_radios:
+            if hasattr(_rb, "set_nav_group"):
+                _rb.set_nav_group(self.method_radios)
+
+        # Ensure consistent accessibility behavior across all radios
+        for _rb in self.method_radios:
+            try:
+                _rb.setAutoExclusive(True)
+                _rb.setFocusPolicy(Qt.StrongFocus)
+            except Exception:
+                pass
+
+        # Load current settings and reflect them
+        autorun_enabled, start_in_tray, method_choice = load_startup_full()
+        self.autorun_checkbox.setChecked(autorun_enabled)
+        self.start_tray_checkbox.setChecked(start_in_tray)
+
+        if method_choice == "auto":
+            self.method_auto.setChecked(True)
+        elif method_choice == "registry":
+            self.method_registry.setChecked(True)
+        else:
+            self.method_startup.setChecked(True)
+
+        self.method_group.setEnabled(autorun_enabled)
+        self.start_tray_checkbox.setEnabled(autorun_enabled)
+
+        # Connect handlers
+        self.autorun_checkbox.stateChanged.connect(self.on_autorun_checkbox_changed)
+        self.start_tray_checkbox.stateChanged.connect(self.on_start_tray_checkbox_changed)
+        self.method_auto.toggled.connect(self.on_method_radio_changed)
+        self.method_startup.toggled.connect(self.on_method_radio_changed)
+        self.method_registry.toggled.connect(self.on_method_radio_changed)
+
+        autostart_layout.addWidget(self.autorun_checkbox)
+        autostart_layout.addWidget(self.start_tray_checkbox)
+        autostart_layout.addWidget(self.method_group)
+
+        top_layout.addWidget(autostart_group)
+        top_layout.addStretch(1)
+
+        # --- Status + logs ---------------------------------------------------------
         self.status_label = QLabel("Бот не запущен.")
         self.status_label.setAccessibleName("Метка состояния")
         self.status_label.setAccessibleDescription("Отображает текущее состояние бота")
         self.status_label.setToolTip("Состояние бота")
 
-        # --- Log panel + duplicate filter ---
         self.monitor_edit = QPlainTextEdit()
         self.monitor_edit.setAccessibleName("Область мониторинга логов")
         self.monitor_edit.setAccessibleDescription("Здесь отображаются логи работы бота")
@@ -482,28 +684,48 @@ class MainWindow(QMainWindow):
         self.monitor_edit.setToolTip("Логи")
         self.monitor_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.monitor_edit.setTextInteractionFlags(Qt.TextSelectableByKeyboard | Qt.TextSelectableByMouse)
-        # wire eventFilter + scroll tracking (existed methods, just not connected earlier)
         try:
             self.monitor_edit.installEventFilter(self)
             self.monitor_edit.verticalScrollBar().valueChanged.connect(self.on_log_scroll_changed)
         except Exception:
             pass
 
-        # checkbox to enable/disable duplicate filtering
         self.filter_duplicates_checkbox = QCheckBox("Фильтровать дубли логов")
         self.filter_duplicates_checkbox.setChecked(True)
         self.filter_duplicates_checkbox.setAccessibleName("Чекбокс: фильтровать дубли логов")
-        self.filter_duplicates_checkbox.setAccessibleDescription("Если включено, повторяющиеся подряд сообщения не будут дублироваться в панели логов")
+        self.filter_duplicates_checkbox.setAccessibleDescription("Если включено, повторяющиеся подряд сообщения не будут дублироваться")
 
-        # de-dup window: remember last 500 unique lines to catch double-subscribe cases
+        # de-dup window
         self._recent_log_deque = collections.deque(maxlen=500)
         self._recent_log_set = set()
         self._last_appended_line = None
-        self._log_user_scrolling = False  # default
+        self._log_user_scrolling = False
 
-        # --- Подписка на логи и первичный дренаж буфера ---
+        log_group = QGroupBox("Логи")
+        log_group.setAccessibleName("Группа: логи")
+        log_group.setAccessibleDescription("Панель логов и состояние бота")
+
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(10, 10, 10, 10)
+        log_layout.setSpacing(8)
+
+        status_line = QHBoxLayout()
+        status_line.addWidget(self.status_label)
+        status_line.addStretch(1)
+        status_line.addWidget(self.filter_duplicates_checkbox)
+        log_layout.addLayout(status_line)
+        log_layout.addWidget(self.monitor_edit)
+
+        bottom_layout.addWidget(log_group)
+
+        # Give the log pane most of the space by default
         try:
-            # Подключаем сигналы логгера к GUI (guard от двойной подписки)
+            self.splitter.setSizes([360, 540])
+        except Exception:
+            pass
+
+        # --- Subscribe to logs + drain early buffer --------------------------------
+        try:
             import sys as _sys
             _main = _sys.modules.get('__main__')
             already = getattr(_main, 'gui_log_connected', False) if _main else False
@@ -514,7 +736,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            # Переливаем ранние логи, накопленные до создания GUI
             for _m in list(pending_log_messages):
                 self.append_log(_m)
             pending_log_messages.clear()
@@ -524,8 +745,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-
-        # Load existing credentials and API settings
+        # --- Load existing credentials and API settings ----------------------------
         try:
             token, pin, allowed_ids_str = load_credentials()
             address, port = load_api_config()
@@ -552,13 +772,14 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
-        # If token exists, fill fields and start bot
+        # Fill fields
         if token:
             self.token_edit.setText(token)
             self.pin_edit.setText(pin)
             self.account_ids_edit.setText(allowed_ids_str)
             self.address_edit.setText(address)
             self.port_edit.setText(port)
+
             try:
                 _debug_log("GUI: token_present -> start_bot()")
             except Exception:
@@ -569,160 +790,46 @@ class MainWindow(QMainWindow):
                 pass
 
             self.start_bot()
+
             # Auto-launch API server GUI if configured
             if load_server_autostart():
                 self.api_server_window = gui_serverapi.MainWindow()
                 self.api_server_window.showMinimized()
             else:
                 self.api_server_window = None
+        else:
+            self.api_server_window = None
 
-
-        # Place widgets in layout
-        layout.addWidget(token_label, 0, 0)
-        layout.addWidget(self.token_edit, 0, 1, 1, 2)
-        layout.addWidget(pin_label, 1, 0)
-        layout.addWidget(self.pin_edit, 1, 1, 1, 2)
-        layout.addWidget(account_ids_label, 2, 0)
-        layout.addWidget(self.account_ids_edit, 2, 1, 1, 2)
-        layout.addWidget(address_label, 3, 0)
-        layout.addWidget(self.address_edit, 3, 1, 1, 2)
-        layout.addWidget(port_label, 4, 0)
-        layout.addWidget(self.port_edit, 4, 1, 1, 2)
-        layout.addWidget(self.lock_api_checkbox, 5, 0, 1, 3)
-        layout.addWidget(self.save_run_button, 6, 0, 1, 3)
-
-        button_bar = QHBoxLayout()
-        # Button for local Telegram API server settings
-        self.api_settings_button = QPushButton("Настройки API сервера")
-        self.api_settings_button.setAccessibleName("Кнопка: Настройки API сервера")
-        self.api_settings_button.setAccessibleDescription("Открыть окно настроек локального Telegram API сервера")
-        self.api_settings_button.clicked.connect(self.open_api_server_settings)
-
-        button_bar.addWidget(self.toggle_button)
-        button_bar.addWidget(self.reset_button)
-        button_bar.addWidget(self.help_button)
-        button_bar.addWidget(self.exit_button)
-        button_bar.addWidget(self.api_settings_button)
-        button_bar.addWidget(self.minimize_tray_button)
-        layout.addLayout(button_bar, 7, 0, 1, 3)
-
-        # --- Windows Autostart controls ---
-        self.autorun_checkbox = QCheckBox("Запускать вместе с Windows")
-        self.autorun_checkbox.setFocusPolicy(Qt.StrongFocus)
-        self.autorun_checkbox.setAccessibleName("Чекбокс: запускать программу вместе с Windows")
-        self.autorun_checkbox.setAccessibleDescription("Если включено, программа будет запускаться при входе в Windows. Используйте Tab/Shift+Tab для перехода.")
-        self.start_tray_checkbox = QCheckBox("Запуск сразу в трее")
-
-        # --- Method selection ---
-        self.method_group = QGroupBox("Способ автозапуска")
-        self.method_group.setAccessibleName("Группа: способ автозапуска")
-        self.method_group.setAccessibleDescription("Выберите способ автозапуска: Автовыбор, Папка Автозагрузка, Реестр.")
-        self.method_auto = A11yRadioButton("Автовыбор (каскадом)")
-        self.method_auto.setAccessibleName("Переключатель: Автовыбор способа")
-        self.method_startup = A11yRadioButton("Папка «Автозагрузка» (ярлык/бат)")
-        self.method_startup.setAccessibleName("Переключатель: Папка Автозагрузка")
-        self.method_registry = A11yRadioButton("Реестр (HKCU\\Run)")
-        self.method_registry.setAccessibleName("Переключатель: Реестр HKCU Run")
-
-        method_layout = QVBoxLayout(self.method_group)
-        method_layout.addWidget(self.method_auto)
-        method_layout.addWidget(self.method_startup)
-        method_layout.addWidget(self.method_registry)
-
-        # Навигационная группа для радиокнопок метода автозапуска
-        self.method_radios = [self.method_auto, self.method_startup, self.method_registry]
-        for _rb in self.method_radios:
-            if hasattr(_rb, "set_nav_group"):
-                _rb.set_nav_group(self.method_radios)
-
-        # Ensure consistent accessibility behavior across all radios
-        for _rb in self.method_radios:
+        # --- Adaptive policies ------------------------------------------------------
+        for w in (self.token_edit, self.pin_edit, self.account_ids_edit, self.address_edit, self.port_edit):
             try:
-                _rb.setAutoExclusive(True)
-                _rb.setFocusPolicy(Qt.StrongFocus)
+                w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             except Exception:
                 pass
-
-        self.start_tray_checkbox.setFocusPolicy(Qt.StrongFocus)
-        self.start_tray_checkbox.setAccessibleName("Чекбокс: запуск сразу в трее")
-        self.start_tray_checkbox.setAccessibleDescription("Если включено, при автозапуске окно не будет показано, приложение стартует в системном трее. Доступно при включённом автозапуске.")
-
-        # Load current settings and reflect them
-        autorun_enabled, start_in_tray, method_choice = load_startup_full()
-        self.autorun_checkbox.setChecked(autorun_enabled)
-        self.start_tray_checkbox.setChecked(start_in_tray)
-
-        # initialize method radios (default to "startup")
-        if method_choice == "auto":
-            self.method_auto.setChecked(True)
-        elif method_choice == "registry":
-            self.method_registry.setChecked(True)
-        else:
-            # fallback for unknown/removed methods (e.g., 'schtask')
-            self.method_startup.setChecked(True)
-
-        # disable method group + tray until autorun on
-        self.method_group.setEnabled(autorun_enabled)
-        self.start_tray_checkbox.setEnabled(autorun_enabled)
-        # Не блокируем для доступности NVDA/JAWS: оставляем доступной,
-        # а ограничение проверим в обработчике изменения состояния.
-
-        # Connect handlers
-        self.autorun_checkbox.stateChanged.connect(self.on_autorun_checkbox_changed)
-        self.start_tray_checkbox.stateChanged.connect(self.on_start_tray_checkbox_changed)
-
-        self.method_auto.toggled.connect(self.on_method_radio_changed)
-        self.method_startup.toggled.connect(self.on_method_radio_changed)
-        self.method_registry.toggled.connect(self.on_method_radio_changed)
-
-        layout.addWidget(self.autorun_checkbox, 8, 0, 1, 3)
-        layout.addWidget(self.start_tray_checkbox, 9, 0, 1, 3)
-        layout.addWidget(self.method_group, 10, 0, 1, 3)
-
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator, 11, 0, 1, 3)
-
-        # status + filter checkbox in one line
-        status_line = QHBoxLayout()
-        status_line.addWidget(self.status_label)
-        status_line.addStretch(1)
-        status_line.addWidget(self.filter_duplicates_checkbox)
-        layout.addLayout(status_line, 12, 0, 1, 3)
-
-        layout.addWidget(self.monitor_edit, 13, 0, 1, 3)
-
-        self.token_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.pin_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.account_ids_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.address_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.port_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.monitor_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        layout.setColumnStretch(1, 1)
-        layout.setColumnStretch(2, 1)
-        layout.setRowStretch(13, 1)
-
-        # --- Tab order (фиксированный, без дубликатов) ---
+        # --- Tab order (fixed, predictable for screen readers) ---------------------
         self.setTabOrder(self.token_edit, self.pin_edit)
         self.setTabOrder(self.pin_edit, self.account_ids_edit)
         self.setTabOrder(self.account_ids_edit, self.address_edit)
         self.setTabOrder(self.address_edit, self.port_edit)
-        self.setTabOrder(self.port_edit, self.save_run_button)
+        self.setTabOrder(self.port_edit, self.lock_api_checkbox)
+        self.setTabOrder(self.lock_api_checkbox, self.api_settings_button)
+        self.setTabOrder(self.api_settings_button, self.save_run_button)
         self.setTabOrder(self.save_run_button, self.toggle_button)
         self.setTabOrder(self.toggle_button, self.reset_button)
         self.setTabOrder(self.reset_button, self.help_button)
-        self.setTabOrder(self.help_button, self.exit_button)
-        self.setTabOrder(self.exit_button, self.api_settings_button)
-        self.setTabOrder(self.api_settings_button, self.minimize_tray_button)
-        self.setTabOrder(self.minimize_tray_button, self.autorun_checkbox)
+        self.setTabOrder(self.help_button, self.functions_button)
+        self.setTabOrder(self.functions_button, self.minimize_tray_button)
+        self.setTabOrder(self.minimize_tray_button, self.exit_button)
+        self.setTabOrder(self.exit_button, self.autorun_checkbox)
         self.setTabOrder(self.autorun_checkbox, self.start_tray_checkbox)
         self.setTabOrder(self.start_tray_checkbox, self.method_auto)
         self.setTabOrder(self.method_auto, self.method_startup)
         self.setTabOrder(self.method_startup, self.method_registry)
         self.setTabOrder(self.method_registry, self.monitor_edit)
 
+        # --- Icon + tray ------------------------------------------------------------
         if os.path.exists(os.path.join(BASE_DIR, "icon.png")):
             icon = QIcon(os.path.join(BASE_DIR, "icon.png"))
         else:
@@ -738,23 +845,29 @@ class MainWindow(QMainWindow):
         restore_action.setToolTip("Развернуть окно приложения")
         restore_action.setStatusTip("Развернуть окно приложения")
         restore_action.triggered.connect(self.show_normal)
+
         exit_action = QAction("Выход", self)
         exit_action.setToolTip("Завершить работу приложения")
         exit_action.setStatusTip("Завершить работу приложения")
         exit_action.triggered.connect(self.exit_app)
+
         tray_menu.addAction(restore_action)
         tray_menu.addSeparator()
+
         api_settings_action = QAction("Настройка локального API", self)
         api_settings_action.setToolTip("Открыть настройки локального Telegram API сервера")
         api_settings_action.setStatusTip("Открыть окно настройки локального Telegram API сервера")
         api_settings_action.triggered.connect(self.open_api_server_settings)
         tray_menu.addAction(api_settings_action)
 
+        tray_menu.addSeparator()
         tray_menu.addAction(exit_action)
+
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.setVisible(False)
-        # If launched with --tray flag, auto-hide to tray by timer (10s); otherwise do nothing
+
+        # Auto-hide to tray when launched with --tray
         args = [a.lower() for a in sys.argv[1:]]
         if ("--tray" in args) or ("/tray" in args):
             try:
@@ -768,7 +881,40 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # If launched with --tray flag, start hidden to tray (useful for autorun)
+        # First adaptive layout pass (for the initial size)
+        try:
+            self._update_responsive_controls()
+        except Exception:
+            pass
+
+
+    # --- Adaptive UI helpers ------------------------------------------------
+    def _update_responsive_controls(self):
+        """Подстройка раскладки кнопок под ширину окна (3/2/1 колонки)."""
+        try:
+            w = self.centralWidget().width() if self.centralWidget() else self.width()
+        except Exception:
+            w = self.width()
+        if w >= 980:
+            cols = 3
+        elif w >= 720:
+            cols = 2
+        else:
+            cols = 1
+
+        try:
+            if hasattr(self, "_control_buttons_grid") and self._control_buttons_grid:
+                self._control_buttons_grid.relayout(cols)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        try:
+            self._update_responsive_controls()
+        except Exception:
+            pass
+        super().resizeEvent(event)
+
 
     # --- Enforcement on boot -------------------------------------------------
     def _enforce_autorun_from_config_on_boot(self):
@@ -1032,37 +1178,61 @@ class MainWindow(QMainWindow):
 
         # 2) Мягко закрыть управляемый браузер
         try:
-            import modulbrowsrem as _b
-            ctrl = getattr(_b, "CTRL", None) or getattr(_b, "BROWSER_CTRL", None)
-            if ctrl is not None:
+            import importlib
+            import asyncio
+
+            # Приоритетно берём модули из папки moduls
+            moduls_dir = os.path.join(BASE_DIR, "moduls")
+            if os.path.isdir(moduls_dir) and moduls_dir not in sys.path:
+                sys.path.insert(0, moduls_dir)
+
+            # Сначала пробуем уже загруженный модуль (важно для сохранения состояния контроллера)
+            m = sys.modules.get("nostartrunmodulbrowsrem") or sys.modules.get("moduls.nostartrunmodulbrowsrem")
+            if m is None:
+                m = importlib.import_module("nostartrunmodulbrowsrem")
+
+            ctrl = getattr(m, "CTRL", None)
+            if ctrl is None:
+                log_line("Браузер: модуль найден, но CTRL отсутствует — пропускаю закрытие.")
+            else:
+                selected = None
                 try:
-                    selected = ctrl.get_selected()
-                except Exception as e_sel:
+                    get_sel = getattr(ctrl, "get_selected", None)
+                    if callable(get_sel):
+                        selected = get_sel()
+                    else:
+                        selected = getattr(ctrl, "selected", None)
+                except Exception:
                     selected = None
-                    log_line(f"Браузер: не получил выбранный экземпляр: {e_sel}")
+
                 if selected:
                     log_line(f"Браузер: найден выбранный контроллер '{selected}'. Пытаюсь закрыть мягко (таймаут 5с).")
-                    try:
-                        quit_fn = getattr(ctrl, "quit", None)
-                        if quit_fn:
+                    quit_fn = getattr(ctrl, "quit", None) or getattr(ctrl, "close", None) or getattr(ctrl, "shutdown", None)
+                    if not quit_fn:
+                        log_line("Браузер: у CTRL нет метода quit/close/shutdown — пропускаю закрытие.")
+                    else:
+                        try:
+                            # Может быть sync, может быть async — поддержим оба варианта
                             if inspect.iscoroutinefunction(quit_fn):
-                                import asyncio
                                 asyncio.run(asyncio.wait_for(quit_fn(selected), timeout=5.0))
                             else:
                                 try:
-                                    quit_fn(selected, timeout=5)
+                                    res = quit_fn(selected, timeout=5)
                                 except TypeError:
-                                    quit_fn(selected)
-                        log_line("Браузер: команда закрытия отправлена.")
-                    except Exception as e_quit:
-                        log_line(f"Браузер: ошибка при попытке закрытия: {e_quit}")
-                else:
-                    log_line("Браузер: выбранный контроллер не обнаружен — пропускаю закрытие.")
-            else:
-                log_line("Браузер: модуль найден, но контроллер BROWSER_CTRL отсутствует — пропускаю закрытие.")
-        except Exception as e:
-            log_line(f"Браузер: модуль управления отсутствует/ошибка импорта — пропускаю. Детали: {e}")
+                                    res = quit_fn(selected)
 
+                                if inspect.isawaitable(res):
+                                    asyncio.run(asyncio.wait_for(res, timeout=5.0))
+
+                            log_line("Браузер: команда закрытия отправлена.")
+                        except Exception as e_quit:
+                            log_line(f"Браузер: ошибка при попытке закрытия: {e_quit}")
+                else:
+                    log_line("Браузер: управляемый браузер не выбран/не обнаружен — пропускаю закрытие.")
+        except ModuleNotFoundError as e:
+            log_line(f"Браузер: модуль nostartrunmodulbrowsrem не найден — пропускаю. Детали: {e}")
+        except Exception as e:
+            log_line(f"Браузер: ошибка/проблема при импорте модуля управления — пропускаю. Детали: {e}")
         # 3) Список живых потоков
         try:
             ths = threading.enumerate()
@@ -1269,7 +1439,64 @@ class MainWindow(QMainWindow):
         save_api_config("", "")
         self.status_label.setText("Бот сброшен. Файл учетных данных очищен.")
 
+    
+    def _close_managed_browser_before_shutdown(self):
+        """Закрывает браузер ТОЛЬКО если он запущен через модуль управления браузером (moduls/nostartrunmodulbrowsrem)."""
+        try:
+            import importlib
+            import inspect
+            import asyncio
+
+            # Приоритетно берём модули из папки moduls рядом с программой/EXE
+            moduls_dir = os.path.join(BASE_DIR, "moduls")
+            if os.path.isdir(moduls_dir) and moduls_dir not in sys.path:
+                sys.path.insert(0, moduls_dir)
+
+            # Важно: если модуль уже загружен, берём его (с сохранением состояния CTRL)
+            m = sys.modules.get("nostartrunmodulbrowsrem") or sys.modules.get("moduls.nostartrunmodulbrowsrem")
+            if m is None:
+                m = importlib.import_module("nostartrunmodulbrowsrem")
+
+            ctrl = getattr(m, "CTRL", None)
+            if ctrl is None:
+                return
+
+            selected = None
+            try:
+                get_sel = getattr(ctrl, "get_selected", None)
+                if callable(get_sel):
+                    selected = get_sel()
+                else:
+                    selected = getattr(ctrl, "selected", None)
+            except Exception:
+                selected = None
+
+            if not selected:
+                return
+
+            quit_fn = getattr(ctrl, "quit", None) or getattr(ctrl, "close", None) or getattr(ctrl, "shutdown", None)
+            if not quit_fn:
+                return
+
+            # Поддержка sync/async вариантов с таймаутом
+            if inspect.iscoroutinefunction(quit_fn):
+                asyncio.run(asyncio.wait_for(quit_fn(selected), timeout=5.0))
+            else:
+                try:
+                    res = quit_fn(selected, timeout=5)
+                except TypeError:
+                    res = quit_fn(selected)
+
+                if inspect.isawaitable(res):
+                    asyncio.run(asyncio.wait_for(res, timeout=5.0))
+        except Exception:
+            # Выход/закрытие приложения не должен падать из-за браузера
+            return
+
+
     def exit_app(self):
+        # Перед выходом: закрыть управляемый браузер (если он открыт через модуль)
+        self._close_managed_browser_before_shutdown()
         # First, stop the local Telegram API server window and process
         if hasattr(self, "api_server_window") and self.api_server_window:
             try:
@@ -1289,6 +1516,8 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
     def closeEvent(self, event):
+        # Перед закрытием окна: закрыть управляемый браузер (если он открыт через модуль)
+        self._close_managed_browser_before_shutdown()
         # On main window close, ensure server window and bot are stopped
         if hasattr(self, "api_server_window") and self.api_server_window:
             try:
@@ -1333,8 +1562,22 @@ class MainWindow(QMainWindow):
             self.show_normal()
 
     def show_help(self):
-        dialog = HelpDialog(self)
-        dialog.exec_()
+        """Открыть справку. Модуль подгружается только по нажатию кнопки."""
+        try:
+            import importlib
+            # Ленивая загрузка: не тащим окно справки при старте GUI
+            mod = importlib.import_module('gui_win.help_window')
+            show_fn = getattr(mod, 'show_help_dialog', None)
+            if callable(show_fn):
+                show_fn(self)
+            else:
+                raise AttributeError('show_help_dialog не найден')
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "Справка", f"Не удалось открыть справку: {e}")
+            except Exception:
+                pass
+
 
     def open_api_server_settings(self):
         """Open the Local Telegram API Server settings window"""

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Windows autostart utilities and shared config helpers.
-- Лог пишется только в папку "лог/windows_startup.log" и только если включён debug.
+- Лог пишется только в папку "log/windows_startup.log" и только если включён debug.
 - Корневой файл autostart_bootstrap.log больше не создаётся; если он есть — удаляется при импорте.
 
 В этом выпуске:
@@ -85,8 +85,8 @@ def _read_debug_enabled_from_config() -> bool:
 
 
 DEBUG_ENABLED = _read_debug_enabled_from_config()
-# Папка с логами называется "лог" (как и в остальном проекте)
-LOG_DIR = os.path.join(BASE_DIR, "лог")
+# Папка с логами называется "log" (как и в остальном проекте)
+LOG_DIR = os.path.join(BASE_DIR, "log")
 LOG_FILE = os.path.join(LOG_DIR, "windows_startup.log")
 
 # На всякий случай — выключаем и чистим «старый» корневой лог,
