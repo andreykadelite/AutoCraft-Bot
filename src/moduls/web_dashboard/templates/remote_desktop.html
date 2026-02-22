@@ -1,0 +1,204 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<a class="skip-link" href="#rd-screen">Перейти к экрану удаленного рабочего стола</a>
+
+<div class="page-header">
+  <div>
+    <h1>Удаленный рабочий стол</h1>
+    <p class="muted">
+      Управление компьютером через браузер: экран, ввод, буфер обмена, файлы и звук.
+    </p>
+  </div>
+  <div class="badge" id="rd-status" aria-live="polite">Сеанс выключен</div>
+</div>
+
+{% if not capabilities.screen %}
+<div class="card alert-card" role="alert">
+  <h3>Экран недоступен</h3>
+  <p class="muted">
+    Не найден модуль захвата экрана (mss/Pillow). Установите зависимости и перезапустите панель.
+  </p>
+</div>
+{% endif %}
+
+{% if not capabilities.control %}
+<div class="card alert-card" role="alert">
+  <h3>Управление недоступно</h3>
+  <p class="muted">
+    Не найден модуль управления вводом (pyautogui). Поток экрана будет доступен без управления.
+  </p>
+</div>
+{% endif %}
+
+<div class="grid remote-desktop-grid">
+  <section class="card rd-screen-card" aria-labelledby="rd-screen-title">
+    <div class="rd-screen-header">
+      <div>
+        <h3 id="rd-screen-title">Экран</h3>
+        <p class="muted" id="rd-screen-hint">
+          Нажмите на экран, чтобы передать управление, или используйте кнопки в панели.
+        </p>
+      </div>
+    </div>
+
+    <div class="rd-toolbar" role="group" aria-label="Сеанс удаленного рабочего стола">
+      <button class="btn" type="button" id="rd-session-toggle" aria-pressed="false">
+        Включить удаленный рабочий стол
+      </button>
+      <button class="btn" type="button" id="rd-fullscreen-toggle" aria-pressed="false">
+        Fullscreen
+      </button>
+    </div>
+
+    <div class="rd-toolbar" role="group" aria-label="Настройки потока">
+      <label class="rd-control">
+        Монитор
+        <select id="rd-monitor" aria-label="Выбор монитора"></select>
+      </label>
+      <label class="rd-control">
+        Качество
+        <select id="rd-quality" aria-label="Качество потока">
+          <option value="50">Эконом</option>
+          <option value="70" selected>Баланс</option>
+          <option value="85">Высокое</option>
+        </select>
+      </label>
+      <label class="rd-control">
+        FPS
+        <select id="rd-fps" aria-label="Частота кадров">
+          <option value="10">10</option>
+          <option value="15" selected>15</option>
+          <option value="24">24</option>
+          <option value="30">30</option>
+        </select>
+      </label>
+      <label class="rd-control">
+        Масштаб
+        <select id="rd-scale" aria-label="Масштаб потока">
+          <option value="1" selected>100%</option>
+          <option value="0.85">85%</option>
+          <option value="0.7">70%</option>
+          <option value="0.55">55%</option>
+        </select>
+      </label>
+      <button class="btn" type="button" id="rd-reload">Обновить поток</button>
+    </div>
+
+    <div class="rd-toolbar rd-mode-toolbar" role="group" aria-label="Режим отображения">
+      <span class="rd-toolbar-label">Режим экрана</span>
+      <label class="rd-mode-option">
+        <input type="radio" name="rd-render-mode" id="rd-mode-stream" value="mjpeg" checked>
+        <span>Поток (MJPEG)</span>
+      </label>
+      <label class="rd-mode-option">
+        <input type="radio" name="rd-render-mode" id="rd-mode-frames" value="frames">
+        <span>Кадровый (снимки)</span>
+      </label>
+    </div>
+    <details class="rd-mode-details">
+      <summary>Описание режимов</summary>
+      <div class="rd-mode-details-body">
+        <p><strong>Поток (MJPEG)</strong> — минимальная задержка и плавность, но выше нагрузка на сеть и процессор.</p>
+        <p><strong>Кадровый режим</strong> — стабильнее при слабых каналах или прокси, но кадры обновляются с задержкой.</p>
+      </div>
+    </details>
+
+    <div class="rd-toolbar" role="group" aria-label="Управление вводом">
+      <button class="btn" type="button" id="rd-capture">Захватить управление</button>
+      <button class="btn" type="button" id="rd-control-toggle">Управление: выкл</button>
+      <button class="btn" type="button" id="rd-keyboard-toggle">Клавиатура: выкл</button>
+      <button class="btn" type="button" id="rd-clear-focus">Снять фокус</button>
+    </div>
+
+    <div
+      class="rd-errors"
+      id="rd-errors"
+      role="alert"
+      aria-live="assertive"
+      aria-atomic="true"
+      aria-label="Сообщение об ошибке удаленного рабочего стола"
+      tabindex="0"
+      hidden
+    ></div>
+    <p id="rd-errors-live" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></p>
+
+    <div class="rd-screen-wrapper" id="rd-screen-wrapper" tabindex="0" aria-label="Удаленный экран">
+      <canvas id="rd-canvas" class="rd-canvas" aria-hidden="true"></canvas>
+      <img id="rd-screen" alt="Удаленный рабочий стол" />
+      <div class="rd-overlay" id="rd-overlay" aria-hidden="true">
+        Нажмите, чтобы захватить управление
+      </div>
+    </div>
+
+    <div class="rd-hotkeys" aria-label="Комбинации клавиш">
+      <button class="btn" type="button" data-hotkey="ctrl+alt+del">Ctrl + Alt + Del</button>
+      <button class="btn" type="button" data-hotkey="alt+tab">Alt + Tab</button>
+      <button class="btn" type="button" data-hotkey="win+r">Win + R</button>
+      <button class="btn" type="button" data-hotkey="win+d">Win + D</button>
+      <button class="btn" type="button" data-hotkey="win+e">Win + E</button>
+    </div>
+  </section>
+
+  <section class="card rd-side-card" aria-label="Дополнительные функции">
+    <div class="rd-section" aria-labelledby="rd-clipboard-title">
+      <h3 id="rd-clipboard-title">Общий буфер обмена</h3>
+      <p class="muted">
+        Используйте кнопки, чтобы обмениваться текстом между браузером и удаленным ПК.
+      </p>
+      <textarea id="rd-clipboard-text" rows="4" placeholder="Текст буфера обмена" aria-label="Текст буфера обмена"></textarea>
+      <div class="rd-actions">
+        <button class="btn" type="button" id="rd-clipboard-get">Получить с удаленного</button>
+        <button class="btn" type="button" id="rd-clipboard-send">Отправить на удаленный</button>
+        <button class="btn" type="button" id="rd-clipboard-local">Вставить из локального</button>
+      </div>
+    </div>
+
+    <div class="rd-section" aria-labelledby="rd-text-title">
+      <h3 id="rd-text-title">Отправить текст</h3>
+      <p class="muted">Удобно для вставки длинных команд или паролей.</p>
+      <textarea id="rd-text-input" rows="3" placeholder="Введите текст для ввода" aria-label="Текст для ввода на удаленном компьютере"></textarea>
+      <div class="rd-actions">
+        <button class="btn" type="button" id="rd-text-send">Отправить текст</button>
+      </div>
+    </div>
+
+    <div class="rd-section" aria-labelledby="rd-files-title">
+      <h3 id="rd-files-title">Общие файлы</h3>
+      <p class="muted">
+        Общая папка: <span class="rd-path">{{ shared_dir }}</span>
+      </p>
+      <div class="rd-actions">
+        <label class="btn btn-file">
+          Загрузить файл
+          <input type="file" id="rd-file-input" multiple>
+        </label>
+        <button class="btn" type="button" id="rd-files-refresh">Обновить список</button>
+      </div>
+      <div class="rd-files" id="rd-files" aria-live="polite"></div>
+    </div>
+
+  </section>
+</div>
+
+<script>
+  window.RemoteDesktopConfig = {
+    streamUrl: {{ url_for('RemoteDesktopView.stream') | tojson }},
+    snapshotUrl: {{ url_for('RemoteDesktopView.snapshot') | tojson }},
+    infoUrl: {{ url_for('RemoteDesktopView.info') | tojson }},
+    statusUrl: {{ url_for('RemoteDesktopView.status') | tojson }},
+    inputUrl: {{ url_for('RemoteDesktopView.input') | tojson }},
+    clipboardUrl: {{ url_for('RemoteDesktopView.clipboard') | tojson }},
+    filesListUrl: {{ url_for('RemoteDesktopView.share_list') | tojson }},
+    fileUploadUrl: {{ url_for('RemoteDesktopView.share_upload') | tojson }},
+    fileDownloadUrl: {{ url_for('RemoteDesktopView.share_download') | tojson }},
+      sessionUrl: {{ url_for('RemoteDesktopView.session_event') | tojson }},
+      clientLogUrl: {{ url_for('RemoteDesktopView.client_log') | tojson }},
+    csrfToken: {{ (csrf_token() if csrf_token is defined and csrf_token else '') | tojson }},
+    token: {{ rdp_token | tojson }},
+    hasControl: {{ (capabilities.control or False) | tojson }},
+    hasScreen: {{ (capabilities.screen or False) | tojson }},
+  };
+</script>
+<script src="{{ url_for('static', filename='js/remote_desktop.js', v=rd_assets_version) }}"></script>
+{% endblock %}

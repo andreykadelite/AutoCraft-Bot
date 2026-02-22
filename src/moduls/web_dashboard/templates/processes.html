@@ -1,0 +1,45 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Процессы</h1>
+    <p class="muted">Активные процессы и их потребление ресурсов.</p>
+  </div>
+</div>
+
+<div class="card">
+  <table class="table">
+    <caption class="sr-only">Список процессов и нагрузка</caption>
+    <thead>
+      <tr>
+        <th scope="col">ИД процесса</th>
+        <th scope="col">Процесс</th>
+        <th scope="col">ЦП, %</th>
+        <th scope="col">ОЗУ, %</th>
+        <th scope="col">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in processes %}
+      <tr>
+        <td>{{ p.pid }}</td>
+        <td>{{ p.name }}</td>
+        <td>{{ p.cpu | round(1) }}</td>
+        <td>{{ p.mem | round(1) }}</td>
+        <td>
+          <form method="post" action="{{ url_for('ProcessesView.kill', pid=p.pid) }}" style="display: inline" data-confirm-message="{{ ('Точно завершить процесс ' ~ p.name ~ ' (PID ' ~ p.pid ~ ')?') | e }}" data-confirm-danger="true">
+            {% if csrf_token is defined and csrf_token %}
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% endif %}
+            <button class="btn danger" type="submit" aria-label="Завершить процесс {{ p.name }}">Завершить</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

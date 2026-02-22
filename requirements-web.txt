@@ -1,0 +1,7 @@
+Flask==2.3.3
+Flask-AppBuilder==5.0.2
+Flask-Migrate==4.0.7
+Flask-WTF==1.2.1
+waitress==2.1.2
+APScheduler==3.10.4
+passlib[bcrypt]==1.7.4

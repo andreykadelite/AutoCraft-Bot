@@ -1,0 +1,173 @@
+{% extends "panel_base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/live_stream.css') }}">
+{% endblock %}
+
+{% block panel_content %}
+<a class="skip-link" href="#stream-player">Перейти к плееру</a>
+
+<div class="page-header">
+  <div>
+    <h1>Прямая трансляция</h1>
+    <p class="muted">
+      Поток с камеры через браузер. Используется ffmpeg + HLS, поток доступен сразу после запуска.
+    </p>
+  </div>
+  <div class="badge" id="stream-status" aria-live="polite">Остановлено</div>
+</div>
+
+<div class="card alert-card stream-warning" role="alert">
+  <h3>Внимание</h3>
+  <p class="muted">
+    Перед запуском убедитесь, что вы имеете право вести трансляцию и что камера доступна.
+    При необходимости остановите трансляцию после завершения работы.
+  </p>
+</div>
+
+{% if not can_write %}
+<div class="card alert-card stream-readonly" role="status">
+  <h3>Только просмотр</h3>
+  <p class="muted">Роль пользователя не позволяет запускать или останавливать трансляцию.</p>
+</div>
+{% endif %}
+
+<div class="grid stream-grid">
+  <section class="card stream-player-card" aria-labelledby="stream-player-title">
+    <div class="stream-header">
+      <div>
+        <h3 id="stream-player-title">Плеер</h3>
+        <p class="muted" id="stream-hint">Запустите трансляцию и дождитесь появления плейлиста.</p>
+      </div>
+      <div class="stream-actions">
+        <button class="btn" type="button" id="stream-reconnect">Переподключить</button>
+        <button class="btn" type="button" id="stream-open">Открыть m3u8</button>
+      </div>
+    </div>
+    <div class="stream-video-wrapper">
+      <video
+        id="stream-player"
+        controls
+        autoplay
+        muted
+        playsinline
+        aria-label="Плеер прямой трансляции"
+        aria-describedby="stream-stats-note stream-stats-announcer"
+      ></video>
+      <div class="stream-overlay" id="stream-overlay" aria-hidden="true">
+        Запустите трансляцию, чтобы увидеть поток
+      </div>
+    </div>
+    <div class="stream-errors" id="stream-errors" role="alert" aria-live="assertive" hidden></div>
+    <div class="stream-stats-toggle">
+      <label for="stream-stats-toggle">
+        <input
+          type="checkbox"
+          id="stream-stats-toggle"
+          checked
+          aria-controls="stream-stats"
+          aria-expanded="true"
+        >
+        Показывать характеристики потока
+      </label>
+    </div>
+    <section class="stream-stats" id="stream-stats" aria-labelledby="stream-stats-title">
+      <h4 id="stream-stats-title">Характеристики потока</h4>
+      <p class="muted" id="stream-stats-note">
+        Фактический FPS рассчитывается по реально отрисованным кадрам в плеере.
+      </p>
+      <dl class="stream-stats-grid">
+        <div class="stream-stat-item">
+          <dt>Состояние</dt>
+          <dd id="stream-stat-state">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Фактический FPS</dt>
+          <dd id="stream-stat-fps">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Разрешение</dt>
+          <dd id="stream-stat-resolution">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Кодеки</dt>
+          <dd id="stream-stat-codecs">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Битрейт (факт)</dt>
+          <dd id="stream-stat-bitrate">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Потерянные кадры</dt>
+          <dd id="stream-stat-dropped">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Задержка</dt>
+          <dd id="stream-stat-latency">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Камера</dt>
+          <dd id="stream-stat-camera">—</dd>
+        </div>
+        <div class="stream-stat-item">
+          <dt>Аудио</dt>
+          <dd id="stream-stat-audio">—</dd>
+        </div>
+      </dl>
+      <p id="stream-stats-announcer" class="stream-sr-only" aria-live="polite" aria-atomic="true"></p>
+    </section>
+  </section>
+
+  <section class="card stream-control-card" aria-labelledby="stream-controls-title">
+    <h3 id="stream-controls-title">Управление</h3>
+    <div class="stream-control-row">
+      <label>
+        Камера
+        <select id="stream-camera"></select>
+      </label>
+    </div>
+    <div class="stream-control-row">
+      <label>
+        Микрофон
+        <select id="stream-audio"></select>
+      </label>
+    </div>
+    <div class="stream-control-row stream-buttons">
+      <button class="btn" type="button" id="stream-start" data-write-action>Запустить</button>
+      <button class="btn" type="button" id="stream-stop" data-write-action>Остановить</button>
+      <button class="btn" type="button" id="stream-refresh">Обновить устройства</button>
+    </div>
+    <div class="stream-meta" id="stream-meta">
+      <div class="stream-meta-row">
+        <span class="muted">FFmpeg:</span>
+        <span id="stream-ffmpeg">—</span>
+      </div>
+      <div class="stream-meta-row">
+        <span class="muted">Статус:</span>
+        <span id="stream-runtime">—</span>
+      </div>
+    </div>
+    <div class="stream-help">
+      <h4>Подсказки</h4>
+      <ul>
+        <li>Если поток не воспроизводится, нажмите «Переподключить» или откройте m3u8 во внешнем плеере.</li>
+        <li>При отсутствии доступа к CDN hls.js поток можно смотреть через VLC.</li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script>
+  window.LiveStreamConfig = {
+    statusUrl: {{ url_for('LiveStreamView.status') | tojson }},
+    devicesUrl: {{ url_for('LiveStreamView.devices') | tojson }},
+    startUrl: {{ url_for('LiveStreamView.start') | tojson }},
+    stopUrl: {{ url_for('LiveStreamView.stop') | tojson }},
+    hlsUrl: {{ url_for('LiveStreamView.hls', filename='stream.m3u8') | tojson }},
+    csrfToken: {{ (csrf_token() if csrf_token is defined and csrf_token else '') | tojson }},
+    canWrite: {{ (can_write or False) | tojson }},
+  };
+</script>
+<script src="{{ url_for('static', filename='js/live_stream.js') }}"></script>
+{% endblock %}

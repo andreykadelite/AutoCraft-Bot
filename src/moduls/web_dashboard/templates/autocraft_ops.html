@@ -1,0 +1,290 @@
+{% extends "panel_base.html" %}
+
+{% macro render_actions(actions) -%}
+  {% for action in actions %}
+    <div class="action-row">
+      <div class="action-meta">
+        <h4>{{ action.title }}</h4>
+        <p class="muted">{{ action.description }}</p>
+      </div>
+      <form method="post" action="{{ url_for('AutoCraftOpsView.run_action', action_key=action.key) }}"
+            data-confirm-message="{{ action.confirm | e }}"
+            data-confirm-danger="{{ 'true' if action.danger else 'false' }}">
+        {% if csrf_token is defined and csrf_token %}
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% endif %}
+        <button class="btn {% if action.danger %}danger{% endif %}" type="submit"
+                {% if not action.enabled %}disabled aria-disabled="true"{% endif %}>
+          {{ action.title }}
+        </button>
+      </form>
+    </div>
+  {% else %}
+    <p class="muted">Нет доступных действий.</p>
+  {% endfor %}
+{%- endmacro %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Операции AutoCraft</h1>
+    <p class="muted">Управление процессом AutoCraft, локальным Telegram API и плагинами.</p>
+  </div>
+  <div class="badge">
+    Состояние: {{ "запущен" if status.running else "не запущен" }}
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="core-actions">
+    <h3 id="core-actions">Основные действия</h3>
+    {{ render_actions(actions | selectattr("group", "equalto", "core") | list) }}
+  </section>
+  <section class="card" aria-labelledby="api-actions">
+    <h3 id="api-actions">Локальный Telegram Bot API</h3>
+    {{ render_actions(actions | selectattr("group", "equalto", "api") | list) }}
+  </section>
+  <section class="card" aria-labelledby="plugin-actions">
+    <h3 id="plugin-actions">Плагины</h3>
+    {{ render_actions(actions | selectattr("group", "equalto", "plugins") | list) }}
+  </section>
+  <section class="card" aria-labelledby="startup-actions">
+    <h3 id="startup-actions">Автозапуск</h3>
+    {{ render_actions(actions | selectattr("group", "equalto", "startup") | list) }}
+    <div class="startup-status" role="status" aria-live="polite">
+      {% if startup_cfg.supported %}
+        <div class="startup-status-line">
+          <span class="status-chip {% if startup_cfg.enabled %}ok{% else %}warn{% endif %}">
+            {{ "Автозапуск включен" if startup_cfg.enabled else "Автозапуск выключен" }}
+          </span>
+          {% if startup_cfg.in_sync %}
+            <span class="status-chip ok">Синхронизировано с config.ini</span>
+          {% else %}
+            <span class="status-chip warn">Есть расхождение с config.ini</span>
+          {% endif %}
+        </div>
+        <p class="muted startup-status-text">
+          Фактически: {{ startup_cfg.method_label }}.
+          {% if startup_cfg.start_in_tray_known %}
+            Запуск в трее: {{ "включен" if startup_cfg.start_in_tray else "выключен" }}.
+          {% else %}
+            Запуск в трее: определить точно не удалось (используется значение из config.ini).
+          {% endif %}
+        </p>
+        <p class="muted startup-status-text">
+          В `config.ini`: {{ "включен" if startup_cfg.configured_enabled else "выключен" }},
+          способ: {{ startup_cfg.configured_method_label }},
+          запуск в трее: {{ "включен" if startup_cfg.configured_start_in_tray else "выключен" }}.
+        </p>
+      {% else %}
+        <span class="status-chip bad">Автозапуск недоступен</span>
+        <p class="muted startup-status-text">
+          {{ startup_cfg.error or "Управление автозапуском доступно только на Windows." }}
+        </p>
+      {% endif %}
+    </div>
+    <form class="form autocraft-settings-form" method="post" action="{{ url_for('AutoCraftOpsView.save_startup_settings') }}">
+      {% if csrf_token is defined and csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% endif %}
+
+      <label class="autocraft-checkbox" for="autorun-enabled">
+        <input type="hidden" name="autorun_enabled" value="0">
+        <input id="autorun-enabled" name="autorun_enabled" type="checkbox" value="1"
+               {% if startup_form.enabled %}checked{% endif %}
+               {% if not startup_cfg.supported %}disabled aria-disabled="true"{% endif %}>
+        Включить автозапуск AutoCraft
+      </label>
+
+      <label for="startup-method">
+        Способ автозапуска
+        <select id="startup-method" name="method" {% if not startup_cfg.supported %}disabled aria-disabled="true"{% endif %}>
+          <option value="auto" {% if startup_form.method == "auto" %}selected{% endif %}>Автовыбор (каскадом)</option>
+          <option value="startup" {% if startup_form.method == "startup" %}selected{% endif %}>Папка автозагрузки (ярлык/бат)</option>
+          <option value="registry" {% if startup_form.method == "registry" %}selected{% endif %}>Реестр (HKCU\Run)</option>
+        </select>
+      </label>
+
+      <label class="autocraft-checkbox" for="autorun-start-in-tray">
+        <input type="hidden" name="start_in_tray" value="0">
+        <input id="autorun-start-in-tray" name="start_in_tray" type="checkbox" value="1"
+               {% if startup_form.start_in_tray %}checked{% endif %}
+               {% if not startup_cfg.supported %}disabled aria-disabled="true"{% endif %}>
+        Запускать сразу в трее
+      </label>
+
+      <p class="muted">Параметр запуска в трее применяется только когда автозапуск включен.</p>
+
+      <div class="autocraft-form-actions">
+        <button class="btn-primary" type="submit" {% if not startup_cfg.supported %}disabled aria-disabled="true"{% endif %}>
+          Применить настройки автозапуска
+        </button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="bot-settings">
+    <h3 id="bot-settings">Подключение бота</h3>
+    <form class="form autocraft-settings-form" method="post" action="{{ url_for('AutoCraftOpsView.save_bot_settings') }}">
+      {% if csrf_token is defined and csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% endif %}
+
+      <label for="bot-token">
+        Токен бота
+        <input id="bot-token" name="token" type="text" value="{{ bot_cfg.token or '' }}" required autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="bot-pin">
+        PIN-код
+        <input id="bot-pin" name="pin" type="text" value="{{ bot_cfg.pin or '' }}" maxlength="32" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="bot-allowed-ids">
+        Разрешенные аккаунты (ID через запятую)
+        <input id="bot-allowed-ids" name="allowed_ids" type="text" value="{{ bot_cfg.allowed_ids or '' }}" placeholder="1234567, 7654321" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label class="autocraft-checkbox" for="use-standard-api">
+        <input type="hidden" name="use_standard_api" value="0">
+        <input id="use-standard-api" name="use_standard_api" type="checkbox" value="1" {% if bot_cfg.use_standard_api %}checked{% endif %}>
+        Использовать стандартный Telegram API (api.telegram.org)
+      </label>
+
+      <label for="bot-api-address">
+        Адрес локального API
+        <input id="bot-api-address" name="address" type="text" value="{{ bot_cfg.address or '' }}" placeholder="127.0.0.1" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="bot-api-port">
+        Порт локального API
+        <input id="bot-api-port" name="port" type="number" min="1" max="65535" value="{{ bot_cfg.port or '' }}" placeholder="8081" inputmode="numeric">
+      </label>
+
+      <p class="muted">Проверка бота выполняет getMe по текущим параметрам подключения без сохранения файла конфигурации.</p>
+
+      <div class="autocraft-form-actions">
+        <button class="btn" type="submit" name="submit_action" value="check">Проверить бота</button>
+        <button class="btn-primary" type="submit" name="submit_action" value="save">Сохранить</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" aria-labelledby="local-api-settings">
+    <h3 id="local-api-settings">Настройки локального Telegram API</h3>
+    <form class="form autocraft-settings-form" method="post" action="{{ url_for('AutoCraftOpsView.save_local_api_settings') }}">
+      {% if csrf_token is defined and csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% endif %}
+
+      <label for="local-api-id">
+        API ID
+        <input id="local-api-id" name="api_id" type="text" value="{{ local_api_cfg.api_id or '' }}" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="local-api-hash">
+        API Hash
+        <input id="local-api-hash" name="api_hash" type="text" value="{{ local_api_cfg.api_hash or '' }}" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label class="autocraft-checkbox" for="local-mode">
+        <input type="hidden" name="local_mode" value="0">
+        <input id="local-mode" name="local_mode" type="checkbox" value="1"
+               {% if (local_api_cfg.local_mode|string|lower) in ('1', 'true', 'yes', 'on') %}checked{% endif %}>
+        Local mode (--local)
+      </label>
+
+      <label for="http-ip">
+        Listen IP
+        <input id="http-ip" name="http_ip" type="text" value="{{ local_api_cfg.http_ip or '0.0.0.0' }}" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="http-port">
+        HTTP порт
+        <input id="http-port" name="http_port" type="number" min="1" max="65535" value="{{ local_api_cfg.http_port or '8081' }}" inputmode="numeric">
+      </label>
+
+      <label for="max-webhook-connections">
+        Max webhook connections
+        <input id="max-webhook-connections" name="max_webhook_connections" type="number" min="1" max="1000000" value="{{ local_api_cfg.max_webhook_connections or '100000' }}" inputmode="numeric">
+      </label>
+
+      <label for="verbosity">
+        Verbosity (0-5)
+        <input id="verbosity" name="verbosity" type="number" min="0" max="5" value="{{ local_api_cfg.verbosity or '0' }}" inputmode="numeric">
+      </label>
+
+      <label for="data-dir">
+        Data dir
+        <input id="data-dir" name="data_dir" type="text" value="{{ local_api_cfg.data_dir or '' }}" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="temp-dir">
+        Temp dir
+        <input id="temp-dir" name="temp_dir" type="text" value="{{ local_api_cfg.temp_dir or '' }}" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="exe-path">
+        Путь к telegram-bot-api.exe
+        <input id="exe-path" name="exe_path" type="text" value="{{ local_api_cfg.exe_path or '' }}" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label for="log-max-size">
+        Лимит файла лога (MB)
+        <input id="log-max-size" name="log_max_size" type="number" min="1" max="1024" value="{{ local_api_cfg.log_max_size or '1' }}" inputmode="numeric">
+      </label>
+
+      <label for="ui-max-lines">
+        UI max lines
+        <input id="ui-max-lines" name="ui_max_lines" type="number" min="200" max="200000" value="{{ local_api_cfg.ui_max_lines or '2000' }}" inputmode="numeric">
+      </label>
+
+      <label for="api-max-lines">
+        API max lines
+        <input id="api-max-lines" name="api_max_lines" type="number" min="200" max="200000" value="{{ local_api_cfg.api_max_lines or '5000' }}" inputmode="numeric">
+      </label>
+
+      <label for="log-flush-ms">
+        Flush interval (ms)
+        <input id="log-flush-ms" name="log_flush_ms" type="number" min="50" max="5000" value="{{ local_api_cfg.log_flush_ms or '200' }}" inputmode="numeric">
+      </label>
+
+      <label class="autocraft-checkbox" for="auto-start">
+        <input type="hidden" name="auto_start" value="0">
+        <input id="auto-start" name="auto_start" type="checkbox" value="1"
+               {% if (local_api_cfg.auto_start|string|lower) in ('1', 'true', 'yes', 'on') %}checked{% endif %}>
+        Автоматически запускать локальный API вместе с приложением
+      </label>
+
+      <label class="autocraft-checkbox" for="api-log-to-file">
+        <input type="hidden" name="api_log_to_file" value="0">
+        <input id="api-log-to-file" name="api_log_to_file" type="checkbox" value="1"
+               {% if (local_api_cfg.api_log_to_file|string|lower) in ('1', 'true', 'yes', 'on') %}checked{% endif %}>
+        Писать логи API в файл
+      </label>
+
+      <label class="autocraft-checkbox" for="auto-detect-paths">
+        <input type="hidden" name="auto_detect_paths" value="0">
+        <input id="auto-detect-paths" name="auto_detect_paths" type="checkbox" value="1"
+               {% if (local_api_cfg.auto_detect_paths|string|lower) in ('1', 'true', 'yes', 'on') %}checked{% endif %}>
+        Автоопределение путей
+      </label>
+
+      <div class="autocraft-form-actions">
+        <button class="btn-primary" type="submit">Сохранить настройки локального API</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="ops-note">
+  <h3 id="ops-note">Важные замечания</h3>
+  <ul class="muted">
+    <li>Операции выполняются с правами текущего пользователя панели и логируются в аудит.</li>
+    <li>Полный перезапуск завершит текущий процесс, панель временно станет недоступной.</li>
+    <li>Запуск/остановка Telegram Bot API требует корректных параметров в config.ini.</li>
+  </ul>
+</section>
+{% endblock %}

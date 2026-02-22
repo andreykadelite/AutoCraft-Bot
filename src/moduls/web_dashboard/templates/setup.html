@@ -1,0 +1,24 @@
+﻿<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Первый запуск</title>
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/panel.css') }}">
+</head>
+<body class="setup-page">
+  <div class="setup-card">
+    <h1>Первый запуск</h1>
+    <p>Задайте пароль администратора для входа в панель.</p>
+    <form method="post" aria-label="Установка пароля администратора">
+      <label>Новый пароль
+        <input type="password" name="password" minlength="6" required>
+      </label>
+      <label>Повторите пароль
+        <input type="password" name="password2" minlength="6" required>
+      </label>
+      <button type="submit" class="btn-primary">Сохранить</button>
+    </form>
+  </div>
+</body>
+</html>

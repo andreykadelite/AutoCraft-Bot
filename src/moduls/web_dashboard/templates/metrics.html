@@ -1,0 +1,390 @@
+{% extends "panel_base.html" %}
+
+{% macro fmt_percent(value) -%}
+  {% if value is none or value is undefined %}-{% else %}{{ value | round(1) }}%{% endif %}
+{%- endmacro %}
+
+{% macro fmt_rate(value) -%}
+  {% if value is none or value is undefined %}
+    -
+  {% else %}
+    {% set v = value | float %}
+    {% if v < 0 %}{% set v = 0 %}{% endif %}
+    {% if v >= 1073741824 %}
+      {{ (v / 1073741824) | round(2) }} GB/с
+    {% elif v >= 1048576 %}
+      {{ (v / 1048576) | round(2) }} MB/с
+    {% elif v >= 1024 %}
+      {{ (v / 1024) | round(1) }} KB/с
+    {% else %}
+      {{ v | round(1) }} B/с
+    {% endif %}
+  {% endif %}
+{%- endmacro %}
+
+{% macro fmt_number(value) -%}
+  {% if value is none or value is undefined %}-{% else %}{{ value | round(1) }}{% endif %}
+{%- endmacro %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Метрики</h1>
+    <p class="muted">Нагрузка, I/O и ключевые показатели системы в динамике.</p>
+  </div>
+  <div class="badge" aria-label="Последнее обновление">Обновлено: {{ last_metrics_at }}</div>
+</div>
+
+<div class="metrics-meta muted">
+  Хранение: {{ db_path }} · Retention: {{ retention_days }} дн. · Точек: {{ metrics | length }}
+</div>
+
+<form class="filter-bar metrics-filter" method="get" aria-label="Фильтр метрик">
+  <label for="range">
+    Период
+    <select id="range" name="range" data-range-select>
+      {% for key, item in range_options.items() %}
+        <option value="{{ key }}" {% if key == range_key %}selected{% endif %}>{{ item[0] }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label for="from">
+    Начало
+    <input id="from" type="datetime-local" name="from" value="{{ start_input }}" {% if range_key != 'custom' %}disabled{% endif %}>
+  </label>
+  <label for="to">
+    Конец
+    <input id="to" type="datetime-local" name="to" value="{{ end_input }}" {% if range_key != 'custom' %}disabled{% endif %}>
+  </label>
+  <label for="step">
+    Шаг агрегации
+    <select id="step" name="step">
+      {% for key, item in step_options.items() %}
+        <option value="{{ key }}" {% if key == step_key %}selected{% endif %}>{{ item[0] }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit" class="btn-primary">Применить</button>
+</form>
+
+<div class="tiles" role="list">
+  <div class="tile" role="listitem" aria-label="Текущая нагрузка ЦП">
+    <div class="tile-title">ЦП</div>
+    <div class="tile-value">{{ fmt_percent(latest.cpu if latest else none) }}</div>
+    <div class="tile-sub">Среднее: {{ fmt_number(stats.cpu.avg) }}%</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Текущее использование памяти">
+    <div class="tile-title">Память</div>
+    <div class="tile-value">{{ fmt_percent(latest.memory if latest else none) }}</div>
+    <div class="tile-sub">Среднее: {{ fmt_number(stats.memory.avg) }}%</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Текущая загрузка диска">
+    <div class="tile-title">Диск</div>
+    <div class="tile-value">{{ fmt_percent(latest.disk if latest else none) }}</div>
+    <div class="tile-sub">Среднее: {{ fmt_number(stats.disk.avg) }}%</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Сетевой трафик">
+    <div class="tile-title">Сеть</div>
+    <div class="tile-value">{{ fmt_rate(latest.net_recv_rate if latest else none) }}</div>
+    <div class="tile-sub">Отправлено: {{ fmt_rate(latest.net_sent_rate if latest else none) }}</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Дисковые операции ввода-вывода">
+    <div class="tile-title">Диск I/O</div>
+    <div class="tile-value">{{ fmt_rate(latest.disk_read_rate if latest else none) }}</div>
+    <div class="tile-sub">Запись: {{ fmt_rate(latest.disk_write_rate if latest else none) }}</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Количество процессов">
+    <div class="tile-title">Процессы</div>
+    <div class="tile-value">{{ latest.proc_count if latest else '-' }}</div>
+    <div class="tile-sub">Среднее: {{ fmt_number(stats.proc_count.avg) }}</div>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="usage-title">
+    <h3 id="usage-title">Нагрузка</h3>
+    <p class="sr-only" id="usageChartDesc">График ЦП, памяти и диска за выбранный период.</p>
+    <div class="chart-wrap">
+      <canvas id="usageChart" height="160" role="img" aria-describedby="usageChartDesc"></canvas>
+    </div>
+  </section>
+  <section class="card" aria-labelledby="io-title">
+    <h3 id="io-title">Сеть и дисковый I/O</h3>
+    <p class="sr-only" id="ioChartDesc">График сетевого и дискового ввода-вывода в байтах в секунду.</p>
+    <div class="chart-wrap">
+      <canvas id="ioChart" height="160" role="img" aria-describedby="ioChartDesc"></canvas>
+    </div>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="stats-title">
+  <h3 id="stats-title">Сводная статистика</h3>
+  <table class="table table-compact">
+    <caption class="sr-only">Минимум, среднее и максимум по метрикам</caption>
+    <thead>
+      <tr>
+        <th scope="col">Метрика</th>
+        <th scope="col">Мин</th>
+        <th scope="col">Среднее</th>
+        <th scope="col">Макс</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>ЦП, %</td>
+        <td>{{ fmt_number(stats.cpu.min) }}</td>
+        <td>{{ fmt_number(stats.cpu.avg) }}</td>
+        <td>{{ fmt_number(stats.cpu.max) }}</td>
+      </tr>
+      <tr>
+        <td>Память, %</td>
+        <td>{{ fmt_number(stats.memory.min) }}</td>
+        <td>{{ fmt_number(stats.memory.avg) }}</td>
+        <td>{{ fmt_number(stats.memory.max) }}</td>
+      </tr>
+      <tr>
+        <td>Диск, %</td>
+        <td>{{ fmt_number(stats.disk.min) }}</td>
+        <td>{{ fmt_number(stats.disk.avg) }}</td>
+        <td>{{ fmt_number(stats.disk.max) }}</td>
+      </tr>
+      <tr>
+        <td>Сеть вход, B/с</td>
+        <td>{{ fmt_rate(stats.net_recv_rate.min) }}</td>
+        <td>{{ fmt_rate(stats.net_recv_rate.avg) }}</td>
+        <td>{{ fmt_rate(stats.net_recv_rate.max) }}</td>
+      </tr>
+      <tr>
+        <td>Сеть выход, B/с</td>
+        <td>{{ fmt_rate(stats.net_sent_rate.min) }}</td>
+        <td>{{ fmt_rate(stats.net_sent_rate.avg) }}</td>
+        <td>{{ fmt_rate(stats.net_sent_rate.max) }}</td>
+      </tr>
+      <tr>
+        <td>Диск чтение, B/с</td>
+        <td>{{ fmt_rate(stats.disk_read_rate.min) }}</td>
+        <td>{{ fmt_rate(stats.disk_read_rate.avg) }}</td>
+        <td>{{ fmt_rate(stats.disk_read_rate.max) }}</td>
+      </tr>
+      <tr>
+        <td>Диск запись, B/с</td>
+        <td>{{ fmt_rate(stats.disk_write_rate.min) }}</td>
+        <td>{{ fmt_rate(stats.disk_write_rate.avg) }}</td>
+        <td>{{ fmt_rate(stats.disk_write_rate.max) }}</td>
+      </tr>
+      <tr>
+        <td>Процессы</td>
+        <td>{{ fmt_number(stats.proc_count.min) }}</td>
+        <td>{{ fmt_number(stats.proc_count.avg) }}</td>
+        <td>{{ fmt_number(stats.proc_count.max) }}</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<details class="details-block">
+  <summary>Таблица данных ({{ metrics | length }})</summary>
+  <div class="table-scroll">
+    <table class="table table-compact">
+      <caption class="sr-only">Таблица метрик</caption>
+      <thead>
+        <tr>
+          <th scope="col">Время</th>
+          <th scope="col">ЦП, %</th>
+          <th scope="col">Память, %</th>
+          <th scope="col">Диск, %</th>
+          <th scope="col">Сеть вход, B/с</th>
+          <th scope="col">Сеть выход, B/с</th>
+          <th scope="col">Диск чтение, B/с</th>
+          <th scope="col">Диск запись, B/с</th>
+          <th scope="col">Процессы</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in metrics %}
+        <tr>
+          <td>{{ m.ts.strftime('%d.%m %H:%M') if m.ts else '-' }}</td>
+          <td>{{ fmt_percent(m.cpu) }}</td>
+          <td>{{ fmt_percent(m.memory) }}</td>
+          <td>{{ fmt_percent(m.disk) }}</td>
+          <td>{{ fmt_rate(m.net_recv_rate) }}</td>
+          <td>{{ fmt_rate(m.net_sent_rate) }}</td>
+          <td>{{ fmt_rate(m.disk_read_rate) }}</td>
+          <td>{{ fmt_rate(m.disk_write_rate) }}</td>
+          <td>{{ m.proc_count | default('-', true) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+
+<section class="card" aria-labelledby="logs-title">
+  <h3 id="logs-title">Журналы</h3>
+  <p class="muted">Ключевые записи панели и аудита. Полные журналы — в разделе «События Windows» и «Аудит».</p>
+
+  <form class="filter-bar log-filter" method="get" aria-label="Фильтр журнала панели">
+    <input type="hidden" name="range" value="{{ range_key }}">
+    <input type="hidden" name="step" value="{{ step_key }}">
+    <input type="hidden" name="from" value="{{ start_input }}">
+    <input type="hidden" name="to" value="{{ end_input }}">
+    <label for="log_lines">
+      Строк
+      <input id="log_lines" type="number" name="log_lines" value="{{ log_lines }}" min="20" max="2000">
+    </label>
+    <label for="log_query">
+      Поиск
+      <input id="log_query" type="text" name="log_query" value="{{ log_query }}" placeholder="error, WARN, 500...">
+    </label>
+    <button type="submit" class="btn">Обновить</button>
+  </form>
+
+  <pre class="log-block" aria-label="Журнал панели">{{ log_tail }}</pre>
+
+  <div class="grid">
+    <div class="card">
+      <h4>Последние задания</h4>
+      <table class="table table-compact">
+        <caption class="sr-only">Последние задания</caption>
+        <thead>
+          <tr>
+            <th scope="col">Время</th>
+            <th scope="col">Операция</th>
+            <th scope="col">Статус</th>
+            <th scope="col">Пользователь</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td>{{ job.created_at.strftime('%H:%M:%S') }}</td>
+            <td>{{ job.operation }}</td>
+            <td>{{ job.status }}</td>
+            <td>{{ job.user }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h4>Последний аудит</h4>
+      <table class="table table-compact">
+        <caption class="sr-only">Последние события аудита</caption>
+        <thead>
+          <tr>
+            <th scope="col">Время</th>
+            <th scope="col">Пользователь</th>
+            <th scope="col">Действие</th>
+            <th scope="col">Результат</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in audit %}
+          <tr>
+            <td>{{ item.created_at.strftime('%H:%M:%S') }}</td>
+            <td>{{ item.user }}</td>
+            <td>{{ item.action }}</td>
+            <td>{{ item.result }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<script>
+  const labels = [{% for m in metrics %}'{{ m.ts.strftime('%d.%m %H:%M') if m.ts else '' }}'{% if not loop.last %},{% endif %}{% endfor %}];
+  const cpu = [{% for m in metrics %}{{ m.cpu | round(1) if m.cpu is not none else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const mem = [{% for m in metrics %}{{ m.memory | round(1) if m.memory is not none else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const disk = [{% for m in metrics %}{{ m.disk | round(1) if m.disk is not none else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const netIn = [{% for m in metrics %}{{ m.net_recv_rate | round(2) if m.net_recv_rate is not none else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const netOut = [{% for m in metrics %}{{ m.net_sent_rate | round(2) if m.net_sent_rate is not none else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const diskRead = [{% for m in metrics %}{{ m.disk_read_rate | round(2) if m.disk_read_rate is not none else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const diskWrite = [{% for m in metrics %}{{ m.disk_write_rate | round(2) if m.disk_write_rate is not none else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+
+  const formatRate = (value) => {
+    if (value === null || value === undefined) return '-';
+    const units = ['B/с', 'KB/с', 'MB/с', 'GB/с'];
+    let v = Math.abs(value);
+    let idx = 0;
+    while (v >= 1024 && idx < units.length - 1) {
+      v /= 1024;
+      idx += 1;
+    }
+    return `${v.toFixed(1)} ${units[idx]}`;
+  };
+
+  const usageCtx = document.getElementById('usageChart');
+  if (usageCtx) {
+    new Chart(usageCtx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'ЦП %', data: cpu, borderColor: '#2f74ff', backgroundColor: 'rgba(47,116,255,0.2)', tension: 0.2 },
+          { label: 'Память %', data: mem, borderColor: '#27ae60', backgroundColor: 'rgba(39,174,96,0.2)', tension: 0.2 },
+          { label: 'Диск %', data: disk, borderColor: '#f39c12', backgroundColor: 'rgba(243,156,18,0.2)', tension: 0.2 }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: true, max: 100 }
+        }
+      }
+    });
+  }
+
+  const ioCtx = document.getElementById('ioChart');
+  if (ioCtx) {
+    new Chart(ioCtx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Сеть вход', data: netIn, borderColor: '#6f42c1', backgroundColor: 'rgba(111,66,193,0.2)', tension: 0.2 },
+          { label: 'Сеть выход', data: netOut, borderColor: '#0ea5e9', backgroundColor: 'rgba(14,165,233,0.2)', tension: 0.2 },
+          { label: 'Диск чтение', data: diskRead, borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,0.2)', tension: 0.2 },
+          { label: 'Диск запись', data: diskWrite, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.2)', tension: 0.2 }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              callback: (value) => formatRate(value)
+            }
+          }
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.dataset.label}: ${formatRate(ctx.parsed.y)}`
+            }
+          }
+        }
+      }
+    });
+  }
+
+  const rangeSelect = document.querySelector('[data-range-select]');
+  const startInput = document.getElementById('from');
+  const endInput = document.getElementById('to');
+  if (rangeSelect && startInput && endInput) {
+    rangeSelect.addEventListener('change', () => {
+      const isCustom = rangeSelect.value === 'custom';
+      startInput.disabled = !isCustom;
+      endInput.disabled = !isCustom;
+    });
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,64 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Службы</h1>
+    <p class="muted">Управление службами Windows (локально).</p>
+  </div>
+</div>
+
+<div class="card">
+  {% set status_map = {
+    'running': 'Запущена',
+    'stopped': 'Остановлена',
+    'paused': 'Приостановлена',
+    'start_pending': 'Запуск',
+    'stop_pending': 'Остановка',
+    'pause_pending': 'Пауза',
+    'continue_pending': 'Возобновление'
+  } %}
+  <table class="table">
+    <caption class="sr-only">Список служб Windows</caption>
+    <thead>
+      <tr>
+        <th scope="col">Имя</th>
+        <th scope="col">Описание</th>
+        <th scope="col">Статус</th>
+        <th scope="col">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for svc in services %}
+      <tr>
+        <td>{{ svc.name }}</td>
+        <td>{{ svc.display_name }}</td>
+        <td>{{ status_map.get(svc.status, svc.status) }}</td>
+        <td class="actions">
+          <form method="post" action="{{ url_for('ServicesView.action', name=svc.name, action='start') }}" style="display: inline" data-confirm-message="{{ ('Запустить службу ' ~ svc.name ~ '?') | e }}" data-confirm-danger="false">
+            {% if csrf_token is defined and csrf_token %}
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% endif %}
+            <button class="btn" type="submit" aria-label="Запустить службу {{ svc.name }}">Старт</button>
+          </form>
+          <form method="post" action="{{ url_for('ServicesView.action', name=svc.name, action='stop') }}" style="display: inline" data-confirm-message="{{ ('Остановить службу ' ~ svc.name ~ '?') | e }}" data-confirm-danger="true">
+            {% if csrf_token is defined and csrf_token %}
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% endif %}
+            <button class="btn" type="submit" aria-label="Остановить службу {{ svc.name }}">Стоп</button>
+          </form>
+          <form method="post" action="{{ url_for('ServicesView.action', name=svc.name, action='restart') }}" style="display: inline" data-confirm-message="{{ ('Перезапустить службу ' ~ svc.name ~ '?') | e }}" data-confirm-danger="true">
+            {% if csrf_token is defined and csrf_token %}
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% endif %}
+            <button class="btn" type="submit" aria-label="Перезапустить службу {{ svc.name }}">Рестарт</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

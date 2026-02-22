@@ -314,6 +314,113 @@ from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer
 from PyQt5.QtGui import QIcon
 
 # -----------------------------------------------------
+# 4.1. Ранний импорт manager_web_dashboard.py (после тяжелых зависимостей)
+# -----------------------------------------------------
+
+def _early_import_startrun_webpanel():
+    """Пытаемся загрузить модуль веб-панели как можно раньше.
+
+    Это нужно, чтобы manager_web_dashboard.py успел зарегистрировать себя
+    до показа главного меню, и чтобы в EXE (Nuitka) он не потерялся.
+
+    Импорт максимально безопасный: любая ошибка гасится, старт приложения
+    продолжает работать.
+    """
+    try:
+        import importlib
+        import importlib.util
+
+        moduls_dir = os.path.join(base_dir, 'moduls')
+        if os.path.isdir(moduls_dir) and moduls_dir not in sys.path:
+            sys.path.insert(0, moduls_dir)
+
+        # 1) Пытаемся как обычный модуль/пакет
+        for name in ('manager_web_dashboard', 'moduls.manager_web_dashboard'):
+            try:
+                m = importlib.import_module(name)
+                logging.info(f"[BOOT] manager_web_dashboard imported as {name}")
+                return m
+            except Exception:
+                pass
+
+        # 2) Фолбэк: грузим как файл из base_dir/moduls
+        file_path = os.path.join(moduls_dir, 'manager_web_dashboard.py')
+        if os.path.isfile(file_path):
+            spec = importlib.util.spec_from_file_location('manager_web_dashboard', file_path)
+            if spec and spec.loader:
+                m = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(m)
+                sys.modules.setdefault('manager_web_dashboard', m)
+                logging.info(f"[BOOT] manager_web_dashboard imported from file: {file_path}")
+                return m
+
+        logging.warning('[BOOT] manager_web_dashboard not found (skipped)')
+    except Exception as e:
+        try:
+            logging.warning(f"[BOOT] manager_web_dashboard early import failed: {e}")
+        except Exception:
+            pass
+    return None
+
+# Импортируем модуль веб-панели сразу после тяжелых зависимостей
+_startrun_webpanel_module = _early_import_startrun_webpanel()
+
+
+def _register_startrun_webpanel_handlers(dp):
+    """Если модуль загружен, пробуем вызвать register_handlers(dp)."""
+    try:
+        m = _startrun_webpanel_module
+        if m is None:
+            return
+        fn = getattr(m, 'register_handlers', None)
+        if callable(fn):
+            fn(dp)
+            logging.info('[BOOT] manager_web_dashboard.register_handlers(dp) executed')
+    except Exception as e:
+        try:
+            logging.warning(f"[BOOT] manager_web_dashboard.register_handlers(dp) failed: {e}")
+        except Exception:
+            pass
+
+
+def _early_import_activated_users_store():
+    """Ранний безопасный импорт модуля БД активированных пользователей."""
+    try:
+        import importlib
+        import importlib.util
+
+        moduls_dir = os.path.join(base_dir, "moduls")
+        if os.path.isdir(moduls_dir) and moduls_dir not in sys.path:
+            sys.path.insert(0, moduls_dir)
+
+        for name in ("activated_users_store", "moduls.activated_users_store"):
+            try:
+                module = importlib.import_module(name)
+                logging.info(f"[BOOT] activated_users_store imported as {name}")
+                return module
+            except Exception:
+                pass
+
+        file_path = os.path.join(moduls_dir, "activated_users_store.py")
+        if os.path.isfile(file_path):
+            spec = importlib.util.spec_from_file_location("activated_users_store", file_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                sys.modules.setdefault("activated_users_store", module)
+                logging.info(f"[BOOT] activated_users_store imported from file: {file_path}")
+                return module
+    except Exception as e:
+        try:
+            logging.warning(f"[BOOT] activated_users_store early import failed: {e}")
+        except Exception:
+            pass
+    return None
+
+
+_activated_users_store_module = _early_import_activated_users_store()
+
+# -----------------------------------------------------
 # 5. Глобальные переменные бота и состояния
 # -----------------------------------------------------
 TOKEN = ""
@@ -809,6 +916,15 @@ def run_bot():
 
     write_bot_log("Бот запускается...")
 
+    if _activated_users_store_module is None:
+        write_bot_log("[ПРЕДУПРЕЖДЕНИЕ] Модуль activated_users_store недоступен: сохранение активированных пользователей отключено.")
+    else:
+        try:
+            db_path = _activated_users_store_module.ensure_storage(base_dir)
+            write_bot_log(f"[USERS-DB] Хранилище активированных пользователей: {db_path}")
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] Не удалось инициализировать БД активированных пользователей: {e}")
+
     # Загрузка учетных данных из credentials.ini
     global TOKEN, PIN_CODE, allowed_accounts
     TOKEN, PIN_CODE, allowed_ids_str = load_credentials()
@@ -998,6 +1114,20 @@ def run_bot():
 
         # Успешная авторизация
         authorized_users.add(user_id)
+        try:
+            if _activated_users_store_module is not None:
+                _activated_users_store_module.save_activated_user(
+                    base_dir=base_dir,
+                    user=message.from_user,
+                    chat_id=getattr(getattr(message, "chat", None), "id", None),
+                    source=("pin_auth" if PIN_CODE else "auth_without_pin"),
+                )
+            else:
+                write_bot_log(
+                    f"[ПРЕДУПРЕЖДЕНИЕ] Пользователь {user_id} авторизован, но модуль activated_users_store не загружен."
+                )
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] Не удалось сохранить активированного пользователя {user_id} в БД: {e}")
 
         # 1) Сразу выдаём меню (чтобы юзер видел клавиатуру, даже если дальше пойдёт «флуд» от модулей)
         await send_authorized_with_menu(message)
@@ -1015,6 +1145,9 @@ def run_bot():
         # Не даём другим хэндлерам (включая модульные) обработать PIN-сообщение
         if CancelHandler:
             raise CancelHandler()
+
+    # Регистрируем webpanel раньше общего менеджера модулей
+    _register_startrun_webpanel_handlers(dp)
 
     import Moduls_manager_ext
     Moduls_manager_ext.register_handlers(dp)

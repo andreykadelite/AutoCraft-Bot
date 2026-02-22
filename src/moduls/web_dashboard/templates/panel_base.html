@@ -1,0 +1,28 @@
+{% extends "appbuilder/base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/panel.css', v='20260222d') }}">
+{% endblock %}
+
+{% block head_js %}
+  {{ super() }}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='js/panel.js') }}"></script>
+{% endblock %}
+
+{% block content %}
+  <div class="wac-container">
+    {% block panel_content %}{% endblock %}
+  </div>
+  <div class="confirm-modal" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" tabindex="-1" hidden>
+    <div class="confirm-modal-content" role="document">
+      <h3 id="confirm-title" class="confirm-modal-title" data-confirm-title>Подтвердите действие</h3>
+      <p id="confirm-message" class="confirm-modal-message" data-confirm-message></p>
+      <div class="confirm-modal-actions">
+        <button class="btn" type="button" data-confirm-cancel>Отмена</button>
+        <button class="btn-primary" type="button" data-confirm-ok>Подтвердить</button>
+      </div>
+    </div>
+  </div>
+{% endblock %}

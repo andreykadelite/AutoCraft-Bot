@@ -1,0 +1,36 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Сеть</h1>
+    <p class="muted">Интерфейсы и IP-адреса.</p>
+  </div>
+</div>
+
+<div class="card">
+  <table class="table">
+    <caption class="sr-only">Сетевые интерфейсы и адреса</caption>
+    <thead>
+      <tr>
+        <th scope="col">Интерфейс</th>
+        <th scope="col">Статус</th>
+        <th scope="col">Скорость</th>
+        <th scope="col">Адреса</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for iface in interfaces %}
+      <tr>
+        <td>{{ iface.name }}</td>
+        <td>{{ 'В сети' if iface.isup else 'Отключен' }}</td>
+        <td>{{ iface.speed }} Мбит/с</td>
+        <td>{{ iface.addresses | join(', ') }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

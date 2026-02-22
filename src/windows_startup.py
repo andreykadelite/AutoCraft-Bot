@@ -19,6 +19,86 @@ import sys
 import tempfile
 import time
 
+# ------------------------ INI decoding (robust) ------------------------
+
+def _unique_list(seq):
+    out = []
+    seen = set()
+    for x in seq:
+        if not x or x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
+def _load_ini_robust(path: str) -> tuple[configparser.ConfigParser, str]:
+    """
+    Надёжно читает INI с диска и НЕ падает из-за кодировки.
+
+    Поддерживаем популярные варианты на Windows:
+      - UTF-8 / UTF-8 BOM
+      - UTF-16 (Notepad "Unicode")
+      - CP1251 / CP866
+
+    Возвращает: (cfg, encoding_label)
+    """
+    cfg = configparser.ConfigParser()
+    if not path or not os.path.exists(path):
+        return cfg, "none"
+
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except Exception:
+        return cfg, "unreadable"
+
+    if not raw:
+        return cfg, "empty"
+
+    encs = []
+
+    # BOM / явные признаки
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        encs.append("utf-16")
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        encs.append("utf-8-sig")
+
+    # эвристика: нули в первых байтах почти всегда означают UTF-16
+    if b"\x00" in raw[:256]:
+        encs += ["utf-16", "utf-16-le", "utf-16-be"]
+
+    # обычные варианты
+    encs += ["utf-8", "utf-8-sig", "cp1251", "cp866"]
+    encs = _unique_list(encs)
+
+    last_err = None
+    for enc in encs:
+        try:
+            text = raw.decode(enc)
+            # лишний BOM-символ в начале
+            if text.startswith("\ufeff"):
+                text = text.lstrip("\ufeff")
+            # страховка от мусорных NUL (например, если файл чуть битый)
+            if "\x00" in text:
+                text = text.replace("\x00", "")
+            cfg.read_string(text)
+            return cfg, enc
+        except Exception as e:
+            last_err = e
+            cfg = configparser.ConfigParser()
+            continue
+
+    # последний шанс: хоть как-то декоднуть и не уронить приложение
+    try:
+        text = raw.decode("utf-8", errors="replace").replace("\x00", "")
+        cfg.read_string(text)
+        return cfg, "utf-8(replace)"
+    except Exception:
+        _ = last_err  # для отладки (не выбрасываем)
+        return configparser.ConfigParser(), "failed"
+
+
 # ------------------------ OS / paths helpers ------------------------
 
 def _is_windows() -> bool:
@@ -71,14 +151,7 @@ _enforce_cwd_to_base_dir()
 
 def _read_debug_enabled_from_config() -> bool:
     try:
-        cfg = configparser.ConfigParser()
-        if os.path.exists(CONFIG_PATH):
-            for enc in ("utf-8", "utf-8-sig", "cp1251"):
-                try:
-                    cfg.read(CONFIG_PATH, encoding=enc)
-                    break
-                except Exception:
-                    continue
+        cfg, _enc = _load_ini_robust(CONFIG_PATH)
         return cfg.getboolean("credentials", "debug", fallback=False)
     except Exception:
         return False
@@ -169,9 +242,22 @@ _bootstrap_diag()
 
 # --- Robust INI reader (read-only) + diagnostics -----------------------------
 def _read_ini(path: str):
-    cfg = configparser.ConfigParser()
-    if not os.path.exists(path):
-        return cfg
+    cfg, used_enc = _load_ini_robust(path)
+    try:
+        _debug_log(f"ini_encoding={used_enc}")
+        _debug_log("sections=" + ", ".join(cfg.sections()))
+        for sec in cfg.sections():
+            try:
+                items = dict(cfg.items(sec))
+                if sec.lower() == "credentials" and "token" in items:
+                    t = items.get("token", "")
+                    items["token"] = (t[:6] + "..." + t[-6:]) if len(t) > 12 else "***"
+            except Exception:
+                items = {}
+            _debug_log(f"[{sec}] {items}")
+    except Exception:
+        pass
+    return cfg
     for enc in ("utf-8", "utf-8-sig", "cp1251"):
         try:
             cfg.read(path, encoding=enc)
@@ -209,10 +295,8 @@ def load_startup_full() -> tuple:
     Загружает (autorun, start_in_tray, method).
     По умолчанию метод -> 'startup' (папка Автозагрузка).
     """
-    cfg = configparser.ConfigParser()
+    cfg, _enc = _load_ini_robust(CONFIG_PATH)
     det_enabled, det_tray, det_method = detect_autorun()
-    if os.path.exists(CONFIG_PATH):
-        cfg.read(CONFIG_PATH, encoding="utf-8")
     if STARTUP_SECTION not in cfg:
         cfg[STARTUP_SECTION] = {}
 
@@ -244,9 +328,7 @@ def load_startup_full() -> tuple:
 
 
 def save_startup_method(method: str) -> None:
-    cfg = configparser.ConfigParser()
-    if os.path.exists(CONFIG_PATH):
-        cfg.read(CONFIG_PATH, encoding="utf-8")
+    cfg, _enc = _load_ini_robust(CONFIG_PATH)
     if STARTUP_SECTION not in cfg:
         cfg[STARTUP_SECTION] = {}
     method = (method or "startup").lower()
@@ -920,10 +1002,8 @@ def load_startup_settings() -> tuple:
     """
     Считать [startup] (autorun, start_in_tray) с разумными фоллбэками.
     """
-    cfg = configparser.ConfigParser()
+    cfg, _enc = _load_ini_robust(CONFIG_PATH)
     det_enabled, det_tray, _ = detect_autorun()
-    if os.path.exists(CONFIG_PATH):
-        cfg.read(CONFIG_PATH, encoding="utf-8")
     if STARTUP_SECTION not in cfg:
         cfg[STARTUP_SECTION] = {}
     autorun = cfg.getboolean(STARTUP_SECTION, STARTUP_AUTORUN_KEY, fallback=det_enabled)
@@ -941,9 +1021,7 @@ def load_startup_settings() -> tuple:
 
 def save_startup_settings(autorun: bool, start_in_tray: bool) -> None:
     """Сохранить [startup] без трогания других разделов config.ini."""
-    cfg = configparser.ConfigParser()
-    if os.path.exists(CONFIG_PATH):
-        cfg.read(CONFIG_PATH, encoding="utf-8")
+    cfg, _enc = _load_ini_robust(CONFIG_PATH)
     if STARTUP_SECTION not in cfg:
         cfg[STARTUP_SECTION] = {}
     cfg[STARTUP_SECTION][STARTUP_AUTORUN_KEY] = "true" if autorun else "false"

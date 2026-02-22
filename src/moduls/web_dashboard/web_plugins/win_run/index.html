@@ -1,0 +1,91 @@
+{% extends "panel_base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ static_url }}/winrun.css">
+{% endblock %}
+
+{% block head_js %}
+  {{ super() }}
+  <script src="{{ static_url }}/winrun.js"></script>
+{% endblock %}
+
+{% block panel_content %}
+  <div
+    class="panel-card winrun-card"
+    id="winrun-root"
+    data-run-url="{{ run_url }}"
+    data-csrf-token="{{ csrf_token() if csrf_token is defined else '' }}"
+  >
+    <div class="winrun-header">
+      <div>
+        <h2>Win+R</h2>
+        <p class="winrun-subtitle">Запускайте команды и приложения так же, как в окне Win+R.</p>
+      </div>
+      <div class="winrun-badge">Расширение</div>
+    </div>
+
+    <div class="winrun-section">
+      <label class="winrun-label" for="winrun-command">Команда, путь или URL</label>
+      <div class="winrun-input-row">
+        <input
+          id="winrun-command"
+          class="winrun-input"
+          type="text"
+          placeholder="Например: notepad, calc, cmd /c dir, https://example.com"
+          aria-describedby="winrun-hint winrun-output"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+        >
+        <button id="winrun-run" class="btn-primary" type="button" aria-controls="winrun-output winrun-history">Запустить</button>
+      </div>
+      <p id="winrun-hint" class="sr-only">
+        Введите команду и нажмите Enter. Shift+Enter запускает команду с повышением прав (если доступно).
+      </p>
+      <div class="winrun-options" role="group" aria-label="Параметры запуска">
+        <label class="winrun-option">
+          <input id="winrun-admin" type="checkbox">
+          Запускать от имени администратора (UAC)
+        </label>
+      </div>
+      <div class="winrun-actions">
+        <button id="winrun-clear" class="btn" type="button">Очистить</button>
+        <button id="winrun-copy" class="btn" type="button">Скопировать команду</button>
+      </div>
+    </div>
+
+    <div class="winrun-section">
+      <div
+        class="winrun-output"
+        id="winrun-output"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >Введите команду...</div>
+      <noscript>
+        <div class="winrun-output is-error" role="alert">
+          Для работы Win+R требуется включить JavaScript.
+        </div>
+      </noscript>
+    </div>
+
+    <div class="winrun-section">
+      <div class="winrun-history-header">
+        <h4 id="winrun-history-title">История</h4>
+        <button id="winrun-history-clear" class="btn" type="button">Очистить историю</button>
+      </div>
+      <div class="winrun-history" id="winrun-history" role="list" aria-labelledby="winrun-history-title"></div>
+    </div>
+
+    <div class="winrun-section winrun-help">
+      <h4>Подсказки</h4>
+      <ul>
+        <li>Можно запускать стандартные команды Windows: <strong>notepad</strong>, <strong>calc</strong>, <strong>cmd</strong>, <strong>powershell</strong>.</li>
+        <li>Поддерживаются пути и переменные окружения: <strong>%appdata%</strong>, <strong>%windir%</strong>.</li>
+        <li>Shift+Enter выполняет команду от имени администратора (если доступно).</li>
+        <li>URL открываются в браузере.</li>
+      </ul>
+    </div>
+  </div>
+{% endblock %}

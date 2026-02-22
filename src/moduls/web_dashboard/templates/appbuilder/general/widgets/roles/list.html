@@ -1,0 +1,190 @@
+﻿{% extends 'appbuilder/general/widgets/base_list.html' %}
+{% import 'appbuilder/general/lib.html' as lib %}
+{% import 'appbuilder/baselib.html' as baselib %}
+
+{% macro render_permissions_cell(pk, rendered_permissions, count_text=None) %}
+    {% if rendered_permissions %}
+        {% set panel_id = "role-permissions-" ~ pk %}
+        {% set toggle_id = panel_id ~ "-toggle" %}
+        <div class="role-permissions" data-role-permissions>
+            <div class="role-permissions-toolbar">
+                <button
+                    id="{{ toggle_id }}"
+                    type="button"
+                    class="btn btn-default btn-xs role-permissions-toggle"
+                    data-role-permissions-toggle
+                    aria-expanded="false"
+                    aria-controls="{{ panel_id }}"
+                    data-collapsed-label="Развернуть права"
+                    data-expanded-label="Свернуть права"
+                >
+                    Развернуть права
+                </button>
+                {% if count_text %}
+                    <span class="role-permissions-count text-muted" aria-hidden="true">
+                        {{ count_text }}
+                    </span>
+                {% endif %}
+            </div>
+            <div
+                id="{{ panel_id }}"
+                class="role-permissions-panel hidden"
+                hidden
+                data-role-permissions-panel
+                role="region"
+                aria-labelledby="{{ toggle_id }}"
+            >
+                <div class="role-permissions-content">{{ rendered_permissions }}</div>
+            </div>
+        </div>
+    {% else %}
+        <span class="text-muted">Нет назначенных прав</span>
+    {% endif %}
+{% endmacro %}
+
+    {% block begin_content scoped %}
+        <div class="table-responsive">
+        <table class="table table-bordered table-hover" aria-label="Таблица ролей">
+    {% endblock %}
+
+    {% block begin_loop_header scoped %}
+        <thead>
+        <tr>
+        {% if actions %}
+        <th class="action_checkboxes" scope="col">
+            <input id="check_all" class="action_check_all" name="check_all" type="checkbox" aria-label="Выбрать все">
+        </th>
+        {% endif %}
+
+        {% if can_show or can_edit or can_delete %}
+            <th class="col-md-1 col-lg-1 col-sm-1" scope="col" aria-label="Действия"></th>
+        {% endif %}
+
+        {% for item in include_columns %}
+            {% if item in order_columns %}
+                {% set res = item | get_link_order(modelview_name) %}
+                    {% if res == 2 %}
+                    <th scope="col"><a href={{ item | link_order(modelview_name) }}>{{label_columns.get(item)}}
+                    <i class="fa fa-chevron-up pull-right" aria-hidden="true"></i></a></th>
+                {% elif res == 1 %}
+                    <th scope="col"><a href={{ item | link_order(modelview_name) }}>{{label_columns.get(item)}}
+                    <i class="fa fa-chevron-down pull-right" aria-hidden="true"></i></a></th>
+                {% else %}
+                    <th scope="col"><a href={{ item | link_order(modelview_name) }}>{{label_columns.get(item)}}
+                    <i class="fa fa-arrows-v pull-right" aria-hidden="true"></i></a></th>
+                {% endif %}
+            {% else %}
+                <th scope="col">{{label_columns.get(item)}}</th>
+            {% endif %}
+        {% endfor %}
+        </tr>
+        </thead>
+    {% endblock %}
+
+    {% block begin_loop_values scoped %}
+        {% for item in value_columns %}
+            {% set pk = pks[loop.index-1] %}
+            {% set is_builtin_role = appbuilder.sm.builtin_roles.get(item['name']) %}
+            <tr>
+                {% if actions %}
+                <td>
+                    {% if not is_builtin_role %}
+                        <input id="{{pk}}" class="action_check" name="rowid" value="{{pk}}" type="checkbox" aria-label="Выбрать строку">
+                    {% endif %}
+                </td>
+                {% endif %}
+                {% if can_show or can_edit or can_delete %}
+                    <td><center>
+                        {% if not is_builtin_role %}
+                            {{ lib.btn_crud(can_show, can_edit, can_delete, pk, modelview_name, filters) }}
+                        {% else %}
+                            {{ lib.btn_crud(can_show, False, False, pk, modelview_name, filters) }}
+                        {% endif %}
+                    </center></td>
+                {% endif %}
+                {% for value in include_columns %}
+                    {% set formatter = formatters_columns.get(value) %}
+                    {% if value == 'name' %}
+                        <td>{{ formatter(item[value]) if formatter else item[value] }}</td>
+                    {% elif value == 'permissions' and not is_builtin_role %}
+                        {% set rendered_permissions = formatter(item[value]) if formatter else item[value] %}
+                        {% set count_text = "Права: " ~ (item[value]|length) %}
+                        <td>{{ render_permissions_cell(pk, rendered_permissions, count_text) }}</td>
+                    {% elif value == 'permissions' and is_builtin_role %}
+                        {% set builtin_permissions = appbuilder.sm.builtin_roles.get(item['name']) %}
+                        {% if builtin_permissions is sequence and builtin_permissions is not string %}
+                            {% set rendered_permissions = builtin_permissions|join('<br>')|safe %}
+                            {% set count_text = "Права: " ~ (builtin_permissions|length) %}
+                        {% else %}
+                            {% set rendered_permissions = builtin_permissions %}
+                            {% set count_text = none %}
+                        {% endif %}
+                        <td>{{ render_permissions_cell(pk, rendered_permissions, count_text) }}</td>
+                    {% elif not is_builtin_role %}
+                        <td>{{ formatter(item[value]) if formatter else item[value] }}</td>
+                    {% endif %}
+                {% endfor %}
+            </tr>
+        {% endfor %}
+    {% endblock %}
+
+    {% block end_content scoped %}
+        </table>
+        </div>
+        <script nonce="{{ baselib.get_nonce() }}">
+        (function () {
+            var toggles = document.querySelectorAll("[data-role-permissions-toggle]");
+            if (!toggles.length) {
+                return;
+            }
+
+            function getLabel(toggle, expanded) {
+                var collapsed = toggle.getAttribute("data-collapsed-label") || "Развернуть права";
+                var expandedLabel = toggle.getAttribute("data-expanded-label") || "Свернуть права";
+                return expanded ? expandedLabel : collapsed;
+            }
+
+            function togglePanel(toggle, expanded) {
+                var panelId = toggle.getAttribute("aria-controls");
+                var panel = panelId ? document.getElementById(panelId) : null;
+                toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+                toggle.textContent = getLabel(toggle, expanded);
+                if (!panel) {
+                    return;
+                }
+                panel.hidden = !expanded;
+                panel.classList.toggle("hidden", !expanded);
+            }
+
+            function onActivate(event) {
+                if (event.type === "keydown") {
+                    var key = event.key || "";
+                    var isEnter = key === "Enter";
+                    var isSpace = key === " " || key === "Space" || key === "Spacebar";
+                    if (!isEnter && !isSpace) {
+                        return;
+                    }
+                    event.preventDefault();
+                } else if (event.type === "click") {
+                    event.preventDefault();
+                } else {
+                    return;
+                }
+
+                var toggle = event.currentTarget;
+                var expanded = toggle.getAttribute("aria-expanded") === "true";
+                togglePanel(toggle, !expanded);
+            }
+
+            Array.prototype.forEach.call(toggles, function (toggle) {
+                if (toggle.getAttribute("data-role-permissions-bound") === "1") {
+                    return;
+                }
+                toggle.setAttribute("data-role-permissions-bound", "1");
+                togglePanel(toggle, toggle.getAttribute("aria-expanded") === "true");
+                toggle.addEventListener("click", onActivate);
+                toggle.addEventListener("keydown", onActivate);
+            });
+        })();
+        </script>
+    {% endblock %}

@@ -1,0 +1,182 @@
+.stream-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 20px;
+}
+
+.stream-warning {
+  border-left: 4px solid #f39c12;
+}
+
+.stream-readonly {
+  border-left: 4px solid #7f8c8d;
+}
+
+.stream-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.stream-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stream-video-wrapper {
+  position: relative;
+  margin-top: 16px;
+  background: radial-gradient(circle at top, rgba(40, 46, 64, 0.7), #0f1115 60%);
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 360px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 20px 40px rgba(6, 10, 20, 0.4);
+}
+
+#stream-player {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #0f1115;
+  object-fit: contain;
+}
+
+.stream-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f1f1f1;
+  background: rgba(15, 17, 21, 0.55);
+  text-align: center;
+  padding: 20px;
+  font-size: 1rem;
+}
+
+.stream-errors {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(231, 76, 60, 0.1);
+  color: #c0392b;
+}
+
+.stream-stats-toggle {
+  margin-top: 14px;
+}
+
+.stream-stats-toggle label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.stream-stats {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.stream-stats h4 {
+  margin: 0 0 8px;
+}
+
+.stream-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 14px;
+  margin: 10px 0 0;
+}
+
+.stream-stat-item {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.stream-stat-item dt {
+  margin: 0;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.stream-stat-item dd {
+  margin: 6px 0 0;
+  font-size: 0.95rem;
+  word-break: break-word;
+}
+
+.stream-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  white-space: nowrap;
+}
+
+.stream-control-card label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.stream-control-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.02));
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.stream-control-card select {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.stream-control-row {
+  margin-bottom: 16px;
+}
+
+.stream-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stream-meta {
+  margin-top: 12px;
+  font-size: 0.95rem;
+}
+
+.stream-meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.stream-help h4 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+.stream-help ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 1100px) {
+  .stream-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,51 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Планировщик задач</h1>
+    <p class="muted">Задачи планировщика Windows.</p>
+  </div>
+</div>
+
+<div class="card">
+  {% set status_map = {
+    'Ready': 'Готово',
+    'Running': 'Выполняется',
+    'Disabled': 'Отключена',
+    'Queued': 'В очереди',
+    'Unknown': 'Неизвестно'
+  } %}
+  <table class="table">
+    <caption class="sr-only">Список задач планировщика Windows</caption>
+    <thead>
+      <tr>
+        <th scope="col">Имя</th>
+        <th scope="col">Статус</th>
+        <th scope="col">Следующий запуск</th>
+        <th scope="col">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for task in tasks %}
+      <tr>
+        <td>{{ task.get('TaskName', '') }}</td>
+        {% set raw_status = task.get('Status', '') %}
+        <td>{{ status_map.get(raw_status, raw_status) }}</td>
+        <td>{{ task.get('Next Run Time', '') }}</td>
+        <td>
+          <form method="post" action="{{ url_for('TasksView.run_task', task_name=task.get('TaskName','')|urlencode) }}" style="display: inline" data-confirm-message="{{ ('Запустить задачу ' ~ task.get('TaskName','') ~ '?') | e }}" data-confirm-danger="false">
+            {% if csrf_token is defined and csrf_token %}
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% endif %}
+            <button class="btn" type="submit" aria-label="Запустить задачу {{ task.get('TaskName','') }}">Запустить</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

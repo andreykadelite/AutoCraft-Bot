@@ -1,0 +1,12 @@
+﻿{
+  "id": "winrun",
+  "name": "Win+R",
+  "version": "1.1",
+  "description": "Запуск программ и команд, как в Windows Win+R, с историей и запуском от администратора.",
+  "entrypoint": "plugin.py",
+  "template": "index.html",
+  "menu_label": "Win+R",
+  "category": "Расширения",
+  "order": 10,
+  "roles": ["Admin", "Operator"]
+}

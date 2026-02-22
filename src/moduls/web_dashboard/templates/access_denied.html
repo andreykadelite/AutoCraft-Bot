@@ -1,0 +1,23 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Доступ запрещен</h1>
+    <p class="muted">Недостаточно прав для выполнения запроса.</p>
+  </div>
+</div>
+
+<div class="card" role="alert" aria-live="polite">
+  <p><strong>{{ message }}</strong></p>
+  <dl class="access-details">
+    <dt>Раздел</dt>
+    <dd>{{ view_display }}</dd>
+    <dt>Требуемое право</dt>
+    <dd>{{ permission_display }}</dd>
+    <dt>URL</dt>
+    <dd>{{ request_path }}</dd>
+  </dl>
+  <p class="muted">Обратитесь к администратору для выдачи прав доступа.</p>
+</div>
+{% endblock %}

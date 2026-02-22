@@ -1,0 +1,232 @@
+{% extends "panel_base.html" %}
+
+{% set status_labels = {
+  'ok': 'Работает',
+  'problem': 'Проблема',
+  'disabled': 'Отключено',
+  'unknown': 'Неизвестно'
+} %}
+{% set status_chip = {
+  'ok': 'ok',
+  'problem': 'bad',
+  'disabled': 'warn',
+  'unknown': 'warn'
+} %}
+{% set problem_map = {
+  0: 'Устройство работает нормально',
+  1: 'Устройство не настроено',
+  3: 'Драйвер повреждён',
+  10: 'Устройство не может быть запущено',
+  12: 'Недостаточно ресурсов',
+  18: 'Требуется переустановка драйвера',
+  19: 'Некорректная конфигурация',
+  21: 'Ожидается перезапуск',
+  22: 'Устройство отключено',
+  24: 'Отсутствует устройство',
+  28: 'Драйверы не установлены',
+  31: 'Драйверы повреждены или отсутствуют',
+  32: 'Служба драйвера отключена',
+  39: 'Невозможно загрузить драйвер',
+  43: 'Устройство остановлено из-за ошибки',
+  45: 'Устройство отключено или не подключено',
+  47: 'Ожидается безопасное удаление',
+  48: 'Драйвер заблокирован',
+  52: 'Драйвер не подписан'
+} %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Диспетчер устройств</h1>
+    <p class="muted">Полный список устройств, состояние драйверов и управление работой оборудования.</p>
+  </div>
+  <form method="post" action="{{ url_for('DeviceManagerView.rescan') }}" data-confirm-message="Пересканировать оборудование и обновить список устройств?">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn" type="submit">Пересканировать</button>
+  </form>
+</div>
+
+{% if error %}
+<div class="alert alert-warning" role="alert">
+  <strong>Внимание:</strong> {{ error }}
+</div>
+{% endif %}
+
+<form class="filter-bar" method="get" role="search" aria-label="Фильтры диспетчера устройств">
+  <label>
+    Поиск
+    <input type="search" name="q" value="{{ search }}" placeholder="Имя, InstanceId, производитель">
+  </label>
+  <label>
+    Класс
+    <select name="class">
+      <option value="">Все классы</option>
+      {% for cls in classes %}
+      <option value="{{ cls }}" {% if class_filter == cls %}selected{% endif %}>{{ cls }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Статус
+    <select name="status">
+      <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Все</option>
+      <option value="ok" {% if status_filter == 'ok' %}selected{% endif %}>Работает</option>
+      <option value="problem" {% if status_filter == 'problem' %}selected{% endif %}>Проблемы</option>
+      <option value="disabled" {% if status_filter == 'disabled' %}selected{% endif %}>Отключено</option>
+      <option value="unknown" {% if status_filter == 'unknown' %}selected{% endif %}>Неизвестно</option>
+    </select>
+  </label>
+  <label>
+    Наличие
+    <select name="present">
+      <option value="all" {% if present_filter == 'all' %}selected{% endif %}>Все</option>
+      <option value="1" {% if present_filter == '1' %}selected{% endif %}>Подключено</option>
+      <option value="0" {% if present_filter == '0' %}selected{% endif %}>Не подключено</option>
+    </select>
+  </label>
+  <button class="btn-primary" type="submit">Применить</button>
+  <a class="btn" href="{{ url_for('DeviceManagerView.list') }}">Сбросить</a>
+</form>
+
+<div class="tiles" role="list">
+  <div class="tile" role="listitem" aria-label="Всего устройств">
+    <div class="tile-title">Всего</div>
+    <div class="tile-value">{{ summary.total }}</div>
+    {% if filter_active %}
+    <div class="tile-sub">Всего в системе: {{ summary_all.total }}</div>
+    {% endif %}
+  </div>
+  <div class="tile" role="listitem" aria-label="Работают">
+    <div class="tile-title">Работают</div>
+    <div class="tile-value">{{ summary.ok }}</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Проблемы">
+    <div class="tile-title">Проблемы</div>
+    <div class="tile-value">{{ summary.problem }}</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Отключены">
+    <div class="tile-title">Отключены</div>
+    <div class="tile-value">{{ summary.disabled }}</div>
+  </div>
+</div>
+
+<div class="card table-scroll">
+  <table class="table">
+    <caption class="sr-only">Список устройств Windows</caption>
+    <thead>
+      <tr>
+        <th scope="col">Устройство</th>
+        <th scope="col">Класс</th>
+        <th scope="col">Статус</th>
+        <th scope="col">Наличие</th>
+        <th scope="col">Производитель</th>
+        <th scope="col">Драйвер</th>
+        <th scope="col">Действия</th>
+        <th scope="col">Детали</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for device in devices %}
+      <tr>
+        <td>{{ device.name }}</td>
+        <td>{{ device.class_name or '-' }}</td>
+        <td>
+          <span class="status-chip {{ status_chip.get(device.status_key, 'warn') }}">
+            {{ status_labels.get(device.status_key, device.status_raw or 'Неизвестно') }}
+          </span>
+        </td>
+        <td>
+          {% if device.present is false %}
+            Нет
+          {% elif device.present is true %}
+            Да
+          {% else %}
+            -
+          {% endif %}
+        </td>
+        <td>{{ device.manufacturer or '-' }}</td>
+        <td>
+          {% if device.driver_version %}
+            {{ device.driver_version }}
+          {% else %}
+            -
+          {% endif %}
+        </td>
+        <td>
+          <div class="quick-links">
+            {% if device.present is not false %}
+              {% if device.status_key == 'disabled' %}
+              <form method="post" action="{{ url_for('DeviceManagerView.action', instance_id=device.instance_id, action='enable') }}" data-confirm-message="Включить устройство «{{ device.name }}»?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn" type="submit">Включить</button>
+              </form>
+              {% else %}
+              <form method="post" action="{{ url_for('DeviceManagerView.action', instance_id=device.instance_id, action='disable') }}" data-confirm-message="Отключить устройство «{{ device.name }}»?" data-confirm-danger="true">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn danger" type="submit">Отключить</button>
+              </form>
+              {% endif %}
+              {% if device.status_key != 'disabled' %}
+              <form method="post" action="{{ url_for('DeviceManagerView.action', instance_id=device.instance_id, action='restart') }}" data-confirm-message="Перезапустить устройство «{{ device.name }}»?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn" type="submit">Перезапуск</button>
+              </form>
+              {% endif %}
+            {% else %}
+              <span class="muted">Недоступно</span>
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          <details class="details-block">
+            <summary>Подробнее</summary>
+            <dl class="info-list">
+              <div>
+                <dt>Instance ID</dt>
+                <dd class="mono">{{ device.instance_id or '-' }}</dd>
+              </div>
+              <div>
+                <dt>Код проблемы</dt>
+                <dd>
+                  {% if device.problem_code is not none %}
+                    {{ device.problem_code }} — {{ problem_map.get(device.problem_code, 'Неизвестная ошибка') }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </dd>
+              </div>
+              <div>
+                <dt>Служба</dt>
+                <dd>{{ device.service or '-' }}</dd>
+              </div>
+              <div>
+                <dt>Расположение</dt>
+                <dd>{{ device.location or '-' }}</dd>
+              </div>
+              <div>
+                <dt>Поставщик драйвера</dt>
+                <dd>{{ device.driver_provider or '-' }}</dd>
+              </div>
+              <div>
+                <dt>Дата драйвера</dt>
+                <dd>{{ device.driver_date or '-' }}</dd>
+              </div>
+              <div>
+                <dt>INF</dt>
+                <dd>{{ device.driver_inf or '-' }}</dd>
+              </div>
+              <div>
+                <dt>Hardware ID</dt>
+                <dd>{{ device.hardware_id | join(', ') if device.hardware_id else '-' }}</dd>
+              </div>
+            </dl>
+          </details>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8">Нет устройств по выбранным условиям.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,156 @@
+﻿.winrun-card {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.winrun-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.winrun-header h2 {
+  margin: 0 0 6px 0;
+  font-size: 24px;
+}
+
+.winrun-subtitle {
+  margin: 0;
+  color: #556;
+}
+
+.winrun-badge {
+  background: #1f2937;
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.winrun-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.winrun-label {
+  font-weight: 600;
+}
+
+.winrun-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.winrun-input {
+  flex: 1 1 320px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #d5d9e0;
+  background: #fff;
+}
+
+.winrun-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.winrun-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.winrun-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.winrun-actions .btn:disabled,
+.winrun-history-header .btn:disabled,
+.winrun-input-row .btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.winrun-output {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f5f6fa;
+  color: #1f2937;
+  min-height: 48px;
+}
+
+.winrun-output.is-ok {
+  background: #ecfdf3;
+  color: #0f5132;
+}
+
+.winrun-output.is-error {
+  background: #fcecec;
+  color: #8a1c1c;
+}
+
+.winrun-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.winrun-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.winrun-history-header h4 {
+  margin: 0;
+}
+
+.winrun-history-item {
+  border: 1px solid #d7dbe3;
+  background: #fff;
+  color: #1f2937;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.winrun-history-item:hover {
+  border-color: #1f2937;
+}
+
+.winrun-history-item:focus-visible,
+.winrun-input:focus-visible,
+.winrun-actions .btn:focus-visible,
+.winrun-history-header .btn:focus-visible,
+.winrun-input-row .btn-primary:focus-visible {
+  outline: 2px solid #1f2937;
+  outline-offset: 2px;
+}
+
+.winrun-history-empty {
+  color: #6b7280;
+}
+
+.winrun-help ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 640px) {
+  .winrun-history-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

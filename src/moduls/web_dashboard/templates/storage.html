@@ -1,0 +1,42 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Хранилище</h1>
+    <p class="muted">Диски и свободное место.</p>
+  </div>
+</div>
+
+<div class="card">
+  <table class="table">
+    <caption class="sr-only">Информация о дисках</caption>
+    <thead>
+      <tr>
+        <th scope="col">Устройство</th>
+        <th scope="col">Точка монтирования</th>
+        <th scope="col">Файловая система</th>
+        <th scope="col">Всего, ГБ</th>
+        <th scope="col">Использовано, ГБ</th>
+        <th scope="col">Свободно, ГБ</th>
+        <th scope="col">% занято</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in disks %}
+      <tr>
+        <td>{{ d.device }}</td>
+        <td>{{ d.mount }}</td>
+        <td>{{ d.fstype }}</td>
+        <td>{{ (d.total/1024/1024/1024)|round(1) }}</td>
+        <td>{{ (d.used/1024/1024/1024)|round(1) }}</td>
+        <td>{{ (d.free/1024/1024/1024)|round(1) }}</td>
+        <td>{{ d.percent }}%</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

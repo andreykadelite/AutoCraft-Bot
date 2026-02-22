@@ -1,0 +1,177 @@
+{% macro locale_menu(languages) %}
+{% set locale = session.get('locale') %}
+{% if not locale %}
+    {% if 'ru' in languages %}
+        {% set locale = 'ru' %}
+    {% else %}
+        {% set locale = 'en' %}
+    {% endif %}
+{% endif %}
+{% if languages.keys()|length > 1 %}
+<li class="dropdown">
+    <a class="dropdown-toggle" data-toggle="dropdown" href="#" aria-haspopup="true" aria-label="Выбор языка">
+       <div class="f16">
+           <i class="flag {{ languages[locale].get('flag') }}" aria-hidden="true"></i>
+           <b class="caret"></b>
+       </div>
+    </a>
+    <ul class="dropdown-menu">
+      <li class="dropdown">
+        {% for lang in languages %}
+            {% if lang != locale %}
+                <a tabindex="-1" href="{{ appbuilder.get_url_for_locale(lang) }}">
+                  <div class="f16">
+                      <i class="flag {{ languages[lang].get('flag') }}" aria-hidden="true"></i>
+                      - {{ languages[lang].get('name') }}
+                  </div>
+                </a>
+            {% endif %}
+        {% endfor %}
+      </li>
+    </ul>
+</li>
+{% endif %}
+{% endmacro %}
+
+{{ locale_menu(languages) }}
+{% if not current_user.is_anonymous %}
+    {% set unread_system_count = g.system_unread_count|default(0) %}
+    {% set unread_chat_count = g.unread_chat_messages_count|default(0) %}
+    {% set unread_comm_count = g.unread_messages_count|default(0) %}
+    <li class="panel-top-notify">
+        <a
+          href="{{ url_for('SystemNotifyCenterView.list') }}"
+          class="panel-top-notify-link"
+          data-system-link
+          aria-label="Уведомления AutoCraft: {{ unread_system_count }} непрочитанных"
+        >
+            <span class="fa fa-bell-o" aria-hidden="true"></span>
+            <span class="panel-top-notify-label">AutoCraft</span>
+            <span
+              class="comm-badge panel-top-badge{% if unread_system_count <= 0 %} is-zero{% endif %}"
+              data-system-badge
+              data-count-style="text"
+              aria-label="Уведомления AutoCraft: {{ unread_system_count }} непрочитанных"
+              aria-hidden="true"
+            >
+                {{ unread_system_count }}
+            </span>
+        </a>
+    </li>
+    <li class="panel-top-notify">
+        <a
+          href="{{ url_for('InternalMessengerView.list') }}"
+          class="panel-top-notify-link"
+          data-messenger-link
+          aria-label="Мессенджер: {{ unread_chat_count }} непрочитанных"
+        >
+            <span class="fa fa-comments-o" aria-hidden="true"></span>
+            <span class="panel-top-notify-label">Мессенджер</span>
+            <span
+              class="comm-badge panel-top-badge{% if unread_chat_count <= 0 %} is-zero{% endif %}"
+              data-messenger-badge
+              data-count-style="text"
+              data-url="{{ url_for('InternalMessengerView.notifications') }}"
+              aria-label="Мессенджер: {{ unread_chat_count }} непрочитанных"
+              aria-hidden="true"
+            >
+                {{ unread_chat_count }}
+            </span>
+        </a>
+    </li>
+    <li class="panel-top-notify">
+        <a
+          href="{{ url_for('CommunicationCenterView.list') }}"
+          class="panel-top-notify-link"
+          data-communications-link
+          aria-label="Центр коммуникаций: {{ unread_comm_count }} непрочитанных"
+        >
+            <span class="fa fa-envelope-o" aria-hidden="true"></span>
+            <span class="panel-top-notify-label">Центр коммуникаций</span>
+            <span
+              class="comm-badge panel-top-badge{% if unread_comm_count <= 0 %} is-zero{% endif %}"
+              data-communications-badge
+              data-count-style="text"
+              data-url="{{ url_for('CommunicationCenterView.notifications') }}"
+              aria-label="Центр коммуникаций: {{ unread_comm_count }} непрочитанных"
+              aria-hidden="true"
+            >
+                {{ unread_comm_count }}
+            </span>
+        </a>
+    </li>
+    <li class="dropdown panel-system-history-dropdown">
+        <a
+          class="dropdown-toggle panel-top-notify-link panel-system-history-toggle"
+          data-toggle="dropdown"
+          href="#"
+          aria-haspopup="true"
+          aria-label="История уведомлений AutoCraft"
+        >
+           <span class="fa fa-history" aria-hidden="true"></span>
+           <span class="panel-top-notify-label">История</span>
+           <span class="sr-only" data-system-unread-text>
+             Непрочитанных уведомлений AutoCraft: {{ unread_system_count }}
+           </span>
+           <b class="caret"></b>
+        </a>
+        <ul class="dropdown-menu panel-system-history-menu" role="menu" aria-label="История уведомлений AutoCraft">
+            <li class="panel-system-history-head">
+                <span>Уведомления AutoCraft</span>
+                <span class="panel-system-history-actions">
+                    <button
+                      type="button"
+                      class="btn panel-system-history-read-btn"
+                      data-system-mark-read
+                      data-system-mark-read-url="{{ url_for('SystemNotifyCenterView.mark_system_read') }}"
+                    >
+                      Прочитать всё
+                    </button>
+                    <button
+                      type="button"
+                      class="btn panel-system-history-clear-btn"
+                      data-system-clear
+                      data-system-clear-url="{{ url_for('SystemNotifyCenterView.clear_system_history') }}"
+                    >
+                      Очистить
+                    </button>
+                </span>
+            </li>
+            <li class="divider"></li>
+            <li class="panel-system-history-empty" data-system-history-empty>Событий пока нет.</li>
+            <li class="panel-system-history-items" data-system-history-wrapper hidden>
+              <ul class="panel-system-history-list" data-system-history-list role="list"></ul>
+            </li>
+            <li class="divider"></li>
+            <li>
+                <a href="{{ url_for('SystemNotifyCenterView.list') }}">
+                    <span class="fa fa-external-link" aria-hidden="true"></span>
+                    Открыть журнал AutoCraft
+                </a>
+            </li>
+        </ul>
+    </li>
+    <li class="dropdown">
+        <a class="dropdown-toggle" data-toggle="dropdown" href="#" aria-haspopup="true" aria-label="Меню пользователя">
+           <span class="fa fa-user" aria-hidden="true"></span> {{ g.user.get_full_name() }}<b class="caret"></b>
+        </a>
+        <ul class="dropdown-menu">
+            <li>
+                <a href="{{ appbuilder.get_url_for_userinfo }}">
+                    <span class="fa fa-fw fa-user" aria-hidden="true"></span>{{ _('Профиль') }}
+                </a>
+            </li>
+            <li>
+                <a href="{{ appbuilder.get_url_for_logout }}">
+                    <span class="fa fa-fw fa-sign-out" aria-hidden="true"></span>{{ _('Выйти') }}
+                </a>
+            </li>
+        </ul>
+    </li>
+{% else %}
+    <li>
+        <a href="{{ appbuilder.get_url_for_login }}">
+            <i class="fa fa-fw fa-sign-in" aria-hidden="true"></i>{{ _('Войти') }}
+        </a>
+    </li>
+{% endif %}

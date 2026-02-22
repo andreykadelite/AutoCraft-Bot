@@ -9,17 +9,6 @@ import urllib.request
 import psutil
 from aiogram import types
 import platform
-# --- ВАЖНО: модуль переехал в папку moduls. Делаем импорты устойчивыми (и для Nuitka тоже). ---
-try:
-    # когда modulset импортируется как moduls.modulset
-    from .modulpsw import perform_full_restart  # type: ignore
-except Exception:
-    try:
-        # когда modulset импортируется как обычный модуль
-        from modulpsw import perform_full_restart  # type: ignore
-    except Exception:
-        perform_full_restart = None  # fallback, ниже определим безопасную замену
-
 try:
     from .keymenu import get_main_settings_keyboard, get_additional_keyboard  # type: ignore
 except Exception:
@@ -71,15 +60,51 @@ def get_app_filename() -> str:
         pass
     return os.path.basename(sys.argv[0]) if sys.argv else "app.py"
 
-# если modulpsw не смог импортироваться, даём безопасный запасной вариант
-if perform_full_restart is None:
-    def perform_full_restart():  # type: ignore
+def _ensure_sys_core_on_syspath() -> None:
+    base_dir = get_base_dir_fallback()
+    for candidate in (base_dir, os.path.join(base_dir, "src")):
+        if candidate and os.path.isdir(candidate) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+    try:
+        import importlib
+        importlib.invalidate_caches()
+    except Exception:
+        pass
+
+
+_full_restart_from_message = None
+
+
+def _get_full_restart_from_message():
+    global _full_restart_from_message
+    if _full_restart_from_message is None:
         try:
-            import gui_serverapi
-            gui_serverapi.stop_server_globally()
+            from sys_core.full_restart import full_restart_from_message as _full_restart_from_message  # type: ignore
+        except Exception:
+            _ensure_sys_core_on_syspath()
+            from sys_core.full_restart import full_restart_from_message as _full_restart_from_message  # type: ignore
+    return _full_restart_from_message
+
+
+async def run_full_restart(message: types.Message) -> None:
+    try:
+        restart_fn = _get_full_restart_from_message()
+    except Exception as e:
+        try:
+            await message.answer(f"Full restart init failed: {e}")
         except Exception:
             pass
         os._exit(42)
+        return
+    try:
+        await restart_fn(message)
+    except Exception as e:
+        try:
+            await message.answer(f"Full restart failed: {e}")
+        except Exception:
+            pass
+        os._exit(42)
+
 
 
 # --- Динамическое меню "Настройки" через реестр (аналог utilities_registry) ---
@@ -788,54 +813,61 @@ def register_handlers(dp):
         import __main__
         backup_path = restore_pending.pop(message.from_user.id, None)
         if message.text == "Да" and backup_path:
-            base_dir = getattr(__main__, "base_dir", get_base_dir_fallback())
-            exe_name = get_exe_name()
-            deletion_errors = []
-            for item in os.listdir(base_dir):
-                low = item.lower()
-                if item == exe_name or item == "full_backups" or low in ("credentials.ini", ZIP_NAME.lower()):
-                    continue
-                item_path = os.path.join(base_dir, item)
+            try:
                 try:
-                    if os.path.isdir(item_path):
-                        shutil.rmtree(item_path)
-                    else:
-                        os.remove(item_path)
+                    _get_full_restart_from_message()
+                except Exception:
+                    pass
+                base_dir = getattr(__main__, "base_dir", get_base_dir_fallback())
+                exe_name = get_exe_name()
+                deletion_errors = []
+                for item in os.listdir(base_dir):
+                    low = item.lower()
+                    if item == exe_name or item == "full_backups" or low in ("credentials.ini", ZIP_NAME.lower()):
+                        continue
+                    item_path = os.path.join(base_dir, item)
+                    try:
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                    except Exception as e:
+                        deletion_errors.append(f"{item}: {str(e)}")
+                extraction_errors = {}
+                try:
+                    with zipfile.ZipFile(backup_path, 'r') as backup_zip:
+                        files = backup_zip.namelist()
+                        total_files = len(files)
+                        next_threshold = 5
+                        for i, file in enumerate(files, start=1):
+                            try:
+                                backup_zip.extract(member=file, path=base_dir)
+                            except Exception as e:
+                                extraction_errors[file] = str(e)
+                            percent = (i / total_files) * 100
+                            if percent >= next_threshold:
+                                await message.answer(f"Восстановление: {int(next_threshold)}% завершено...")
+                                next_threshold += 5
                 except Exception as e:
-                    deletion_errors.append(f"{item}: {str(e)}")
-            extraction_errors = {}
-            try:
-                with zipfile.ZipFile(backup_path, 'r') as backup_zip:
-                    files = backup_zip.namelist()
-                    total_files = len(files)
-                    next_threshold = 5
-                    for i, file in enumerate(files, start=1):
-                        try:
-                            backup_zip.extract(member=file, path=base_dir)
-                        except Exception as e:
-                            extraction_errors[file] = str(e)
-                        percent = (i / total_files) * 100
-                        if percent >= next_threshold:
-                            await message.answer(f"Восстановление: {int(next_threshold)}% завершено...")
-                            next_threshold += 5
+                    await message.answer(f"Ошибка при восстановлении: {e}")
+                error_report = ""
+                if deletion_errors:
+                    error_report += "Ошибки удаления:\n" + "\n".join(deletion_errors) + "\n"
+                if extraction_errors:
+                    error_report += "Ошибки восстановления:\n" + "\n".join([f"{k}: {v}" for k, v in extraction_errors.items()])
+                if error_report:
+                    await message.answer("Восстановление завершено с ошибками:\n" + error_report)
+                else:
+                    await message.answer("Резервная копия успешно восстановлена без ошибок.")
+                await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
             except Exception as e:
-                await message.answer(f"Ошибка при восстановлении: {e}")
-            error_report = ""
-            if deletion_errors:
-                error_report += "Ошибки удаления:\n" + "\n".join(deletion_errors) + "\n"
-            if extraction_errors:
-                error_report += "Ошибки восстановления:\n" + "\n".join([f"{k}: {v}" for k, v in extraction_errors.items()])
-            if error_report:
-                await message.answer("Восстановление завершено с ошибками:\n" + error_report)
-            else:
-                await message.answer("Резервная копия успешно восстановлена без ошибок.")
-            await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
-            try:
-                import gui_serverapi
-                gui_serverapi.stop_server_globally()
-            except Exception as e:
-                print(f"Ошибка при остановке API сервера: {e}")
-            asyncio.get_running_loop().call_later(2, lambda: os._exit(42))
+                try:
+                    await message.answer(f"Restore error: {e}")
+                except Exception:
+                    pass
+            finally:
+                await run_full_restart(message)
+
         else:
             await message.answer("Операция восстановления отменена. Возвращаюсь в меню настроек.", reply_markup=get_main_settings_keyboard())
     
@@ -1057,15 +1089,26 @@ def register_handlers(dp):
     @dp.message_handler(lambda message: message.text in ["Да", "Нет"] and reset_mode.get(message.from_user.id, "") == "full")
     async def reset_all_confirmation(message: types.Message):
         if message.text == "Да":
-            import __main__
-            base_dir = getattr(__main__, "base_dir", get_base_dir_fallback())
-            errors = reset_all_working_dir(base_dir)
-            if errors:
-                report_text = "Не удалось удалить следующие элементы: " + ", ".join(errors)
-            else:
-                report_text = "Все элементы успешно удалены."
-            await message.answer(report_text + "\nБот перезапускается...")
-            asyncio.get_running_loop().call_later(2, perform_full_restart)
+            try:
+                try:
+                    _get_full_restart_from_message()
+                except Exception:
+                    pass
+                import __main__
+                base_dir = getattr(__main__, "base_dir", get_base_dir_fallback())
+                errors = reset_all_working_dir(base_dir)
+                if errors:
+                    report_text = "Не удалось удалить следующие элементы: " + ", ".join(errors)
+                else:
+                    report_text = "Все элементы успешно удалены."
+                await message.answer(report_text + "\nБот перезапускается...")
+            except Exception as e:
+                try:
+                    await message.answer(f"Reset error: {e}")
+                except Exception:
+                    pass
+            finally:
+                await run_full_restart(message)
         else:
             reset_mode.pop(message.from_user.id, None)
             await message.answer("Операция сброса отменена.", reply_markup=get_main_settings_keyboard())
@@ -1241,13 +1284,11 @@ def register_handlers(dp):
 
     @dp.message_handler(lambda message: message.text == "Полный перезапуск" and system_mode.get(message.from_user.id, False))
     async def full_restart_handler(message: types.Message):
-        await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
         try:
-            import gui_serverapi
-            gui_serverapi.stop_server_globally()
-        except Exception as e:
-            print(f"Ошибка при остановке API сервера: {e}")
-        asyncio.get_running_loop().call_later(2, lambda: os._exit(42))
+            await message.answer("Бот полностью перезапускается... Ожидайте. Все системные сообщения будут выведены в лог.")
+        finally:
+            await run_full_restart(message)
+
     
     @dp.message_handler(lambda message: message.text == "Возврат в настройки" and system_mode.get(message.from_user.id, False))
     async def system_back_handler(message: types.Message):

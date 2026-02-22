@@ -941,148 +941,20 @@ def register_handlers(dp):
     
     @dp.message_handler(lambda m: m.text == "Полный перезапуск")
     async def full_restart_handler(message: types.Message):
-        """
-        Порядок действий изменён под твою задачу:
-        1) Сформировать подробный лог.
-        2) Мягко закрыть управляемый браузер (это не мешает доставке сообщений).
-        3) Отправить ЛОГИ в Telegram.
-        4) После отправки логов остановить локальный Telegram Bot API сервер и закрыть его окно.
-        5) Завершиться кодом 42 (watchdog поднимет процесс).
-        """
-        buf = []
-        await message.answer("Запускаю полный перезапуск… Сначала пришлю отчёт, потом выключу локальный API-сервер.")
-
-        # БАЗОВАЯ СВОДКА О ПРОЦЕССЕ
+        """Единый полный перезапуск. Логика вынесена в sys_core/full_restart.py."""
         try:
-            _append_line(buf, f"cwd={os.getcwd()}")
-            _append_line(buf, f"sys.executable={sys.executable}")
-            _append_line(buf, f"argv={sys.argv}")
-            _append_line(buf, f"frozen={getattr(sys, 'frozen', False)}")
-            _append_line(buf, f"NUITKA_ONEFILE_PARENT={os.environ.get('NUITKA_ONEFILE_PARENT')}")
-            _append_line(buf, f"--child in argv={('--child' in sys.argv)} (эвристика watchdog)")
-        except Exception as e:
-            _append_line(buf, f"Ошибка при сборе сводки о процессе: {e!r}")
-
-        # МЯГКО ЗАКРОЕМ УПРАВЛЯЕМЫЙ БРАУЗЕР (НЕ МЕШАЕТ ОТПРАВКЕ СООБЩЕНИЙ)
-        try:
-            BROWSER_CTRL = _get_browser_ctrl()  # CTRL из moduls/nostartrunmodulbrowsrem.py
-            selected = None
+            from sys_core.full_restart import full_restart_from_message as _full_restart
+        except Exception:
+            # В некоторых сценариях (особенно в EXE) базовая папка может не быть в sys.path.
             try:
-                selected = BROWSER_CTRL.get_selected()
-                _append_line(buf, f"Управляемый браузер выбран: {selected!r}")
-            except Exception as e_sel:
-                _append_line(buf, f"Не удалось получить выбранный браузер: {e_sel!r}")
-            if selected is not None:
-                try:
-                    await asyncio.wait_for(BROWSER_CTRL.quit(selected), timeout=5.0)
-                    _append_line(buf, "Сигнал на закрытие браузера отправлен и выполнен.")
-                except Exception as e_quit:
-                    _append_line(buf, f"Ошибка закрытия браузера (таймаут/исключение): {e_quit!r}")
-            else:
-                _append_line(buf, "Управляемый браузер не обнаружен/не выбран — пропускаем закрытие.")
-        except ModuleNotFoundError:
-            _append_line(buf, "Модуль управления браузером (modulbrowsrem) не найден — пропускаем закрытие.")
-        except Exception as e:
-            _append_line(buf, f"Неожиданная ошибка при работе с браузером: {e!r}")
+                base_dir = _guess_base_dir()
+                if base_dir and base_dir not in sys.path:
+                    sys.path.insert(0, base_dir)
+            except Exception:
+                pass
+            from sys_core.full_restart import full_restart_from_message as _full_restart
+        await _full_restart(message)
 
-        # ДОПОЛНИТЕЛЬНО: ИНФО О ПОТОКАХ
-        try:
-            alive_threads = [t.name for t in threading.enumerate() if t.is_alive()]
-            _append_line(buf, f"Активные потоки на момент перезапуска: {alive_threads}")
-        except Exception as e:
-            _append_line(buf, f"Не удалось получить список потоков: {e!r}")
-
-        # 3) СНАЧАЛА ОТПРАВЛЯЕМ ЛОГИ В TG
-        await _send_log_chunks(message, buf)
-        try:
-            await message.answer("Отчёт отправлен. Отключаю локальный API-сервер…")
-        except Exception:
-            # Если вдруг не смогли отправить это сообщение — это не критично,
-            # основная пачка логов уже ушла.
-            pass
-
-        # 4) ТЕПЕРЬ ОСТАНАВЛИВАЕМ ЛОКАЛЬНЫЙ API-СЕРВЕР И ЗАКРЫВАЕМ ЕГО ОКНО
-        srv_buf = []
-        def srv_line(text): _append_line(srv_buf, text)
-
-        try:
-            import gui_serverapi as _api
-            # Состояние сервера (если модуль даёт индикатор)
-            running_flag = None
-            for probe in ("is_server_running", "server_is_running", "is_running", "running"):
-                try:
-                    attr = getattr(_api, probe, None)
-                    if attr is None:
-                        continue
-                    running_flag = attr() if callable(attr) else bool(attr)
-                    break
-                except Exception:
-                    pass
-            if running_flag is None:
-                srv_line("Состояние локального API-сервера: определить не удалось (нет явного индикатора).")
-            else:
-                srv_line(f"Состояние локального API-сервера до остановки: {'запущен' if running_flag else 'остановлен'}.")
-
-            # Остановка серверной части
-            stopped = False
-            for stop_name in ("stop_server_globally", "stop_server", "shutdown"):
-                try:
-                    stop_fn = getattr(_api, stop_name, None)
-                    if stop_fn:
-                        stop_fn()
-                        stopped = True
-                        srv_line(f"Вызвана функция остановки сервера: {_api.__name__}.{stop_name}()")
-                        break
-                except Exception as e_stop:
-                    srv_line(f"Ошибка при вызове {_api.__name__}.{stop_name}(): {e_stop!r}")
-            if not stopped:
-                srv_line("Подходящая функция остановки API-сервера не найдена — возможно, сервер не поднимался.")
-
-        except ModuleNotFoundError:
-            srv_line("Модуль gui_serverapi не найден — сервер, вероятно, не поднимался.")
-        except Exception as e:
-            srv_line(f"Неожиданная ошибка при остановке API-сервера: {e!r}")
-
-        # Попытка закрыть окно процесса telegram-bot-api.exe (Windows)
-        if os.name == "nt":
-            for name in ("telegram-bot-api.exe", "telegram-bot-api"):
-                try:
-                    # Сначала мягко (без /F)
-                    r1 = subprocess.run(["taskkill", "/IM", name, "/T"], capture_output=True, text=True)
-                    if r1.returncode != 0:
-                        # Если не получилось — форсированно
-                        r2 = subprocess.run(["taskkill", "/IM", name, "/T", "/F"], capture_output=True, text=True)
-                        srv_line(f"taskkill {name}: soft_rc={r1.returncode} hard_rc={r2.returncode}")
-                    else:
-                        srv_line(f"taskkill {name}: закрыт мягко (rc=0)")
-                except Exception as e:
-                    srv_line(f"taskkill {name} вызвал исключение: {e!r}")
-
-        # Отправим краткий хвостик после выключения сервера (если ещё удастся)
-        try:
-            await _send_log_chunks(message, srv_buf)
-        except Exception:
-            # Возможно, к этому моменту бот API уже недоступен — это нормально.
-            pass
-
-        # ФИНАЛЬНОЕ СООБЩЕНИЕ (если возможно)
-        try:
-            await message.answer("Сервер остановлен. Перезапускаюсь…")
-        except Exception:
-            pass
-
-        # Небольшая пауза на закрытие окна сервера
-        try:
-            await asyncio.sleep(0.8)
-        except Exception:
-            pass
-
-        # 5) СИГНАЛ WATCHDOG'У
-        try:
-            loop = asyncio.get_running_loop()
-            loop.call_later(0.3, lambda: os._exit(42))
-        except Exception:
-            os._exit(42)
     # ===== Меню плагинов =====
     @dp.message_handler(lambda m: m.text == "Плагины")
     async def merged_plugins_menu(message: types.Message):

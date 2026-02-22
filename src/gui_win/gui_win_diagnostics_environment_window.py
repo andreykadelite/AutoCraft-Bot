@@ -121,6 +121,47 @@ def _open_folder(path: Path) -> Tuple[bool, str]:
         return False, f"Не удалось открыть папку {path}:\n{e}"
 
 
+def _get_windows_startup_folders() -> Tuple[Optional[Path], Optional[Path]]:
+    """Возвращает пути к папкам автозагрузки Windows: (пользовательская, общая).
+
+    В Windows есть две стандартные папки Startup:
+    - Пользовательская (только текущий пользователь)
+    - Общая (для всех пользователей)
+
+    Возвращает (user_startup, common_startup). Для не-Windows вернёт (None, None).
+    """
+    if os.name != "nt":
+        return None, None
+
+    # %APPDATA% обычно: C:\Users\<user>\AppData\Roaming
+    appdata = os.environ.get("APPDATA", "")
+    programdata = os.environ.get("PROGRAMDATA", "")
+
+    user_startup = None
+    common_startup = None
+
+    try:
+        if appdata:
+            user_startup = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    except Exception:
+        user_startup = None
+
+    try:
+        if programdata:
+            common_startup = (
+                Path(programdata)
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+                / "StartUp"
+            )
+    except Exception:
+        common_startup = None
+
+    return user_startup, common_startup
+
+
 def _is_nuitka_onefile() -> bool:
     """True, если похоже на Nuitka onefile (есть onefile env-переменные)."""
     try:
@@ -659,6 +700,15 @@ def _get_env_diag_class():
             self.btn_open_exe.clicked.connect(self._on_open_exe)
             left.addWidget(self.btn_open_exe)
 
+            self.btn_open_startup = QPushButton("Открыть папку автозагрузки")
+            self.btn_open_startup.setAccessibleName("Кнопка: открыть папку автозагрузки")
+            self.btn_open_startup.setAccessibleDescription(
+                "Открывает папку автозагрузки Windows (Startup). Обычно это папка текущего пользователя."
+            )
+            self._try_set_icon(self.btn_open_startup, QStyle.SP_DirOpenIcon)
+            self.btn_open_startup.clicked.connect(self._on_open_startup)
+            left.addWidget(self.btn_open_startup)
+
             # --- Debug флаг в config.ini ---
             self._config_path = _locate_config_ini()
             self._debug_checkbox_lock = False
@@ -777,7 +827,8 @@ def _get_env_diag_class():
             # Tab order (важно для скринридеров)
             self.setTabOrder(self.status, self.btn_open_temp)
             self.setTabOrder(self.btn_open_temp, self.btn_open_exe)
-            self.setTabOrder(self.btn_open_exe, self.lbl_config)
+            self.setTabOrder(self.btn_open_exe, self.btn_open_startup)
+            self.setTabOrder(self.btn_open_startup, self.lbl_config)
             self.setTabOrder(self.lbl_config, self.chk_debug)
             self.setTabOrder(self.chk_debug, self.btn_show_diag)
             self.setTabOrder(self.btn_show_diag, self.btn_copy)
@@ -968,10 +1019,57 @@ def _get_env_diag_class():
             self._set_status(msg, ok)
             self._log(f"[ENV-DIAG GUI] open_exe_dir: {path} (ok={ok})")
 
+        def _on_open_startup(self) -> None:
+            """Открыть папку автозагрузки Windows (Startup)."""
+            self._reset_confirm()
+
+            user_startup, common_startup = _get_windows_startup_folders()
+            target = None
+
+            # Приоритет: пользовательская папка, затем общая.
+            try:
+                if user_startup and user_startup.exists():
+                    target = user_startup
+            except Exception:
+                target = None
+
+            if target is None:
+                try:
+                    if common_startup and common_startup.exists():
+                        target = common_startup
+                except Exception:
+                    target = None
+
+            if target is None:
+                # В крайнем случае попробуем открыть даже если папка "не существует" (на некоторых сборках)
+                # но _open_folder требует exists, поэтому дадим понятную ошибку.
+                msg = "Папка автозагрузки не найдена (Startup)."
+                if user_startup:
+                    msg += f"\nПользовательская: {user_startup}"
+                if common_startup:
+                    msg += f"\nОбщая: {common_startup}"
+                self._set_status(msg, ok=False)
+                self._log(f"[ENV-DIAG GUI] open_startup_folder: not found (user={user_startup}, common={common_startup})")
+                return
+
+            ok, msg = _open_folder(target)
+            # Чуть расширим статус: покажем оба пути, чтобы было понятно, где искать.
+            extra = []
+            if user_startup:
+                extra.append(f"Пользовательская Startup: {user_startup}")
+            if common_startup:
+                extra.append(f"Общая Startup: {common_startup}")
+            if extra:
+                msg = msg + "\n\n" + "\n".join(extra)
+
+            self._set_status(msg, ok)
+            self._log(f"[ENV-DIAG GUI] open_startup_folder: {target} (ok={ok})")
+
         def _build_diag_text(self) -> str:
             unpack_root = _find_runtime_root()
             onefile_extract = _guess_onefile_extract_dir()
             exe_dir = _get_exe_dir()
+            user_startup, common_startup = _get_windows_startup_folders()
             argv0 = _get_argv0()
             exe_path = Path(os.path.abspath(argv0)) if argv0 else Path(os.getcwd()).resolve()
             main_mod = sys.modules.get("__main__")
@@ -996,6 +1094,8 @@ def _get_env_diag_class():
                 f"Текущая рабочая папка (cwd): {p(os.getcwd())}",
                 f"config.ini: {p(_locate_config_ini()) if _locate_config_ini() else '(не найден)'}",
                 f"Debug в config.ini ([credentials] debug): {p(_read_debug_from_config(_locate_config_ini()) if _locate_config_ini() else None)}",
+                f"Startup (автозагрузка) пользовательская: {p(user_startup) if user_startup else '(не Windows)'}",
+                f"Startup (автозагрузка) общая: {p(common_startup) if common_startup else '(не Windows)'}",
                 "",
                 "Пояснение:",
                 "В Nuitka onefile sys.argv[0] обычно показывает, где лежит исходный EXE,",

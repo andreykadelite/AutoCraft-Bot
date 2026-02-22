@@ -1,0 +1,175 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Терминал</h1>
+    <p class="muted">Выполнение команд в CMD или PowerShell с живым выводом.</p>
+  </div>
+</div>
+
+<div class="card terminal-panel">
+  <form id="terminalForm" class="terminal-controls" aria-label="Терминал">
+    <label>Оболочка
+      <select id="terminalShell">
+        <option value="powershell">PowerShell</option>
+        <option value="cmd">CMD</option>
+      </select>
+    </label>
+    <label class="terminal-checkbox">
+      <input type="checkbox" id="terminalSafe" checked>
+      Безопасный режим
+    </label>
+    <label class="terminal-command">Команда
+      <input type="text" id="terminalCommand" placeholder="Например: Get-Process" autocomplete="off">
+    </label>
+    <div class="terminal-actions">
+      <button type="submit" class="btn-primary">Выполнить</button>
+      <button type="button" class="btn" id="terminalStop" disabled>Остановить</button>
+      <button type="button" class="btn" id="terminalClear">Очистить</button>
+    </div>
+  </form>
+  <div class="terminal-hint muted" id="terminalHint">
+    Безопасный режим: команды из списка выполняются без подтверждения, остальные требуют подтверждения.
+  </div>
+  <pre class="terminal-output" id="terminalOutput" aria-live="polite" aria-label="Вывод терминала"></pre>
+</div>
+
+<script>
+  const streamUrl = {{ url_for('TerminalView.stream') | tojson }};
+  const csrfToken = {{ (csrf_token() if csrf_token is defined and csrf_token else '') | tojson }};
+  const output = document.getElementById('terminalOutput');
+  const form = document.getElementById('terminalForm');
+  const shellSelect = document.getElementById('terminalShell');
+  const safeToggle = document.getElementById('terminalSafe');
+  const commandInput = document.getElementById('terminalCommand');
+  const stopButton = document.getElementById('terminalStop');
+  const clearButton = document.getElementById('terminalClear');
+  const hint = document.getElementById('terminalHint');
+  const safeCmdCommands = {{ safe_cmd_commands | tojson }};
+  const safePsCommands = {{ safe_ps_commands | tojson }};
+  const unsafePattern = new RegExp({{ unsafe_pattern | tojson }});
+
+  let eventSource = null;
+
+  function appendLine(text) {
+    const lines = String(text).split(/\r\n|\n|\r/);
+    lines.forEach((line) => {
+      output.textContent += line + '\n';
+    });
+    output.scrollTop = output.scrollHeight;
+  }
+
+  function getFirstToken(command) {
+    const match = String(command).match(/\\s*(\\S+)/);
+    if (!match) {
+      return '';
+    }
+    let token = match[1].trim();
+    if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+      token = token.slice(1, -1);
+    }
+    return token;
+  }
+
+  function isSafeAllowed(command, shell) {
+    let token = getFirstToken(command).toLowerCase();
+    if (token.endsWith('.exe')) {
+      token = token.slice(0, -4);
+    }
+    if (shell === 'cmd') {
+      return safeCmdCommands.includes(token);
+    }
+    return safePsCommands.includes(token);
+  }
+
+  function needsConfirmation(command, shell) {
+    if (unsafePattern.test(command)) {
+      return true;
+    }
+    return !isSafeAllowed(command, shell);
+  }
+
+  function setRunning(isRunning) {
+    stopButton.disabled = !isRunning;
+  }
+
+  function closeStream() {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+  }
+
+  async function startCommand() {
+    const command = commandInput.value.trim();
+    if (!command) {
+      appendLine('Введите команду.');
+      return;
+    }
+    const safeMode = safeToggle.checked;
+    let confirmed = false;
+    if (safeMode && needsConfirmation(command, shellSelect.value)) {
+      const message =
+        `Команда не входит в список безопасных или содержит спецсимволы.\n` +
+        `Команда: ${command}\nПодтвердить выполнение?`;
+      confirmed = await (window.panelConfirm
+        ? window.panelConfirm(message, { danger: true, title: "Подтверждение команды" })
+        : Promise.resolve(window.confirm(message)));
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    closeStream();
+    appendLine('> ' + command);
+    setRunning(true);
+
+    const params = new URLSearchParams({
+      cmd: command,
+      shell: shellSelect.value,
+      safe: safeMode ? '1' : '0',
+      confirm: confirmed ? '1' : '0',
+      csrf_token: csrfToken
+    });
+    eventSource = new EventSource(streamUrl + '?' + params.toString());
+
+    eventSource.onmessage = (event) => {
+      appendLine(event.data);
+    };
+
+    eventSource.addEventListener('done', (event) => {
+      appendLine('Код выхода: ' + event.data);
+      setRunning(false);
+      closeStream();
+    });
+
+    eventSource.onerror = () => {
+      appendLine('Соединение прервано.');
+      setRunning(false);
+      closeStream();
+    };
+  }
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    startCommand();
+  });
+
+  stopButton.addEventListener('click', () => {
+    appendLine('Остановлено пользователем.');
+    setRunning(false);
+    closeStream();
+  });
+
+  clearButton.addEventListener('click', () => {
+    output.textContent = '';
+  });
+
+  safeToggle.addEventListener('change', () => {
+    hint.textContent = safeToggle.checked
+      ? 'Безопасный режим: команды из списка выполняются без подтверждения, остальные требуют подтверждения.'
+      : 'Опасный режим: любые команды выполняются без подтверждения.';
+  });
+</script>
+{% endblock %}

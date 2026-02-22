@@ -1,0 +1,111 @@
+{% extends "panel_base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ static_url }}/notify_center.css">
+{% endblock %}
+
+{% block head_js %}
+  {{ super() }}
+  <script src="{{ static_url }}/notify_center.js"></script>
+{% endblock %}
+
+{% block panel_content %}
+  <div
+    class="panel-card notify-card"
+    id="notify-center-root"
+    data-send-url="{{ send_url }}"
+    data-csrf-token="{{ csrf_token() if csrf_token is defined else '' }}"
+    data-max-title="{{ max_title_len }}"
+    data-max-text="{{ max_body_len }}"
+    data-history-limit="12"
+  >
+    <div class="notify-header">
+      <div>
+        <h2>Центр уведомлений</h2>
+        <p class="notify-subtitle">Отправляйте системные уведомления на этот компьютер.</p>
+      </div>
+      <div class="notify-badge">Windows</div>
+    </div>
+
+    <div class="notify-section">
+      <label class="notify-label" for="notify-title">Заголовок (необязательно)</label>
+      <input
+        id="notify-title"
+        class="notify-input"
+        type="text"
+        placeholder="Например: Напоминание"
+        maxlength="{{ max_title_len }}"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+      >
+
+      <label class="notify-label" for="notify-text">Текст уведомления</label>
+      <textarea
+        id="notify-text"
+        class="notify-textarea"
+        rows="4"
+        placeholder="Например: Проверьте подключение или откройте отчёт."
+        maxlength="{{ max_body_len }}"
+      ></textarea>
+
+      <div class="notify-meta">
+        <div class="notify-counter" id="notify-counter">0 / {{ max_body_len }}</div>
+        <div class="notify-hint">Ctrl+Enter — отправить, Esc — очистить</div>
+      </div>
+
+      <div class="notify-actions">
+        <button id="notify-send" class="btn-primary" type="button">Отправить уведомление</button>
+        <button id="notify-clear" class="btn" type="button">Очистить</button>
+      </div>
+    </div>
+
+    <div class="notify-section">
+      <div class="notify-templates-title">Быстрые шаблоны</div>
+      <div class="notify-templates" role="list">
+        <button class="notify-template" type="button" data-title="Проверка" data-text="Панель доступна, связь в порядке.">
+          Проверка связи
+        </button>
+        <button class="notify-template" type="button" data-title="Готово" data-text="Задача выполнена, можно продолжать работу.">
+          Готово
+        </button>
+        <button class="notify-template" type="button" data-title="Важно" data-text="Пожалуйста, обратите внимание на систему.">
+          Важное
+        </button>
+      </div>
+    </div>
+
+    <div class="notify-section">
+      <div
+        class="notify-output"
+        id="notify-output"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >Готово к отправке.</div>
+      <noscript>
+        <div class="notify-output is-error" role="alert">
+          Для отправки уведомлений требуется включить JavaScript.
+        </div>
+      </noscript>
+    </div>
+
+    <div class="notify-section">
+      <div class="notify-history-header">
+        <h4 id="notify-history-title">Журнал отправки</h4>
+        <button id="notify-history-clear" class="btn" type="button">Очистить журнал</button>
+      </div>
+      <div class="notify-history" id="notify-history" role="list" aria-labelledby="notify-history-title"></div>
+    </div>
+
+    <div class="notify-section notify-help">
+      <h4>Подсказки</h4>
+      <ul>
+        <li>Уведомления появляются на том же компьютере, где запущена веб-панель.</li>
+        <li>Если панель работает как служба, уведомление может быть скрыто системой.</li>
+        <li>Оставьте заголовок пустым, чтобы использовать значение по умолчанию.</li>
+      </ul>
+    </div>
+  </div>
+{% endblock %}

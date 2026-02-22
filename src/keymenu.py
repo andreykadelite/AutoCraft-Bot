@@ -1,5 +1,29 @@
 from aiogram import types
-import inspect
+import os
+import sys
+import logging
+
+# Лёгкий логгер для keymenu: не должен валить бота даже при проблемах с логами
+_km_logger = logging.getLogger("keymenu")
+
+def _km_log(msg: str) -> None:
+    """Пишем диагностику максимально безопасно: в __main__.write_debug_log (если есть) и в logging."""
+    try:
+        import __main__
+        f = getattr(__main__, "write_debug_log", None) or getattr(__main__, "write_bot_log", None)
+        if callable(f):
+            try:
+                f(f"[keymenu] {msg}")
+            except TypeError:
+                # если у функции другая сигнатура — просто игнорируем
+                pass
+    except Exception:
+        pass
+    try:
+        _km_logger.debug(msg)
+    except Exception:
+        pass
+
 
 # Пытаемся аккуратно подтянуть реестр утилит.
 # Если реестр перенесён в menu_registry — подхватываем оттуда.
@@ -238,26 +262,60 @@ def create_list_keyboard(items, add_back=True):
 
 
 # Патчим метод add у ReplyKeyboardMarkup для автоматического добавления кнопки "Настройки"
+# ВАЖНО: раньше тут использовался inspect.stack(), а в Nuitka onefile это может падать
+# с ошибкой вида: AttributeError: 'dict' object has no attribute 'endswith'.
+# Поэтому используем sys._getframe(1) (быстрее и надёжнее), и никогда не даём патчу валить бота.
+
 _original_add = types.ReplyKeyboardMarkup.add
 
+def _btn_text(b):
+    if isinstance(b, str):
+        return b
+    # aiogram KeyboardButton
+    if isinstance(b, types.KeyboardButton):
+        return getattr(b, "text", "")
+    return str(b)
 
 def patched_add(self, *buttons):
-    stack = inspect.stack()
-    if stack and len(stack) > 1:
-        caller_function = stack[1].function
+    try:
+        # Получаем имя функции-вызвавшей kb.add(...) без inspect
+        caller_function = None
+        try:
+            caller_function = sys._getframe(1).f_code.co_name
+        except Exception:
+            caller_function = None
+
+        # Инъекция "Настройки" нужна только в меню "Дополнительно"
         if caller_function == "additional_menu":
             btns = list(buttons)
-            if "Настройки" not in btns:
-                if "Назад" in btns:
-                    idx = btns.index("Назад")
-                    btns.insert(idx, "Настройки")
+            texts = [_btn_text(b) for b in btns]
+
+            if "Настройки" not in texts:
+                # Подбираем тип вставки: если уже есть KeyboardButton — вставляем KeyboardButton
+                use_kb_button = any(isinstance(b, types.KeyboardButton) for b in btns)
+                settings_btn = types.KeyboardButton("Настройки") if use_kb_button else "Настройки"
+
+                if "Назад" in texts:
+                    idx = texts.index("Назад")
+                    btns.insert(idx, settings_btn)
                 else:
-                    btns.append("Настройки")
+                    btns.append(settings_btn)
+
             buttons = tuple(btns)
+
+    except Exception as e:
+        # Патч не должен ломать работу бота ни при каких условиях
+        _km_log(f"patched_add suppressed error: {e!r}")
+
     return _original_add(self, *buttons)
 
+# Можно отключить патч переменной окружения (на всякий случай, для диагностики)
+_DISABLE_PATCH = str(os.environ.get("ACB_DISABLE_KEYMENU_PATCH", "")).strip().lower() in ("1", "true", "yes", "on")
+if not _DISABLE_PATCH:
+    types.ReplyKeyboardMarkup.add = patched_add
+else:
+    _km_log("ReplyKeyboardMarkup.add patch is disabled via ACB_DISABLE_KEYMENU_PATCH=1")
 
-types.ReplyKeyboardMarkup.add = patched_add
 
 
 def get_main_settings_keyboard():
@@ -293,4 +351,3 @@ def get_main_settings_keyboard():
         kb.add(types.KeyboardButton("Вернуться"))
 
     return kb
-

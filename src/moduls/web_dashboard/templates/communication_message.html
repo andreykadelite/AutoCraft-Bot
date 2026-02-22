@@ -1,0 +1,71 @@
+{% extends "appbuilder/base.html" %}
+
+{% block content %}
+<div class="wac-container comm-center" role="main">
+  <div class="page-header">
+    <div>
+      <h1>Сообщение</h1>
+      <p class="muted">Просмотр сообщения и быстрый ответ получателю.</p>
+    </div>
+    <a class="btn" href="{{ url_for('CommunicationCenterView.list', box=box) }}">Назад к списку</a>
+  </div>
+
+  <div class="grid comm-grid">
+    <section class="card comm-message">
+      <div class="comm-message-meta">
+        <div>
+          <div class="comm-meta-row">
+            <span class="comm-meta-label">От:</span>
+            <span class="comm-meta-value">{{ sender_label }}</span>
+            {% if sender_roles %}
+              <span class="comm-roles">({{ sender_roles }})</span>
+            {% endif %}
+          </div>
+          <div class="comm-meta-row">
+            <span class="comm-meta-label">Кому:</span>
+            <span class="comm-meta-value">{{ recipient_label }}</span>
+            {% if recipient_roles %}
+              <span class="comm-roles">({{ recipient_roles }})</span>
+            {% endif %}
+          </div>
+        </div>
+        <div class="comm-meta-dates">
+          <div class="comm-meta-row">
+            <span class="comm-meta-label">Отправлено:</span>
+            <span class="comm-meta-value">{{ created_at }}</span>
+          </div>
+          {% if read_at %}
+          <div class="comm-meta-row">
+            <span class="comm-meta-label">Прочитано:</span>
+            <span class="comm-meta-value">{{ read_at }}</span>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="comm-subject">{{ subject }}</div>
+      <div class="comm-message-body">{{ message.body | e | replace('\n', '<br>') | safe }}</div>
+    </section>
+
+    {% if can_action %}
+    <section class="card comm-reply" aria-labelledby="comm-reply-title">
+      <h3 id="comm-reply-title">Ответить</h3>
+      <form class="form" method="post" action="{{ url_for('CommunicationCenterView.send') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="recipient_id" value="{{ message.sender_id }}">
+
+        <label for="reply-subject">Тема</label>
+        <input id="reply-subject" name="subject" type="text" maxlength="200" value="Re: {{ subject }}">
+
+        <label for="reply-body">Сообщение</label>
+        <textarea id="reply-body" name="body" rows="8" maxlength="4000" required></textarea>
+
+        <div class="comm-actions">
+          <button type="submit" class="btn-primary">Отправить ответ</button>
+        </div>
+      </form>
+    </section>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

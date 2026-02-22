@@ -1,0 +1,13 @@
+{
+  "id": "wintts",
+  "name": "Win TTS",
+  "version": "1.0",
+  "description": "Синтез речи с выбором движка и голоса, воспроизведением в браузере и скачиванием файла.",
+  "entrypoint": "plugin.py",
+  "template": "index.html",
+  "menu_label": "Win TTS",
+  "category": "Расширения",
+  "order": 11,
+  "roles": ["Admin", "Operator"]
+}
+

@@ -1,0 +1,269 @@
+﻿{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Автозапуск Windows</h1>
+    <p class="muted">Управление папкой автозагрузки, реестром и задачами планировщика.</p>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card">
+    <h3>Папка автозагрузки</h3>
+    <p class="muted">Файлы из этих папок запускаются при входе пользователя.</p>
+    <form class="filter-bar" method="post" action="{{ url_for('AutoStartView.folder_add') }}">
+      {% if csrf_token is defined and csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% endif %}
+      <label>
+        Папка
+        <select name="location_id" required>
+          {% for loc in startup_locations %}
+            <option value="{{ loc.id }}">{{ loc.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Имя файла
+        <input type="text" name="name" placeholder="MyApp" required>
+      </label>
+      <label>
+        Команда
+        <input type="text" name="command" placeholder="&quot;C:\\Program Files\\App\\app.exe&quot; --flag" required>
+      </label>
+      <label>
+        Рабочая папка
+        <input type="text" name="working_dir" placeholder="C:\\Program Files\\App">
+      </label>
+      <button class="btn-primary" type="submit">Добавить</button>
+    </form>
+
+    {% if folder_error %}
+      <p class="muted">{{ folder_error }}</p>
+    {% endif %}
+
+    <table class="table">
+      <caption class="sr-only">Элементы автозагрузки из папок Startup</caption>
+      <thead>
+        <tr>
+          <th scope="col">Имя</th>
+          <th scope="col">Статус</th>
+          <th scope="col">Тип</th>
+          <th scope="col">Папка</th>
+          <th scope="col">Команда</th>
+          <th scope="col">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in folder_entries %}
+        <tr>
+          <td>{{ item.display_name or item.name }}</td>
+          <td>{{ 'Включено' if item.enabled else 'Отключено' }}</td>
+          <td>{{ item.kind }}</td>
+          <td>{{ item.location_label }}</td>
+          <td>{{ item.command or item.path }}</td>
+          <td>
+            <form method="post" action="{{ url_for('AutoStartView.folder_toggle') }}" style="display: inline" {% if item.enabled %}data-confirm-message="{{ ('Отключить автозапуск ' ~ (item.display_name or item.name) ~ '?') | e }}" data-confirm-danger="true"{% endif %}>
+              {% if csrf_token is defined and csrf_token %}
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              {% endif %}
+              <input type="hidden" name="location_id" value="{{ item.location_id }}">
+              <input type="hidden" name="name" value="{{ item.name }}">
+              <input type="hidden" name="enabled" value="{{ '0' if item.enabled else '1' }}">
+              <button class="btn{% if not item.enabled %}-primary{% endif %}" type="submit">{{ 'Отключить' if item.enabled else 'Включить' }}</button>
+            </form>
+            <form method="post" action="{{ url_for('AutoStartView.folder_remove') }}" style="display: inline" data-confirm-message="{{ ('Удалить файл автозагрузки ' ~ (item.display_name or item.name) ~ '?') | e }}" data-confirm-danger="true">
+              {% if csrf_token is defined and csrf_token %}
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              {% endif %}
+              <input type="hidden" name="location_id" value="{{ item.location_id }}">
+              <input type="hidden" name="name" value="{{ item.name }}">
+              <button class="btn danger" type="submit">Удалить</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h3>Реестр</h3>
+    <p class="muted">Ключи Run/RunOnce и политики Explorer.</p>
+    <form class="filter-bar" method="post" action="{{ url_for('AutoStartView.registry_add') }}">
+      {% if csrf_token is defined and csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% endif %}
+      <label>
+        Ветка
+        <select name="location_id" required>
+          {% for loc in registry_locations %}
+            <option value="{{ loc.id }}">{{ loc.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Имя значения
+        <input type="text" name="name" placeholder="MyApp" required>
+      </label>
+      <label>
+        Команда
+        <input type="text" name="command" placeholder="&quot;C:\\Program Files\\App\\app.exe&quot; --flag" required>
+      </label>
+      <label>
+        Тип
+        <select name="value_type">
+          {% for item in value_types %}
+            <option value="{{ item.value }}">{{ item.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="btn-primary" type="submit">Добавить</button>
+    </form>
+
+    {% if registry_error %}
+      <p class="muted">{{ registry_error }}</p>
+    {% endif %}
+
+    <table class="table">
+      <caption class="sr-only">Элементы автозагрузки в реестре</caption>
+      <thead>
+        <tr>
+          <th scope="col">Имя</th>
+          <th scope="col">Статус</th>
+          <th scope="col">Команда</th>
+          <th scope="col">Тип</th>
+          <th scope="col">Ветка</th>
+          <th scope="col">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in registry_entries %}
+        <tr>
+          <td>{{ item.name }}</td>
+          <td>{{ 'Включено' if item.enabled else 'Отключено' }}</td>
+          <td>{{ item.command }}</td>
+          <td>{{ item.value_type }}</td>
+          <td>{{ item.location_label }}</td>
+          <td>
+            <form method="post" action="{{ url_for('AutoStartView.registry_toggle') }}" style="display: inline" {% if item.enabled %}data-confirm-message="{{ ('Отключить запись ' ~ item.name ~ '?') | e }}" data-confirm-danger="true"{% endif %}>
+              {% if csrf_token is defined and csrf_token %}
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              {% endif %}
+              <input type="hidden" name="location_id" value="{{ item.location_id }}">
+              <input type="hidden" name="name" value="{{ item.name }}">
+              <input type="hidden" name="enabled" value="{{ '0' if item.enabled else '1' }}">
+              <button class="btn{% if not item.enabled %}-primary{% endif %}" type="submit">{{ 'Отключить' if item.enabled else 'Включить' }}</button>
+            </form>
+            <form method="post" action="{{ url_for('AutoStartView.registry_remove') }}" style="display: inline" data-confirm-message="{{ ('Удалить запись ' ~ item.name ~ ' из реестра?') | e }}" data-confirm-danger="true">
+              {% if csrf_token is defined and csrf_token %}
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              {% endif %}
+              <input type="hidden" name="location_id" value="{{ item.location_id }}">
+              <input type="hidden" name="name" value="{{ item.name }}">
+              <button class="btn danger" type="submit">Удалить</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="card">
+  <h3>Планировщик задач</h3>
+  <p class="muted">Показываются задачи с триггерами Logon/Boot.</p>
+  <form class="filter-bar" method="post" action="{{ url_for('AutoStartView.task_add') }}">
+    {% if csrf_token is defined and csrf_token %}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% endif %}
+    <label>
+      Имя задачи
+      <input type="text" name="name" placeholder="MyTask" required>
+    </label>
+    <label>
+      Команда
+      <input type="text" name="command" placeholder="&quot;C:\\Program Files\\App\\app.exe&quot; --flag" required>
+    </label>
+    <label>
+      Папка задачи
+      <input type="text" name="task_path" value="\\" placeholder="\\">
+    </label>
+    <label>
+      Триггер
+      <select name="trigger">
+        {% for item in task_triggers %}
+          <option value="{{ item.value }}">{{ item.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Уровень
+      <select name="run_level">
+        {% for item in task_run_levels %}
+          <option value="{{ item.value }}">{{ item.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Рабочая папка
+      <input type="text" name="working_dir" placeholder="C:\\Program Files\\App">
+    </label>
+    <button class="btn-primary" type="submit">Создать</button>
+  </form>
+
+  {% if task_error %}
+    <p class="muted">{{ task_error }}</p>
+  {% endif %}
+
+  <table class="table">
+    <caption class="sr-only">Задачи автозапуска</caption>
+    <thead>
+      <tr>
+        <th scope="col">Имя</th>
+        <th scope="col">Статус</th>
+        <th scope="col">Триггер</th>
+        <th scope="col">Команда</th>
+        <th scope="col">Пользователь</th>
+        <th scope="col">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in task_entries %}
+      <tr>
+        <td>{{ item.full_name or item.name }}</td>
+        <td>{{ 'Включено' if item.enabled else 'Отключено' }}</td>
+        <td>{{ item.triggers }}</td>
+        <td>{{ item.actions }}</td>
+        <td>{{ item.user }}</td>
+        <td>
+          <form method="post" action="{{ url_for('AutoStartView.task_toggle') }}" style="display: inline" {% if item.enabled %}data-confirm-message="{{ ('Отключить задачу ' ~ (item.full_name or item.name) ~ '?') | e }}" data-confirm-danger="true"{% endif %}>
+            {% if csrf_token is defined and csrf_token %}
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% endif %}
+            <input type="hidden" name="full_name" value="{{ item.full_name or item.name }}">
+            <input type="hidden" name="enabled" value="{{ '0' if item.enabled else '1' }}">
+            <button class="btn{% if not item.enabled %}-primary{% endif %}" type="submit">{{ 'Отключить' if item.enabled else 'Включить' }}</button>
+          </form>
+          <form method="post" action="{{ url_for('AutoStartView.task_remove') }}" style="display: inline" data-confirm-message="{{ ('Удалить задачу ' ~ (item.full_name or item.name) ~ '?') | e }}" data-confirm-danger="true">
+            {% if csrf_token is defined and csrf_token %}
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% endif %}
+            <input type="hidden" name="full_name" value="{{ item.full_name or item.name }}">
+            <button class="btn danger" type="submit">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

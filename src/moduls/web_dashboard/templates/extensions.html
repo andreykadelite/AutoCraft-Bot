@@ -1,0 +1,222 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+{% set summary = summary or {} %}
+{% set runtime = runtime or {} %}
+<div class="page-header">
+  <div>
+    <h1>Менеджер расширений</h1>
+    <p class="muted">Диагностика загрузки расширений и целостности файлов в <code>web_plugins</code>.</p>
+    <p class="muted">
+      Режим запуска:
+      <strong>{% if runtime.compiled %}EXE/compiled{% else %}Python{% endif %}</strong>
+    </p>
+  </div>
+</div>
+
+<section class="tiles" aria-label="Сводка по расширениям">
+  <article class="tile">
+    <div class="tile-title">Всего</div>
+    <div class="tile-value">{{ summary.total or 0 }}</div>
+    <div class="tile-sub">Найдено каталогов расширений</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Загружено</div>
+    <div class="tile-value">{{ summary.loaded or 0 }}</div>
+    <div class="tile-sub">View зарегистрированы в меню</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Ошибки</div>
+    <div class="tile-value">{{ summary.error or 0 }}</div>
+    <div class="tile-sub">Требуют исправления</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Предупреждения</div>
+    <div class="tile-value">{{ summary.warning or 0 }}</div>
+    <div class="tile-sub">Возможны частичные проблемы</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Доступно к запуску</div>
+    <div class="tile-value">{{ summary.launchable or 0 }}</div>
+    <div class="tile-sub">Без критических ошибок</div>
+  </article>
+</section>
+
+<div class="card">
+  <p>
+    Для каждого расширения показаны проверки <code>plugin.json</code>, <code>entrypoint</code>, шаблона, статики и состояние
+    регистрации в панели. Если скрипт не подхватился, модуль упал при импорте или не найдены файлы, это появится в диагностике.
+  </p>
+
+  {% if roots %}
+  <details class="details-block">
+    <summary>Пути поиска расширений ({{ roots | length }})</summary>
+    <ul>
+      {% for root in roots %}
+      <li><code>{{ root }}</code></li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+  <div class="table-scroll">
+    <table class="table table-compact">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">Название</th>
+          <th scope="col">Версия</th>
+          <th scope="col">Категория</th>
+          <th scope="col">Загрузка</th>
+          <th scope="col">Статус</th>
+          <th scope="col">Запуск</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for plugin in plugins %}
+        <tr>
+          <td><code>{{ plugin.plugin_id }}</code></td>
+          <td>{{ plugin.name }}</td>
+          <td>{{ plugin.version }}</td>
+          <td>{{ plugin.category }}</td>
+          <td>
+            {% if plugin.load_state == "loaded" %}
+              Загружено
+            {% elif plugin.load_state == "warning" %}
+              Загружено с предупреждениями
+            {% elif plugin.load_state == "loading" %}
+              В процессе
+            {% elif plugin.load_state == "error" %}
+              Ошибка загрузки
+            {% else %}
+              Не загружено
+            {% endif %}
+          </td>
+          <td>
+            <span class="status-chip {{ plugin.status_chip }}">{{ plugin.status_label }}</span>
+          </td>
+          <td>
+            {% if plugin.can_launch %}
+              <a class="btn" href="{{ plugin.url }}">Открыть</a>
+            {% else %}
+              <span class="muted">Недоступно</span>
+            {% endif %}
+          </td>
+        </tr>
+        <tr>
+          <td colspan="7">
+            <details class="details-block" {% if plugin.status != "ok" %}open{% endif %}>
+              <summary>
+                Диагностика:
+                ошибок {{ plugin.errors | length }},
+                предупреждений {{ plugin.warnings | length }},
+                проверок {{ plugin.checks | length }}
+              </summary>
+
+              <dl class="info-list">
+                <dt>Каталог</dt>
+                <dd><code>{{ plugin.root }}</code></dd>
+                <dt>Источник</dt>
+                <dd><code>{{ plugin.source_root or "-" }}</code></dd>
+                <dt>Манифест</dt>
+                <dd><code>{{ plugin.manifest_path }}</code>{% if plugin.manifest_encoding %} ({{ plugin.manifest_encoding }}){% endif %}</dd>
+                <dt>Entrypoint</dt>
+                <dd><code>{{ plugin.entrypoint_path or plugin.entrypoint_hint or "-" }}</code></dd>
+                <dt>Шаблон</dt>
+                <dd><code>{{ plugin.template_path or plugin.template_hint or "-" }}</code></dd>
+                <dt>Роли</dt>
+                <dd>{{ ", ".join(plugin.roles or []) or "-" }}</dd>
+                <dt>View</dt>
+                <dd>{{ ", ".join(plugin.registered_views or []) or "-" }}</dd>
+                <dt>Файлов в каталоге</dt>
+                <dd>{{ plugin.files_total or 0 }}</dd>
+              </dl>
+
+              {% if plugin.errors %}
+              <h4>Ошибки</h4>
+              <ul>
+                {% for err in plugin.errors %}
+                <li>{{ err }}</li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+
+              {% if plugin.warnings %}
+              <h4>Предупреждения</h4>
+              <ul>
+                {% for warn in plugin.warnings %}
+                <li>{{ warn }}</li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+
+              {% if plugin.checks %}
+              <div class="table-scroll">
+                <table class="table table-compact">
+                  <thead>
+                    <tr>
+                      <th scope="col">Проверка</th>
+                      <th scope="col">Файл/путь</th>
+                      <th scope="col">Статус</th>
+                      <th scope="col">Сообщение</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for check in plugin.checks %}
+                    <tr>
+                      <td>{{ check.label }}</td>
+                      <td><code>{{ check.path }}</code></td>
+                      <td>
+                        <span class="status-chip {{ check.chip }}">
+                          {% if check.level == "error" %}
+                            Ошибка
+                          {% elif check.level == "warning" %}
+                            Предупреждение
+                          {% else %}
+                            OK
+                          {% endif %}
+                        </span>
+                      </td>
+                      <td>{{ check.message }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% endif %}
+
+              {% if plugin.files_preview %}
+              <details class="details-block">
+                <summary>Файлы расширения ({{ plugin.files_preview | length }})</summary>
+                <div class="table-scroll">
+                  <table class="table table-compact">
+                    <thead>
+                      <tr>
+                        <th scope="col">Файл</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for file_name in plugin.files_preview %}
+                      <tr><td><code>{{ file_name }}</code></td></tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+                {% if plugin.files_truncated %}
+                <p class="muted">Показана только часть списка файлов.</p>
+                {% endif %}
+              </details>
+              {% endif %}
+            </details>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7">Расширения не найдены.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

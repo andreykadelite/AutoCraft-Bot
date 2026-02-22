@@ -1,0 +1,181 @@
+<!-- extend base layout -->
+{% extends "appbuilder/base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="auth-shell col-xs-12" role="main" aria-labelledby="auth-title">
+  <div class="auth-container">
+    <a class="sr-only sr-only-focusable" href="#login-form">Перейти к форме входа</a>
+    <div class="auth-grid">
+      <section class="auth-panel" aria-describedby="auth-policy">
+        <div class="auth-brand">
+          <div class="auth-app-name">{{ appbuilder.app_name }}</div>
+          <div class="auth-app-subtitle">Служебная система управления</div>
+        </div>
+        <h1 id="auth-title" class="auth-title">{{ title }}</h1>
+        {% if device_name %}
+        <p class="auth-device">Устройство: {{ device_name }}</p>
+        {% endif %}
+        <p class="auth-intro">
+          Доступ к панели предоставляется только авторизованным пользователям и используется
+          для управляемых операций и контроля систем.
+        </p>
+        {% if admin_login_message %}
+        <div class="auth-admin-banner" role="status" aria-live="polite" aria-atomic="true">
+          <div class="auth-admin-banner-title">Сообщение администратора</div>
+          <div class="auth-admin-banner-subject">{{ admin_login_message.subject }}</div>
+          <div class="auth-admin-banner-body">{{ admin_login_message.body | e | replace('\n', '<br>') | safe }}</div>
+          <div class="auth-admin-banner-meta">
+            Опубликовано: {{ admin_login_message.created_at }}
+            {% if admin_login_message.author %} • {{ admin_login_message.author }}{% endif %}
+          </div>
+        </div>
+        {% endif %}
+        <div id="auth-policy" class="auth-policy" role="note">
+          <h2 class="auth-policy-title">Правила доступа</h2>
+          <ul class="auth-policy-list">
+            <li>Доступ разрешен только уполномоченным сотрудникам.</li>
+            <li>Все попытки входа и действия в системе журналируются.</li>
+            <li>Нарушения фиксируются и могут повлечь ответственность согласно законодательству и регламентам.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="auth-form" aria-labelledby="auth-form-title">
+        <div class="auth-card">
+          <h2 id="auth-form-title" class="auth-card-title">Вход в систему</h2>
+          {% if login_blocked %}
+          <div id="login-lockout" class="auth-alert" role="status" aria-live="polite" aria-atomic="true">
+            <div>
+              <strong>Слишком много неудачных попыток входа{% if blocked_username %} для пользователя «{{ blocked_username|e }}»{% endif %}.</strong>
+            </div>
+            <div>
+              Повторите попытку через
+              <span id="login-lockout-seconds" data-seconds="{{ login_retry_after }}">{{ login_retry_after }}</span>
+              сек.
+            </div>
+          </div>
+          {% endif %}
+          <div id="login-form-wrapper"{% if login_blocked %} hidden{% endif %}>
+            <p id="login-hint" class="auth-hint">Введите служебные учетные данные.</p>
+            {% if form.errors %}
+            <div class="auth-alert" role="alert" aria-live="assertive">
+              Проверьте введенные данные. Поля с ошибками выделены.
+            </div>
+            {% endif %}
+            <form class="form" action="" method="post" name="login" id="login-form">
+              {{ form.hidden_tag() }}
+              {% set username_errors = form.errors.get('username', []) %}
+              {% set password_errors = form.errors.get('password', []) %}
+              {% set username_desc = "login-hint" %}
+              {% if username_errors %}{% set username_desc = username_desc + " username-error" %}{% endif %}
+              {% set password_desc = "login-hint" %}
+              {% if password_errors %}{% set password_desc = password_desc + " password-error" %}{% endif %}
+              <div class="form-group{% if username_errors %} has-error{% endif %}">
+                <label class="control-label" for="username">Логин</label>
+                <div class="input-group">
+                  <span class="input-group-addon"><i class="fa fa-user" aria-hidden="true"></i></span>
+                  {{ form.username(size = 80, class = "form-control", autofocus = true, autocomplete = "username", aria_describedby = username_desc, aria_invalid = "true" if username_errors else "false", required = true) }}
+                </div>
+                {% if username_errors %}
+                <div id="username-error" class="help-block auth-error" role="alert">
+                  {% for error in username_errors %}
+                  {{ error }}{% if not loop.last %}<br>{% endif %}
+                  {% endfor %}
+                </div>
+                {% endif %}
+              </div>
+              <div class="form-group{% if password_errors %} has-error{% endif %}">
+                <label class="control-label" for="password">Пароль</label>
+                <div class="input-group">
+                  <span class="input-group-addon"><i class="fa fa-key" aria-hidden="true"></i></span>
+                  {{ form.password(size = 80, class = "form-control", autocomplete = "current-password", aria_describedby = password_desc, aria_invalid = "true" if password_errors else "false", required = true) }}
+                </div>
+                {% if password_errors %}
+                <div id="password-error" class="help-block auth-error" role="alert">
+                  {% for error in password_errors %}
+                  {{ error }}{% if not loop.last %}<br>{% endif %}
+                  {% endfor %}
+                </div>
+                {% endif %}
+              </div>
+
+              <div class="auth-actions">
+                <input class="btn btn-primary btn-block auth-submit" type="submit" value="Войти" id="login-submit">
+                {% if appbuilder.sm.auth_user_registration %}
+                <a href="{{ appbuilder.sm.get_url_for_registeruser }}" class="btn btn-block btn-default auth-secondary" data-toggle="tooltip" rel="tooltip"
+                title="Если вы еще не зарегистрированы, создайте учетную запись.">
+                  Регистрация
+                </a>
+                {% endif %}
+              </div>
+              <div id="login-submit-status" class="help-block auth-status" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+            </form>
+          </div>
+          <div class="auth-legal" role="note">
+            Несанкционированный доступ запрещен. Все попытки входа фиксируются и анализируются службой безопасности.
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block add_tail_js %}
+  {{ super() }}
+  <script nonce="{{ baselib.get_nonce() }}">
+    (function () {
+      var lockout = document.getElementById("login-lockout");
+      var lockoutSeconds = document.getElementById("login-lockout-seconds");
+      var formWrapper = document.getElementById("login-form-wrapper");
+      var form = document.getElementById("login-form");
+      var status = document.getElementById("login-submit-status");
+      var submit = document.getElementById("login-submit");
+      if (lockout && lockoutSeconds) {
+        var remaining = parseInt(
+          lockoutSeconds.getAttribute("data-seconds") || lockoutSeconds.textContent || "0",
+          10
+        );
+        if (!isNaN(remaining) && remaining >= 0) {
+          var tick = function () {
+            lockoutSeconds.textContent = String(remaining);
+            if (remaining <= 0) {
+              if (formWrapper) {
+                formWrapper.hidden = false;
+              }
+              if (lockout) {
+                lockout.hidden = true;
+              }
+              var userInput = document.getElementById("username");
+              if (userInput) {
+                userInput.focus();
+              }
+              return;
+            }
+            remaining -= 1;
+            window.setTimeout(tick, 1000);
+          };
+          tick();
+        }
+      }
+      if (!form) {
+        return;
+      }
+      form.addEventListener("submit", function () {
+        if (submit) {
+          submit.disabled = true;
+          submit.value = "Проверяем...";
+        }
+        if (status) {
+          status.hidden = false;
+          status.textContent = "Проверка учетных данных. Пожалуйста, подождите.";
+        }
+      });
+    })();
+  </script>
+{% endblock %}

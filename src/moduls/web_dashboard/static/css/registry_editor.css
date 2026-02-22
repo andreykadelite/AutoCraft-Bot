@@ -1,0 +1,283 @@
+﻿.reg-warning {
+  border-left: 4px solid var(--danger);
+  background: #ffeef0;
+}
+
+.reg-transfer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.reg-transfer-note {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.reg-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.reg-progress-bar {
+  width: 120px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  overflow: hidden;
+  position: relative;
+}
+
+.reg-progress-bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+
+.reg-progress-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+  animation: reg-progress 1.2s infinite;
+  opacity: 0.5;
+}
+
+@keyframes reg-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.reg-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reg-label {
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reg-nav-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reg-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.reg-breadcrumb {
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  padding: 0;
+}
+
+.reg-breadcrumb-divider {
+  color: var(--muted);
+}
+
+.reg-grid {
+  grid-template-columns: minmax(280px, 0.9fr) minmax(380px, 1.6fr);
+}
+
+.reg-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reg-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reg-tree {
+  margin-top: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  padding: 10px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.reg-tree ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.reg-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+}
+
+.reg-tree-toggle {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.reg-tree-toggle[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.reg-tree-label {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.reg-tree-node.selected .reg-tree-label {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.reg-values-footer {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.reg-value-row.selected {
+  background: #eef2ff;
+}
+
+.reg-search {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reg-search-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.reg-search-results {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reg-search-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reg-search-item button {
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.reg-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.reg-modal[hidden] {
+  display: none;
+}
+
+.reg-modal-content {
+  background: var(--surface);
+  padding: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  width: min(520px, 90vw);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.reg-modal-content textarea,
+.reg-modal-content input,
+.reg-modal-content select {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+}
+
+.reg-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.reg-value-help {
+  font-size: 12px;
+}
+
+.reg-status-success {
+  color: var(--accent);
+}
+
+.reg-status-error {
+  color: var(--danger);
+}
+
+.reg-status-warning {
+  color: var(--warning);
+}
+
+@media (max-width: 980px) {
+  .reg-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,633 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Статус AutoCraft</h1>
+    <p class="muted">Состояние бота, подключение к Telegram API и процессы на хосте.</p>
+  </div>
+  <div class="badge" aria-label="Последнее обновление">Обновлено: <span data-ac-updated>{{ status.updated_at }}</span></div>
+</div>
+
+<div class="tiles" role="list">
+  <div class="tile" role="listitem">
+    <div class="tile-title">Состояние</div>
+    <div class="tile-value"><span class="status-chip" data-ac-state>Загрузка...</span></div>
+    <div class="tile-sub" data-ac-state-sub>—</div>
+  </div>
+  <div class="tile" role="listitem">
+    <div class="tile-title">Процесс</div>
+    <div class="tile-value" data-ac-proc-name>—</div>
+    <div class="tile-sub">PID: <span data-ac-proc-pid>—</span></div>
+  </div>
+  <div class="tile" role="listitem">
+    <div class="tile-title">ЦП</div>
+    <div class="tile-value" data-ac-proc-cpu>—</div>
+    <div class="tile-sub">Потоки: <span data-ac-proc-threads>—</span></div>
+  </div>
+  <div class="tile" role="listitem">
+    <div class="tile-title">ОЗУ (RSS)</div>
+    <div class="tile-value" data-ac-proc-mem>—</div>
+    <div class="tile-sub">Доля: <span data-ac-proc-mem-pct>—</span></div>
+  </div>
+  <div class="tile" role="listitem">
+    <div class="tile-title">Аптайм</div>
+    <div class="tile-value" data-ac-proc-uptime>—</div>
+    <div class="tile-sub">Запуск: <span data-ac-proc-started>—</span></div>
+  </div>
+  <div class="tile" role="listitem">
+    <div class="tile-title">Подключение</div>
+    <div class="tile-value" data-ac-conn-mode>—</div>
+    <div class="tile-sub" data-ac-conn-server>—</div>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="proc-title">
+    <h3 id="proc-title">Основной процесс AutoCraft</h3>
+    <dl class="info-list">
+      <div>
+        <dt>PID</dt>
+        <dd data-ac-detail-pid>—</dd>
+      </div>
+      <div>
+        <dt>Статус</dt>
+        <dd data-ac-detail-status>—</dd>
+      </div>
+      <div>
+        <dt>мя процесса</dt>
+        <dd data-ac-detail-name>—</dd>
+      </div>
+      <div>
+        <dt>сполняемый файл</dt>
+        <dd data-ac-detail-exe>—</dd>
+      </div>
+      <div>
+        <dt>Командная строка</dt>
+        <dd data-ac-detail-cmd>—</dd>
+      </div>
+      <div>
+        <dt>Пользователь</dt>
+        <dd data-ac-detail-user>—</dd>
+      </div>
+      <div>
+        <dt>Теги процесса</dt>
+        <dd data-ac-detail-tags>—</dd>
+      </div>
+      <div>
+        <dt>Дескрипторы</dt>
+        <dd data-ac-detail-handles>—</dd>
+      </div>
+    </dl>
+  </section>
+  <section class="card" aria-labelledby="conn-title">
+    <h3 id="conn-title">Подключение и окружение</h3>
+    <dl class="info-list">
+      <div>
+        <dt>Режим подключения</dt>
+        <dd data-ac-conn-mode-full>—</dd>
+      </div>
+      <div>
+        <dt>Адрес API</dt>
+        <dd data-ac-conn-api>—</dd>
+      </div>
+      <div>
+        <dt>Сводка подключения</dt>
+        <dd data-ac-conn-summary>—</dd>
+      </div>
+      <div>
+        <dt>config.ini</dt>
+        <dd data-ac-config-path>—</dd>
+      </div>
+      <div>
+        <dt>Сигнал GUI</dt>
+        <dd data-ac-heartbeat>—</dd>
+      </div>
+      <div>
+        <dt>Авторизованных</dt>
+        <dd data-ac-auth-users>—</dd>
+      </div>
+      <div>
+        <dt>Разрешённых ID</dt>
+        <dd data-ac-allowed-ids>—</dd>
+      </div>
+      <div>
+        <dt>Цикл/поток</dt>
+        <dd data-ac-loop>—</dd>
+      </div>
+    </dl>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="proc-list-title">
+  <h3 id="proc-list-title">Процессы AutoCraft</h3>
+  <div class="table-scroll">
+    <table class="table table-compact">
+      <caption class="sr-only">Процессы AutoCraft и нагрузка</caption>
+      <thead>
+        <tr>
+          <th scope="col">PID</th>
+          <th scope="col">Процесс</th>
+          <th scope="col">Теги</th>
+          <th scope="col">ЦП, %</th>
+          <th scope="col">ОЗУ, МБ</th>
+          <th scope="col">Статус</th>
+        </tr>
+      </thead>
+      <tbody data-ac-processes>
+        <tr><td colspan="6">Нет данных</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="api-title">
+  <h3 id="api-title">Локальный Telegram Bot API</h3>
+  <div class="table-scroll">
+    <table class="table table-compact">
+      <caption class="sr-only">Список процессов telegram-bot-api</caption>
+      <thead>
+        <tr>
+          <th scope="col">PID</th>
+          <th scope="col">Процесс</th>
+          <th scope="col">ЦП, %</th>
+          <th scope="col">ОЗУ, МБ</th>
+          <th scope="col">Статус</th>
+        </tr>
+      </thead>
+      <tbody data-ac-api-processes>
+        <tr><td colspan="5">Нет данных</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="tg-users-title">
+  <div class="page-header" style="margin-bottom: 8px;">
+    <div>
+      <h3 id="tg-users-title">Активированные TG-пользователи</h3>
+      <p class="muted">Список пользователей, которые активировали бота (data/activated_users.db).</p>
+    </div>
+    <div class="badge">Всего: <span data-ac-users-count>{{ status.activated_users.count if status.activated_users else 0 }}</span></div>
+  </div>
+  <form
+    method="post"
+    action="{{ url_for('AutoCraftStatusView.clear_activated_users') }}"
+    class="filter-bar"
+    aria-label="Действия с базой пользователей"
+    data-confirm-message="Очистить базу активированных пользователей?"
+    data-confirm-danger="true"
+  >
+    {% if csrf_token is defined and csrf_token %}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% endif %}
+    <button
+      type="submit"
+      class="btn danger"
+      {% if not can_write %}disabled aria-disabled="true"{% endif %}
+      aria-label="Очистить базу активированных пользователей"
+    >
+      Очистить базу пользователей
+    </button>
+    <span class="muted" data-ac-users-db-path>{{ status.activated_users.db_path if status.activated_users else '-' }}</span>
+  </form>
+  <div class="table-scroll">
+    <table class="table table-compact">
+      <caption class="sr-only">Список активированных пользователей Telegram</caption>
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">Chat ID</th>
+          <th scope="col">Username</th>
+          <th scope="col">Имя</th>
+          <th scope="col">Язык</th>
+          <th scope="col">Бот</th>
+          <th scope="col">Первая активация</th>
+          <th scope="col">Последняя активация</th>
+          <th scope="col">Кол-во</th>
+          <th scope="col">Источник</th>
+        </tr>
+      </thead>
+      <tbody data-ac-users-body>
+        {% if status.activated_users and status.activated_users['items'] %}
+          {% for user in status.activated_users['items'] %}
+            <tr>
+              <td>{{ user.user_id if user.user_id is not none else '-' }}</td>
+              <td>{{ user.chat_id if user.chat_id is not none else '-' }}</td>
+              <td>
+                {% set username_text = (user.username|string).strip() %}
+                {% if username_text %}
+                  {% if username_text.startswith('@') %}
+                    {{ username_text }}
+                  {% else %}
+                    @{{ username_text }}
+                  {% endif %}
+                {% else %}
+                  -
+                {% endif %}
+              </td>
+              <td>{{ ((user.first_name or '') ~ ' ' ~ (user.last_name or '')).strip() or '-' }}</td>
+              <td>{{ user.language_code or '-' }}</td>
+              <td>{{ 'Да' if user.is_bot else 'Нет' }}</td>
+              <td>{{ user.activated_at or '-' }}</td>
+              <td>{{ user.last_activated_at or '-' }}</td>
+              <td>{{ user.activation_count if user.activation_count is not none else 0 }}</td>
+              <td>{{ user.last_source or '-' }}</td>
+            </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="10">Нет данных</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="logs-title">
+  <div class="page-header" style="margin-bottom: 8px;">
+    <div>
+      <h3 id="logs-title">Логи AutoCraft</h3>
+      <p class="muted">Хвосты ключевых логов (бот, команды, ошибки, плагины, вотчдог).</p>
+    </div>
+    <div class="badge">Логи обновлены: <span data-ac-logs-updated>{{ logs.updated_at }}</span></div>
+  </div>
+  <form class="filter-bar" aria-label="Параметры логов">
+    <label for="log-lines">
+      Строк на файл
+      <input id="log-lines" type="number" min="20" max="800" value="{{ logs.lines }}" data-ac-log-lines>
+    </label>
+    <button type="button" class="btn" data-ac-log-refresh>Обновить</button>
+  </form>
+  <pre class="log-block" data-ac-logs>{{ logs.combined }}</pre>
+  <details class="details-block">
+    <summary>Подключённые файлы логов</summary>
+    <div class="table-scroll">
+      <table class="table table-compact">
+        <caption class="sr-only">Файлы логов AutoCraft</caption>
+        <thead>
+          <tr>
+            <th scope="col">Лог</th>
+            <th scope="col">Путь</th>
+          </tr>
+        </thead>
+        <tbody data-ac-log-files>
+          {% for item in logs['items'] %}
+          <tr>
+            <td>{{ item.title }}</td>
+            <td>{{ item.path }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="2">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</section>
+
+<section class="card" aria-labelledby="plugins-title">
+  <h3 id="plugins-title">Плагины AutoCraft</h3>
+  <div class="table-scroll">
+    <table class="table table-compact">
+      <caption class="sr-only">Список плагинов</caption>
+      <thead>
+        <tr>
+          <th scope="col">Плагин</th>
+          <th scope="col">Версия</th>
+          <th scope="col">Статус</th>
+          <th scope="col">Описание</th>
+        </tr>
+      </thead>
+      <tbody data-ac-plugins>
+        {% for plugin in plugins['items'] %}
+        <tr>
+          <td>{{ plugin.title }}</td>
+          <td>{{ plugin.version or '-' }}</td>
+          <td>{{ 'Загружен' if plugin.loaded else 'Не загружен' }}</td>
+          <td>{{ plugin.description or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">Нет плагинов</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+  (function () {
+    const statusUrl = "{{ url_for('AutoCraftStatusView.data') }}";
+    const logsUrl = "{{ url_for('AutoCraftStatusView.logs') }}";
+    const pluginsUrl = "{{ url_for('AutoCraftStatusView.plugins') }}";
+
+    const statusEls = {
+      updated: document.querySelector("[data-ac-updated]"),
+      state: document.querySelector("[data-ac-state]"),
+      stateSub: document.querySelector("[data-ac-state-sub]"),
+      procName: document.querySelector("[data-ac-proc-name]"),
+      procPid: document.querySelector("[data-ac-proc-pid]"),
+      procCpu: document.querySelector("[data-ac-proc-cpu]"),
+      procMem: document.querySelector("[data-ac-proc-mem]"),
+      procMemPct: document.querySelector("[data-ac-proc-mem-pct]"),
+      procThreads: document.querySelector("[data-ac-proc-threads]"),
+      procUptime: document.querySelector("[data-ac-proc-uptime]"),
+      procStarted: document.querySelector("[data-ac-proc-started]"),
+      connMode: document.querySelector("[data-ac-conn-mode]"),
+      connServer: document.querySelector("[data-ac-conn-server]"),
+      detailPid: document.querySelector("[data-ac-detail-pid]"),
+      detailStatus: document.querySelector("[data-ac-detail-status]"),
+      detailName: document.querySelector("[data-ac-detail-name]"),
+      detailExe: document.querySelector("[data-ac-detail-exe]"),
+      detailCmd: document.querySelector("[data-ac-detail-cmd]"),
+      detailUser: document.querySelector("[data-ac-detail-user]"),
+      detailTags: document.querySelector("[data-ac-detail-tags]"),
+      detailHandles: document.querySelector("[data-ac-detail-handles]"),
+      connModeFull: document.querySelector("[data-ac-conn-mode-full]"),
+      connApi: document.querySelector("[data-ac-conn-api]"),
+      connSummary: document.querySelector("[data-ac-conn-summary]"),
+      configPath: document.querySelector("[data-ac-config-path]"),
+      heartbeat: document.querySelector("[data-ac-heartbeat]"),
+      authUsers: document.querySelector("[data-ac-auth-users]"),
+      allowedIds: document.querySelector("[data-ac-allowed-ids]"),
+      loopInfo: document.querySelector("[data-ac-loop]"),
+      processBody: document.querySelector("[data-ac-processes]"),
+      apiBody: document.querySelector("[data-ac-api-processes]"),
+      usersCount: document.querySelector("[data-ac-users-count]"),
+      usersDbPath: document.querySelector("[data-ac-users-db-path]"),
+      usersBody: document.querySelector("[data-ac-users-body]")
+    };
+
+    const logsEls = {
+      updated: document.querySelector("[data-ac-logs-updated]"),
+      linesInput: document.querySelector("[data-ac-log-lines]"),
+      refreshBtn: document.querySelector("[data-ac-log-refresh]"),
+      content: document.querySelector("[data-ac-logs]"),
+      filesBody: document.querySelector("[data-ac-log-files]")
+    };
+
+    const pluginsBody = document.querySelector("[data-ac-plugins]");
+
+    function escapeHtml(value) {
+      const text = value === undefined || value === null ? "" : String(value);
+      return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatMb(value) {
+      if (value === undefined || value === null) return "-";
+      return `${Number(value).toFixed(1)} МБ`;
+    }
+
+    function formatPercent(value) {
+      if (value === undefined || value === null) return "-";
+      return `${Number(value).toFixed(1)}%`;
+    }
+
+    function formatUptime(seconds) {
+      if (seconds === undefined || seconds === null) return "-";
+      const total = Math.max(Math.floor(Number(seconds)), 0);
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const sec = total % 60;
+      const parts = [];
+      if (days) parts.push(`${days} д`);
+      if (hours) parts.push(`${hours} ч`);
+      if (minutes) parts.push(`${minutes} мин`);
+      if (!parts.length) parts.push(`${sec} сек`);
+      return parts.join(" ");
+    }
+
+    function setChip(target, text, state) {
+      if (!target) return;
+      target.textContent = text || "-";
+      target.classList.remove("ok", "warn", "bad");
+      if (state) {
+        target.classList.add(state);
+      }
+    }
+
+    const tagMap = {
+      "watchdog": "вотчдог",
+      "api-watchdog": "api-вотчдог",
+      "child": "дочерний",
+      "telegram-bot-api": "telegram-bot-api",
+      "панель": "панель"
+    };
+
+    function formatTags(tags) {
+      if (!Array.isArray(tags)) return "";
+      return tags.map((tag) => tagMap[tag] || tag).join(", ");
+    }
+
+    function renderProcessRows(items, emptyCols) {
+      if (!items || !items.length) {
+        return `<tr><td colspan="${emptyCols}">Нет данных</td></tr>`;
+      }
+      return items
+        .map((item) => {
+          const tags = formatTags(item.tags);
+          const cpu = item.cpu_percent !== null && item.cpu_percent !== undefined ? Number(item.cpu_percent).toFixed(1) : "-";
+          const mem = item.memory_rss_mb !== null && item.memory_rss_mb !== undefined ? Number(item.memory_rss_mb).toFixed(1) : "-";
+          return `
+            <tr>
+              <td>${escapeHtml(item.pid)}</td>
+              <td>${escapeHtml(item.name || "-")}</td>
+              <td>${escapeHtml(tags || "-")}</td>
+              <td>${escapeHtml(cpu)}</td>
+              <td>${escapeHtml(mem)}</td>
+              <td>${escapeHtml(item.status || "-")}</td>
+            </tr>
+          `;
+        })
+        .join("");
+    }
+
+    function renderActivatedUsersRows(items) {
+      if (!items || !items.length) {
+        return "<tr><td colspan=\"10\">Нет данных</td></tr>";
+      }
+      return items
+        .map((item) => {
+          const username = item.username
+            ? (String(item.username).startsWith("@") ? String(item.username) : `@${item.username}`)
+            : "-";
+          const name = `${item.first_name || ""} ${item.last_name || ""}`.trim() || "-";
+          return `
+            <tr>
+              <td>${escapeHtml(item.user_id ?? "-")}</td>
+              <td>${escapeHtml(item.chat_id ?? "-")}</td>
+              <td>${escapeHtml(username)}</td>
+              <td>${escapeHtml(name)}</td>
+              <td>${escapeHtml(item.language_code || "-")}</td>
+              <td>${item.is_bot ? "Да" : "Нет"}</td>
+              <td>${escapeHtml(item.activated_at || "-")}</td>
+              <td>${escapeHtml(item.last_activated_at || "-")}</td>
+              <td>${escapeHtml(item.activation_count ?? 0)}</td>
+              <td>${escapeHtml(item.last_source || "-")}</td>
+            </tr>
+          `;
+        })
+        .join("");
+    }
+
+    function updateStatus(data) {
+      if (!data) return;
+      if (statusEls.updated) statusEls.updated.textContent = data.updated_at || "-";
+
+      const running = !!data.running;
+      setChip(statusEls.state, running ? "Запущен" : "Не запущен", running ? "ok" : "bad");
+      if (statusEls.stateSub) {
+        statusEls.stateSub.textContent = running ? "AutoCraft активен" : "Процесс не найден";
+      }
+
+      const primary = data.primary || {};
+      const conn = data.connection || {};
+      const runtime = data.runtime || {};
+      const heartbeat = data.heartbeat || {};
+
+      if (statusEls.procName) statusEls.procName.textContent = primary.name || "-";
+      if (statusEls.procPid) statusEls.procPid.textContent = primary.pid || "-";
+      if (statusEls.procCpu) statusEls.procCpu.textContent = formatPercent(primary.cpu_percent);
+      if (statusEls.procThreads) statusEls.procThreads.textContent = primary.threads || "-";
+      if (statusEls.procMem) statusEls.procMem.textContent = formatMb(primary.memory_rss_mb);
+      if (statusEls.procMemPct) statusEls.procMemPct.textContent = formatPercent(primary.memory_percent);
+      if (statusEls.procUptime) statusEls.procUptime.textContent = formatUptime(primary.uptime_sec);
+      if (statusEls.procStarted) {
+        statusEls.procStarted.textContent = primary.create_time ? new Date(primary.create_time * 1000).toLocaleString("ru-RU") : "-";
+      }
+
+      if (statusEls.connMode) statusEls.connMode.textContent = conn.mode || "-";
+      if (statusEls.connServer) statusEls.connServer.textContent = conn.api_server || "—";
+
+      if (statusEls.detailPid) statusEls.detailPid.textContent = primary.pid || "-";
+      if (statusEls.detailStatus) statusEls.detailStatus.textContent = primary.status || "-";
+      if (statusEls.detailName) statusEls.detailName.textContent = primary.name || "-";
+      if (statusEls.detailExe) statusEls.detailExe.textContent = primary.exe || "-";
+      if (statusEls.detailCmd) statusEls.detailCmd.textContent = (primary.cmdline || []).join(" ") || "-";
+      if (statusEls.detailUser) statusEls.detailUser.textContent = primary.username || "-";
+      if (statusEls.detailTags) statusEls.detailTags.textContent = formatTags(primary.tags) || "-";
+      if (statusEls.detailHandles) {
+        const handles = primary.handles;
+        statusEls.detailHandles.textContent = handles !== null && handles !== undefined ? handles : "-";
+      }
+
+      if (statusEls.connModeFull) statusEls.connModeFull.textContent = conn.mode || "-";
+      if (statusEls.connApi) statusEls.connApi.textContent = conn.api_server || "—";
+      if (statusEls.connSummary) statusEls.connSummary.textContent = runtime.connection_summary || "—";
+      if (statusEls.configPath) statusEls.configPath.textContent = data.config_path || "-";
+      if (statusEls.heartbeat) {
+        const hb = heartbeat.status ? `${heartbeat.status} (${heartbeat.age_sec ?? "-" } сек)` : "-";
+        statusEls.heartbeat.textContent = hb;
+      }
+      if (statusEls.authUsers) statusEls.authUsers.textContent = runtime.authorized_users ?? "-";
+      if (statusEls.allowedIds) statusEls.allowedIds.textContent = runtime.allowed_accounts ?? "-";
+      if (statusEls.loopInfo) {
+        statusEls.loopInfo.textContent = `${runtime.loop_running ? "цикл OK" : "цикл нет"} / ${runtime.bot_thread_alive ? "поток OK" : "поток нет"}`;
+      }
+
+      const activatedUsers = data.activated_users || {};
+      if (statusEls.usersCount) {
+        const count = activatedUsers.count;
+        statusEls.usersCount.textContent = count !== null && count !== undefined ? count : 0;
+      }
+      if (statusEls.usersDbPath) {
+        statusEls.usersDbPath.textContent = activatedUsers.db_path || "-";
+      }
+      if (statusEls.usersBody) {
+        statusEls.usersBody.innerHTML = renderActivatedUsersRows(activatedUsers.items || []);
+      }
+
+      if (statusEls.processBody) {
+        statusEls.processBody.innerHTML = renderProcessRows(data.processes || [], 6);
+      }
+      if (statusEls.apiBody) {
+        statusEls.apiBody.innerHTML = renderProcessRows(data.api_processes || [], 5);
+      }
+    }
+
+    function updateLogs(data) {
+      if (!data) return;
+      if (logsEls.updated) logsEls.updated.textContent = data.updated_at || "-";
+      if (logsEls.content) logsEls.content.textContent = data.combined || "";
+      if (logsEls.filesBody) {
+        const rows = (data.items || []).map((item) => `
+          <tr>
+            <td>${escapeHtml(item.title || "-")}</td>
+            <td>${escapeHtml(item.path || "-")}</td>
+          </tr>
+        `).join("");
+        logsEls.filesBody.innerHTML = rows || "<tr><td colspan=\"2\">Нет данных</td></tr>";
+      }
+    }
+
+    function updatePlugins(data) {
+      if (!pluginsBody || !data) return;
+      const items = data.items || [];
+      if (!items.length) {
+        pluginsBody.innerHTML = "<tr><td colspan=\"4\">Нет плагинов</td></tr>";
+        return;
+      }
+      pluginsBody.innerHTML = items.map((plugin) => `
+        <tr>
+          <td>${escapeHtml(plugin.title || plugin.name || "-")}</td>
+          <td>${escapeHtml(plugin.version || "-")}</td>
+          <td>${plugin.loaded ? "Загружен" : "Не загружен"}</td>
+          <td>${escapeHtml(plugin.description || "-")}</td>
+        </tr>
+      `).join("");
+    }
+
+    function fetchStatus() {
+      fetch(statusUrl, { credentials: "same-origin" })
+        .then((resp) => resp.json())
+        .then(updateStatus)
+        .catch(() => {});
+    }
+
+    function fetchLogs() {
+      const lines = logsEls.linesInput ? Number(logsEls.linesInput.value) || 140 : 140;
+      fetch(`${logsUrl}?lines=${lines}`, { credentials: "same-origin" })
+        .then((resp) => resp.json())
+        .then(updateLogs)
+        .catch(() => {});
+    }
+
+    function fetchPlugins() {
+      fetch(pluginsUrl, { credentials: "same-origin" })
+        .then((resp) => resp.json())
+        .then(updatePlugins)
+        .catch(() => {});
+    }
+
+    updateStatus({{ status | tojson }});
+    updateLogs({{ logs | tojson }});
+    updatePlugins({{ plugins | tojson }});
+
+    fetchStatus();
+    fetchLogs();
+    fetchPlugins();
+
+    const statusTimer = window.setInterval(fetchStatus, 3000);
+    const logTimer = window.setInterval(fetchLogs, 7000);
+    const pluginTimer = window.setInterval(fetchPlugins, 30000);
+
+    if (logsEls.refreshBtn) {
+      logsEls.refreshBtn.addEventListener("click", fetchLogs);
+    }
+    if (logsEls.linesInput) {
+      logsEls.linesInput.addEventListener("change", fetchLogs);
+    }
+
+    window.addEventListener("beforeunload", () => {
+      window.clearInterval(statusTimer);
+      window.clearInterval(logTimer);
+      window.clearInterval(pluginTimer);
+    });
+  })();
+</script>
+{% endblock %}

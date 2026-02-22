@@ -8,6 +8,8 @@ qasync
 aiogram==2.25.1
 aiohttp<3.10
 magic-filter==1.0.12
+fastapi==0.110.0
+uvicorn[standard]==0.23.2
 psutil==5.9.5
 speedtest-cli
 pyautogui

@@ -1,0 +1,220 @@
+﻿{% extends "panel_base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/registry_editor.css') }}">
+{% endblock %}
+
+{% block panel_content %}
+<a class="skip-link" href="#reg-values-table">Перейти к значениям</a>
+
+<div class="page-header">
+  <div>
+    <h1>Редактор реестра</h1>
+    <p class="muted">
+      Управление ключами и значениями Windows Registry: просмотр, создание, редактирование и удаление.
+    </p>
+  </div>
+  <div class="badge" id="reg-status" aria-live="polite">Готово</div>
+</div>
+
+<div class="card alert-card reg-warning" role="alert">
+  <h3>Внимание</h3>
+  <p class="muted">
+    Неправильные изменения в реестре могут нарушить работу системы. Перед изменениями рекомендуется
+    экспортировать ветку или создать резервную копию.
+  </p>
+</div>
+
+{% if not registry_available %}
+<div class="card alert-card" role="alert">
+  <h3>Реестр недоступен</h3>
+  <p class="muted">{{ registry_message }}</p>
+</div>
+{% endif %}
+
+{% if registry_available and not can_write %}
+<div class="card alert-card reg-readonly" role="status">
+  <h3>Только просмотр</h3>
+  <p class="muted">Роль пользователя не позволяет изменять ключи и значения реестра.</p>
+</div>
+{% endif %}
+
+<section class="card reg-transfer-card" aria-labelledby="reg-transfer-title">
+  <div class="reg-card-header">
+    <h3 id="reg-transfer-title">Экспорт и импорт</h3>
+    <div class="reg-card-actions">
+      <div class="reg-progress" id="reg-export-progress" hidden>
+        <div class="reg-progress-bar">
+          <span id="reg-export-progress-bar"></span>
+        </div>
+        <span id="reg-export-progress-text">0%</span>
+      </div>
+    </div>
+  </div>
+  <div class="reg-transfer">
+    <button class="btn" type="button" id="reg-export-branch">Экспортировать выбранную ветку</button>
+    <button class="btn" type="button" id="reg-export-all">Экспортировать весь реестр</button>
+    <button class="btn" type="button" id="reg-import" data-write-action>Импортировать .reg</button>
+  </div>
+  <p class="muted reg-transfer-note">
+    Экспорт полного реестра может занять время и создать большой файл. Импорт доступен только администраторам.
+  </p>
+  <input id="reg-import-input" class="sr-only" type="file" accept=".reg" aria-hidden="true">
+</section>
+
+<section class="card reg-nav-card" aria-labelledby="reg-nav-title">
+  <h3 id="reg-nav-title">Навигация</h3>
+  <div class="reg-nav">
+    <label class="reg-label" for="reg-path-input">Путь</label>
+    <input id="reg-path-input" type="text" autocomplete="off" spellcheck="false">
+    <div class="reg-nav-actions">
+      <button class="btn" type="button" id="reg-go">Перейти</button>
+      <button class="btn" type="button" id="reg-up">Вверх</button>
+      <button class="btn" type="button" id="reg-root">Корни</button>
+      <button class="btn" type="button" id="reg-refresh">Обновить</button>
+      <button class="btn" type="button" id="reg-copy">Копировать путь</button>
+    </div>
+    <label class="reg-label" for="reg-view">Представление</label>
+    <select id="reg-view">
+      <option value="default">По умолчанию</option>
+      <option value="64">64-бит</option>
+      <option value="32">32-бит</option>
+    </select>
+    <div class="reg-breadcrumbs" id="reg-breadcrumbs" role="navigation" aria-label="Навигация по ключам"></div>
+  </div>
+</section>
+
+<div class="grid reg-grid">
+  <section class="card reg-tree-card" aria-labelledby="reg-tree-title">
+    <div class="reg-card-header">
+      <h3 id="reg-tree-title">Ключи</h3>
+      <div class="reg-card-actions">
+        <button class="btn" type="button" id="reg-new-key" data-write-action>Новый ключ</button>
+        <button class="btn" type="button" id="reg-rename-key" data-write-action>Переименовать</button>
+        <button class="btn danger" type="button" id="reg-delete-key" data-write-action>Удалить</button>
+      </div>
+    </div>
+    <div class="reg-tree" id="reg-tree" role="tree" aria-label="Дерево ключей"></div>
+  </section>
+
+  <section class="card reg-values-card" aria-labelledby="reg-values-title">
+    <div class="reg-card-header">
+      <h3 id="reg-values-title">Значения</h3>
+      <div class="reg-card-actions">
+        <button class="btn" type="button" id="reg-new-value" data-write-action>Новое значение</button>
+        <button class="btn" type="button" id="reg-edit-value" data-write-action>Изменить</button>
+        <button class="btn danger" type="button" id="reg-delete-value" data-write-action>Удалить</button>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="table table-compact" id="reg-values-table">
+        <caption class="sr-only">Список значений реестра</caption>
+        <thead>
+          <tr>
+            <th scope="col">Имя</th>
+            <th scope="col">Тип</th>
+            <th scope="col">Данные</th>
+          </tr>
+        </thead>
+        <tbody id="reg-values-body">
+          <tr>
+            <td colspan="3">Загрузка...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="reg-values-footer">
+      <span class="muted" id="reg-value-hint">Выберите значение для просмотра или редактирования.</span>
+    </div>
+  </section>
+</div>
+
+<section class="card reg-search-card" aria-labelledby="reg-search-title">
+  <div class="reg-card-header">
+    <h3 id="reg-search-title">Поиск</h3>
+  </div>
+  <div class="reg-search">
+    <label class="reg-label" for="reg-search-query">Запрос</label>
+    <input id="reg-search-query" type="text" autocomplete="off">
+    <div class="reg-search-options">
+      <label><input type="checkbox" id="reg-search-keys" checked>Ключи</label>
+      <label><input type="checkbox" id="reg-search-values" checked>Значения</label>
+      <label><input type="checkbox" id="reg-search-data">Данные</label>
+      <label>
+        Глубина
+        <input type="number" id="reg-search-depth" min="1" max="12" value="4">
+      </label>
+      <button class="btn" type="button" id="reg-search-button">Найти</button>
+    </div>
+    <div class="reg-search-results" id="reg-search-results" aria-live="polite"></div>
+  </div>
+</section>
+
+<div class="reg-modal" id="reg-modal-key" role="dialog" aria-modal="true" aria-labelledby="reg-modal-key-title" hidden>
+  <div class="reg-modal-content">
+    <h3 id="reg-modal-key-title">Новый ключ</h3>
+    <label class="reg-label" for="reg-key-name">Имя ключа</label>
+    <input id="reg-key-name" type="text" autocomplete="off">
+    <div class="reg-modal-actions">
+      <button class="btn" type="button" data-modal-close>Отмена</button>
+      <button class="btn-primary" type="button" id="reg-key-confirm">Создать</button>
+    </div>
+  </div>
+</div>
+
+<div class="reg-modal" id="reg-modal-rename" role="dialog" aria-modal="true" aria-labelledby="reg-modal-rename-title" hidden>
+  <div class="reg-modal-content">
+    <h3 id="reg-modal-rename-title">Переименовать ключ</h3>
+    <label class="reg-label" for="reg-rename-name">Новое имя</label>
+    <input id="reg-rename-name" type="text" autocomplete="off">
+    <div class="reg-modal-actions">
+      <button class="btn" type="button" data-modal-close>Отмена</button>
+      <button class="btn-primary" type="button" id="reg-rename-confirm">Переименовать</button>
+    </div>
+  </div>
+</div>
+
+<div class="reg-modal" id="reg-modal-value" role="dialog" aria-modal="true" aria-labelledby="reg-modal-value-title" hidden>
+  <div class="reg-modal-content">
+    <h3 id="reg-modal-value-title">Значение реестра</h3>
+    <label class="reg-label" for="reg-value-name">Имя значения</label>
+    <input id="reg-value-name" type="text" autocomplete="off">
+    <label class="reg-label" for="reg-value-type">Тип</label>
+    <select id="reg-value-type"></select>
+    <label class="reg-label" for="reg-value-data">Данные</label>
+    <textarea id="reg-value-data" rows="5" spellcheck="false"></textarea>
+    <p class="muted reg-value-help" id="reg-value-help"></p>
+    <div class="reg-modal-actions">
+      <button class="btn" type="button" data-modal-close>Отмена</button>
+      <button class="btn-primary" type="button" id="reg-value-confirm">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.registryConfig = {
+    available: {{ (registry_available or False) | tojson }},
+    message: {{ (registry_message or '') | tojson }},
+    canWrite: {{ (can_write or False) | tojson }},
+    defaultView: {{ (default_view or 'default') | tojson }},
+    defaultRoot: {{ (default_root or '') | tojson }},
+    roots: {{ (registry_roots or []) | tojson }},
+    types: {{ (registry_types or []) | tojson }},
+    keyUrl: "{{ url_for('RegistryEditorView.api_key') }}",
+    valueUrl: "{{ url_for('RegistryEditorView.api_value') }}",
+    searchUrl: "{{ url_for('RegistryEditorView.api_search') }}",
+    exportUrl: "{{ url_for('RegistryEditorView.api_export') }}",
+    exportFullStartUrl: "{{ url_for('RegistryEditorView.api_export_full_start') }}",
+    exportFullStatusUrl: "{{ url_for('RegistryEditorView.api_export_full_status', task_id='__TASK__') }}",
+    importUrl: "{{ url_for('RegistryEditorView.api_import') }}",
+    keyCreateUrl: "{{ url_for('RegistryEditorView.api_key_create') }}",
+    keyDeleteUrl: "{{ url_for('RegistryEditorView.api_key_delete') }}",
+    keyRenameUrl: "{{ url_for('RegistryEditorView.api_key_rename') }}",
+    valueSetUrl: "{{ url_for('RegistryEditorView.api_value_set') }}",
+    valueDeleteUrl: "{{ url_for('RegistryEditorView.api_value_delete') }}",
+    csrfToken: {{ (csrf_token() if csrf_token is defined and csrf_token else '') | tojson }},
+  };
+</script>
+<script src="{{ url_for('static', filename='js/registry_editor.js') }}"></script>
+{% endblock %}

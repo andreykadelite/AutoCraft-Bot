@@ -1,0 +1,250 @@
+{% extends "appbuilder/base.html" %}
+{% import "appbuilder/baselib.html" as baselib %}
+
+{% block content %}
+<div class="wac-container comm-center" role="main">
+  <div class="page-header">
+    <div>
+      <h1>Центр коммуникаций</h1>
+      <p class="muted">Скоро в центре коммуникаций появятся голосовые и видеозвонки через браузер.</p>
+    </div>
+    <div class="badge" aria-label="Непрочитанных сообщений: {{ unread_count }}">
+      Непрочитанные: {{ unread_count }}
+    </div>
+  </div>
+
+  <div class="grid comm-grid">
+    <section class="card comm-compose" aria-labelledby="comm-compose-title">
+      <h3 id="comm-compose-title">Новое сообщение</h3>
+      {% if not can_write %}
+        <div class="comm-empty" role="status">Режим только чтения: отправка сообщений недоступна для вашей роли.</div>
+      {% endif %}
+      <form class="form" method="post" action="{{ url_for('CommunicationCenterView.send') }}" id="comm-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="recipient_id" id="recipient-id" value="{{ recipient_id }}">
+
+        <label for="recipient-search">Получатель</label>
+        <input
+          id="recipient-search"
+          type="search"
+          placeholder="Поиск по имени, фамилии, логину или роли"
+          aria-describedby="recipient-help recipient-selected recipient-status"
+          aria-controls="recipient-results"
+          {% if not can_write %}disabled aria-disabled="true"{% endif %}
+        >
+        <div class="comm-recipient-selected" id="recipient-selected" role="status" aria-live="polite">
+          {% if recipient_label %}
+            Выбран: {{ recipient_label }}
+          {% else %}
+            Получатель не выбран
+          {% endif %}
+        </div>
+        <div class="comm-recipient-actions">
+          <button type="button" class="btn" id="recipient-show-all" {% if not can_write %}disabled aria-disabled="true"{% endif %}>Показать всех</button>
+          <button type="button" class="btn" id="recipient-clear"{% if not recipient_label or not can_write %} disabled{% endif %}{% if not can_write %} aria-disabled="true"{% endif %}>Сменить</button>
+        </div>
+        <div id="recipient-help" class="muted comm-hint">
+          Поиск выполняется по имени, фамилии, логину и роли. Нажмите «Показать всех», чтобы открыть список.
+        </div>
+        <div id="recipient-status" class="comm-hint" role="status" aria-live="polite"></div>
+        <ul id="recipient-results" class="comm-recipient-results" role="list" aria-label="Список пользователей"></ul>
+
+        <label for="subject">Тема</label>
+        <input id="subject" name="subject" type="text" maxlength="200" value="{{ subject }}" {% if not can_write %}disabled aria-disabled="true"{% endif %}>
+
+        <label for="body">Сообщение</label>
+        <textarea id="body" name="body" rows="8" maxlength="4000" required {% if not can_write %}disabled aria-disabled="true"{% endif %}>{{ body }}</textarea>
+
+        <div class="comm-actions">
+          <button type="submit" class="btn-primary" {% if not can_write %}disabled aria-disabled="true"{% endif %}>Отправить</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card comm-inbox" aria-labelledby="comm-messages-title">
+      <div class="comm-header">
+        <h3 id="comm-messages-title">Сообщения</h3>
+        <div class="comm-tabs" role="tablist">
+          <a class="comm-tab{% if box == 'inbox' %} active{% endif %}" href="{{ url_for('CommunicationCenterView.list', box='inbox') }}" role="tab" aria-selected="{{ 'true' if box == 'inbox' else 'false' }}">
+            Входящие <span class="comm-count">{{ inbox_count }}</span>
+          </a>
+          <a class="comm-tab{% if box == 'sent' %} active{% endif %}" href="{{ url_for('CommunicationCenterView.list', box='sent') }}" role="tab" aria-selected="{{ 'true' if box == 'sent' else 'false' }}">
+            Отправленные <span class="comm-count">{{ sent_count }}</span>
+          </a>
+        </div>
+      </div>
+
+      {% if messages %}
+        <ul class="comm-list" role="list">
+          {% for msg in messages %}
+            <li class="comm-item{% if msg.is_unread %} unread{% endif %}">
+              <div class="comm-item-head">
+                <div class="comm-meta">
+                  <span class="comm-meta-label">{% if box == 'inbox' %}От{% else %}Кому{% endif %}:</span>
+                  <span class="comm-meta-value">{{ msg.other_user }}</span>
+                  {% if msg.other_roles %}
+                    <span class="comm-roles">({{ msg.other_roles }})</span>
+                  {% endif %}
+                </div>
+                <span class="comm-date">{{ msg.created_at }}</span>
+              </div>
+              <div class="comm-subject">
+                {% if msg.is_unread %}
+                  <span class="comm-unread">Новое</span>
+                {% endif %}
+                {{ msg.subject }}
+              </div>
+              <p class="comm-preview">{{ msg.preview }}</p>
+              <div class="comm-actions-row">
+                <a class="btn" href="{{ url_for('CommunicationCenterView.view', message_id=msg.id, box=box) }}">Открыть</a>
+                {% if can_write %}
+                <form method="post" action="{{ url_for('CommunicationCenterView.delete', message_id=msg.id) }}" class="comm-delete-form" data-confirm-message="Удалить это сообщение?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="box" value="{{ box }}">
+                  <button type="submit" class="btn danger">Удалить</button>
+                </form>
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="comm-empty">Сообщений в выбранном разделе пока нет.</div>
+      {% endif %}
+
+      {% if total > page_size %}
+        <div class="comm-pagination" aria-label="Навигация по страницам">
+          {% if page > 0 %}
+            <a class="btn" href="{{ url_for('CommunicationCenterView.list', box=box, page=page-1, page_size=page_size) }}">Назад</a>
+          {% endif %}
+          <span class="comm-page-info">Страница {{ page + 1 }} из {{ (total + page_size - 1) // page_size }}</span>
+          {% if (page + 1) * page_size < total %}
+            <a class="btn" href="{{ url_for('CommunicationCenterView.list', box=box, page=page+1, page_size=page_size) }}">Вперёд</a>
+          {% endif %}
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block add_tail_js %}
+  {{ super() }}
+  <script nonce="{{ baselib.get_nonce() }}">
+    (function () {
+      var resultsBox = document.getElementById("recipient-results");
+      var statusBox = document.getElementById("recipient-status");
+      var searchInput = document.getElementById("recipient-search");
+      var showAllBtn = document.getElementById("recipient-show-all");
+      var clearBtn = document.getElementById("recipient-clear");
+      var recipientId = document.getElementById("recipient-id");
+      var selectedBox = document.getElementById("recipient-selected");
+      var searchTimeout = null;
+      var baseUrl = "{{ url_for('CommunicationCenterView.users') }}";
+      var selectedLabel = "{{ recipient_label|e }}";
+
+      function setSelected(id, label) {
+        recipientId.value = id || "";
+        selectedBox.textContent = id ? ("Выбран: " + label) : "Получатель не выбран";
+        if (clearBtn) {
+          clearBtn.disabled = !id;
+        }
+        if (resultsBox) {
+          resultsBox.innerHTML = "";
+        }
+        if (statusBox) {
+          statusBox.textContent = "";
+        }
+      }
+
+      function renderResults(items, total, truncated) {
+        if (!resultsBox) {
+          return;
+        }
+        resultsBox.innerHTML = "";
+        if (statusBox) {
+          if (!items || !items.length) {
+            statusBox.textContent = "Пользователи не найдены.";
+          } else if (truncated) {
+            statusBox.textContent = "Показаны первые " + items.length + " пользователей.";
+          } else {
+            statusBox.textContent = "Найдено пользователей: " + items.length + ".";
+          }
+        }
+        if (!items || !items.length) {
+          return;
+        }
+        items.forEach(function (item) {
+          var li = document.createElement("li");
+          var btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "comm-result";
+          btn.setAttribute("data-id", item.id);
+          btn.textContent = item.label;
+          btn.setAttribute("aria-label", item.label);
+          btn.addEventListener("click", function () {
+            setSelected(item.id, item.label);
+          });
+          li.appendChild(btn);
+          resultsBox.appendChild(li);
+        });
+      }
+
+      function fetchUsers(query, showAll) {
+        var params = new URLSearchParams();
+        if (query) {
+          params.append("q", query);
+        }
+        if (showAll) {
+          params.append("all", "1");
+          params.append("limit", "0");
+        }
+        var url = baseUrl + (params.toString() ? ("?" + params.toString()) : "");
+        fetch(url, { headers: { "Accept": "application/json" }, credentials: "same-origin" })
+          .then(function (resp) { return resp.json(); })
+          .then(function (data) { renderResults(data.items || [], data.total || 0, !!data.truncated); })
+          .catch(function () { renderResults([]); });
+      }
+
+      if (selectedLabel) {
+        setSelected(recipientId.value, selectedLabel);
+      }
+
+      if (searchInput) {
+        searchInput.addEventListener("input", function () {
+          var value = searchInput.value.trim();
+          if (searchTimeout) {
+            clearTimeout(searchTimeout);
+          }
+          searchTimeout = setTimeout(function () {
+            if (value.length < 2) {
+              if (resultsBox) {
+                resultsBox.innerHTML = "";
+              }
+              if (statusBox) {
+                statusBox.textContent = "";
+              }
+              return;
+            }
+            fetchUsers(value, false);
+          }, 250);
+        });
+      }
+
+      if (showAllBtn) {
+        showAllBtn.addEventListener("click", function () {
+          fetchUsers("", true);
+        });
+      }
+
+      if (clearBtn) {
+        clearBtn.addEventListener("click", function () {
+          setSelected("", "");
+          if (searchInput) {
+            searchInput.focus();
+          }
+        });
+      }
+    })();
+  </script>
+{% endblock %}

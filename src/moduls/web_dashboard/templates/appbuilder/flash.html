@@ -1,0 +1,14 @@
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, m in messages %}
+            {% if category %}
+                <div class="alert alert-{{ category }}" role="alert" aria-live="polite">
+            {% else %}
+                <div class="alert alert-info" role="alert" aria-live="polite">
+            {% endif %}
+            <button type="button" class="close" data-dismiss="alert" aria-label="Закрыть уведомление">&times;</button>
+            {{ m }}
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}

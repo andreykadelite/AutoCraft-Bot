@@ -1,0 +1,12 @@
+{
+  "id": "notify_center",
+  "name": "Центр уведомлений",
+  "version": "1.0",
+  "description": "Отправка системных уведомлений Windows с произвольным текстом из веб-панели.",
+  "entrypoint": "plugin.py",
+  "template": "index.html",
+  "menu_label": "Уведомления",
+  "category": "Расширения",
+  "order": 20,
+  "roles": ["Admin", "Operator"]
+}

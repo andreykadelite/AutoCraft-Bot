@@ -1,0 +1,120 @@
+﻿{% extends "panel_base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ static_url }}/wintts.css">
+{% endblock %}
+
+{% block head_js %}
+  {{ super() }}
+  <script src="{{ static_url }}/wintts.js"></script>
+{% endblock %}
+
+{% block panel_content %}
+  <div
+    class="panel-card wintts-card"
+    id="wintts-root"
+    data-config-url="{{ config_url }}"
+    data-synth-url="{{ synth_url }}"
+    data-install-url="{{ install_url }}"
+    data-csrf-token="{{ csrf_token() if csrf_token is defined else '' }}"
+  >
+    <div class="wintts-header">
+      <div>
+        <h2>Win TTS</h2>
+        <p class="wintts-subtitle">Синтез речи с выбором движка и голоса. Результат можно сразу прослушать в браузере и скачать.</p>
+      </div>
+      <div class="wintts-badge">Расширение</div>
+    </div>
+
+    <div class="wintts-section">
+      <div class="wintts-grid">
+        <div class="wintts-field">
+          <label for="wintts-engine">Голосовой движок</label>
+          <select id="wintts-engine" class="wintts-select" aria-describedby="wintts-output wintts-diagnostics"></select>
+        </div>
+        <div class="wintts-field">
+          <label for="wintts-voice">Голос</label>
+          <select id="wintts-voice" class="wintts-select" aria-describedby="wintts-output wintts-diagnostics"></select>
+        </div>
+      </div>
+
+      <div class="wintts-field">
+        <label for="wintts-text">Текст для синтеза</label>
+        <textarea
+          id="wintts-text"
+          class="wintts-textarea"
+          rows="7"
+          placeholder="Введите текст на русском языке..."
+          aria-describedby="wintts-hint wintts-output wintts-diagnostics"
+          spellcheck="false"
+        ></textarea>
+      </div>
+      <p id="wintts-hint" class="wintts-hint">Горячая клавиша: Ctrl+Enter запускает синтез.</p>
+
+      <div class="wintts-actions">
+        <button id="wintts-run" class="btn-primary" type="button">Синтезировать</button>
+        <button id="wintts-clear" class="btn" type="button">Очистить текст</button>
+      </div>
+    </div>
+
+    <div class="wintts-section">
+      <div
+        class="wintts-output"
+        id="wintts-output"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >Загружаю конфигурацию...</div>
+      <noscript>
+        <div class="wintts-output is-error" role="alert">
+          Для работы плагина требуется включить JavaScript.
+        </div>
+      </noscript>
+    </div>
+
+    <div class="wintts-section">
+      <details>
+        <summary id="wintts-diagnostics-title">Диагностика и пути</summary>
+        <p id="wintts-diagnostics-hint" class="wintts-hint">
+          Здесь показываются найденные и отсутствующие зависимости (движки TTS и ffmpeg), а также проверенные пути.
+        </p>
+        <pre
+          id="wintts-diagnostics"
+          class="wintts-diagnostics"
+          role="log"
+          aria-live="polite"
+          aria-atomic="false"
+          aria-labelledby="wintts-diagnostics-title"
+          aria-describedby="wintts-diagnostics-hint"
+          tabindex="0"
+        ></pre>
+      </details>
+    </div>
+
+    <div class="wintts-section" id="wintts-audio-section" hidden>
+      <h4>Результат синтеза</h4>
+      <audio id="wintts-audio" controls preload="none"></audio>
+      <div class="wintts-actions">
+        <a id="wintts-download" class="btn-primary wintts-download" href="#" download>Скачать файл</a>
+      </div>
+    </div>
+
+    <div class="wintts-section">
+      <div class="wintts-history-header">
+        <h4 id="wintts-history-title">История запросов</h4>
+        <button id="wintts-history-clear" class="btn" type="button">Очистить историю</button>
+      </div>
+      <div class="wintts-history" id="wintts-history" role="list" aria-labelledby="wintts-history-title"></div>
+    </div>
+
+    <div class="wintts-section wintts-help">
+      <h4>Подсказки</h4>
+      <ul>
+        <li>Для длинных текстов лучше использовать Edge TTS: плагин автоматически режет текст на части и склеивает результат.</li>
+        <li>Google TTS и Edge TTS формируют MP3, `pyttsx3` формирует WAV.</li>
+        <li>Сгенерированные файлы доступны для скачивания напрямую из браузера.</li>
+      </ul>
+    </div>
+  </div>
+{% endblock %}

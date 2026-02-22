@@ -1,0 +1,51 @@
+{% extends 'appbuilder/init.html' %}
+{% import 'appbuilder/baselib.html' as baselib %}
+
+{% block body %}
+        {% include 'appbuilder/general/confirm.html' %}
+        {% include 'appbuilder/general/alert.html' %}
+
+    <a class="skip-link sr-only sr-only-focusable" href="#main-content">Перейти к содержимому</a>
+
+    {% block navbar %}
+        <header class="top" role="banner">
+        {% include 'appbuilder/navbar.html' %}
+        </header>
+    {% endblock %}
+
+    <div class="container">
+      <div class="row">
+        <main id="main-content" role="main" tabindex="-1">
+          {% block messages %}
+            {% include 'appbuilder/flash.html' %}
+            {% if current_user.is_authenticated %}
+              <div
+                id="admin-toast-stack"
+                class="admin-toast-stack"
+                data-admin-notifications-url="{{ url_for('AdminBroadcastView.poll_notifications') }}"
+                data-admin-notifications-csrf="{{ csrf_token() }}"
+                data-header-notify-url="{{ url_for('SystemNotifyCenterView.poll') }}"
+                data-header-notify-csrf="{{ csrf_token() }}"
+                aria-live="polite"
+                aria-atomic="false"
+              ></div>
+              <div id="header-notify-live" class="sr-only" data-header-notify-live role="status" aria-live="polite" aria-atomic="true"></div>
+            {% endif %}
+          {% endblock %}
+          {% block content %}
+          {% endblock %}
+        </main>
+      </div>
+    </div>
+
+    {% block footer %}
+        <footer>
+        <div class="img-rounded nav-fixed-bottom">
+            <div class="container">
+                {% include 'appbuilder/footer.html' %}
+            </div>
+        </div>
+        </footer>
+    {% endblock %}
+{% endblock %}
+

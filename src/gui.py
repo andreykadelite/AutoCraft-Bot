@@ -7,6 +7,9 @@ import configparser
 import info
 import gui_serverapi
 import collections  # <-- for recent-log de-dup window
+import importlib
+import webbrowser
+from urllib.parse import urlsplit, urlunsplit
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -565,6 +568,15 @@ class MainWindow(QMainWindow):
         # Кнопка и окно «Функции» вынесены в отдельный файл gui_win/functions_window.py
         self.functions_button = create_functions_button(self)
 
+        self.open_panel_button = QPushButton("Открыть панель")
+        self.open_panel_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.open_panel_button.setAccessibleName("Кнопка: Открыть панель")
+        self.open_panel_button.setAccessibleDescription(
+            "Открыть веб-панель AutoCraft в браузере, если панель запущена"
+        )
+        self.open_panel_button.setToolTip("Открыть веб-панель в браузере")
+        self.open_panel_button.clicked.connect(self.open_webpanel_in_browser)
+
         self.minimize_tray_button = QPushButton("Свернуть в трей")
         self.minimize_tray_button.setIcon(self.style().standardIcon(QStyle.SP_TitleBarMinButton))
         self.minimize_tray_button.setAccessibleName("Кнопка: Свернуть в трей")
@@ -583,7 +595,15 @@ class MainWindow(QMainWindow):
 
         # Адаптивная сетка вторичных кнопок: 3/2/1 колонки в зависимости от ширины окна
         self._control_buttons_grid = ResponsiveButtonGrid(
-            [self.toggle_button, self.reset_button, self.help_button, self.functions_button, self.minimize_tray_button, self.exit_button],
+            [
+                self.toggle_button,
+                self.reset_button,
+                self.help_button,
+                self.functions_button,
+                self.open_panel_button,
+                self.minimize_tray_button,
+                self.exit_button,
+            ],
             columns=3
         )
         control_layout.addWidget(self._control_buttons_grid)
@@ -820,7 +840,8 @@ class MainWindow(QMainWindow):
         self.setTabOrder(self.toggle_button, self.reset_button)
         self.setTabOrder(self.reset_button, self.help_button)
         self.setTabOrder(self.help_button, self.functions_button)
-        self.setTabOrder(self.functions_button, self.minimize_tray_button)
+        self.setTabOrder(self.functions_button, self.open_panel_button)
+        self.setTabOrder(self.open_panel_button, self.minimize_tray_button)
         self.setTabOrder(self.minimize_tray_button, self.exit_button)
         self.setTabOrder(self.exit_button, self.autorun_checkbox)
         self.setTabOrder(self.autorun_checkbox, self.start_tray_checkbox)
@@ -1105,227 +1126,98 @@ class MainWindow(QMainWindow):
 
     def restart_bot(self):
         """
-        Перезапуск бота по кнопке: выполняем ТОЧНО ТУ ЖЕ ПОСЛЕДОВАТЕЛЬНОСТЬ,
-        что и в обработчике «Полный перезапуск» из modulpsw, только
-        все логи отправляем ТОЛЬКО в GUI (а не в Telegram).
+        Перезапуск бота по кнопке: вызываем единый полный перезапуск из sys_core/full_restart.py,
+        чтобы логика была в одном месте и могла вызываться другими модулями.
         """
         try:
-            log_emitter.log_message.emit("Действие: Перезапустить бота → старт последовательности полного перезапуска (лог в GUI).")
+            log_emitter.log_message.emit("Действие: Перезапустить бота → sys_core.full_restart (полный перезапуск).")
         except Exception:
             pass
-        self.status_label.setText("Перезапуск: формирую отчёт и готовлю остановку локального API-сервера…")
-        # Запускаем последовательность в фоновом потоке, чтобы не блокировать GUI
-        worker = threading.Thread(target=self._full_restart_via_gui, daemon=True)
+        try:
+            self.status_label.setText("Перезапуск: формирую отчёт и запускаю полный перезапуск…")
+        except Exception:
+            pass
+
+        # Запускаем в фоновом потоке, чтобы не блокировать GUI
+        worker = threading.Thread(target=self._full_restart_via_sys_core, daemon=True)
         worker.start()
 
-    def _full_restart_via_gui(self):
+    def _full_restart_via_sys_core(self):
         """
-        Полный перезапуск "как в modulpsw":
-        1) Сформировать лог-отчёт (среда, пути, argv, frozen, Nuitka vars).
-        2) Мягко закрыть управляемый браузер (если есть).
-        3) Снять список живых потоков.
-        4) Вывести отчёт в GUI (у нас он уже печатается построчно).
-        5) Отключить локальный Telegram Bot API сервер (через gui_serverapi и fallback taskkill под Windows).
-        6) Вывести хвост лога в GUI.
-        7) Короткая пауза и выход с кодом 42 (сигнал вотчдогу).
+        Фоновая задача для кнопки «Перезапустить бота».
+        Запускает sys_core.full_restart.full_restart(...) и выводит лог в GUI через log_emitter.
         """
-        import time
-        import subprocess
+        import asyncio
         import traceback
-        from datetime import datetime
-        import inspect
 
-        def ts():
-            return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # На всякий случай добавим base_dir в sys.path (и для исходников, и для Nuitka EXE)
+        try:
+            base_dir = BASE_DIR
+        except Exception:
+            base_dir = os.getcwd()
 
-        def log_line(msg: str):
+        try:
+            if base_dir and base_dir not in sys.path:
+                sys.path.insert(0, base_dir)
+        except Exception:
+            pass
+
+        # Импортируем единый перезапуск
+        try:
+            from sys_core.full_restart import full_restart as _full_restart
+        except Exception:
+            # Попробуем добавить типовые пути проекта и повторить импорт
             try:
-                log_emitter.log_message.emit(f"[{ts()}] {msg}")
+                candidates = [
+                    os.path.join(base_dir, "src"),
+                    os.path.join(base_dir, "src", "moduls"),
+                    os.path.join(base_dir, "src", "gui_win"),
+                    os.path.join(base_dir, "moduls"),
+                    os.path.join(base_dir, "gui_win"),
+                ]
+                for p in candidates:
+                    if os.path.isdir(p) and p not in sys.path:
+                        sys.path.insert(0, p)
             except Exception:
-                # запасной путь
+                pass
+
+            try:
+                from sys_core.full_restart import full_restart as _full_restart
+            except Exception:
                 try:
-                    self.append_log(f"[{ts()}] {msg}")
+                    log_emitter.log_message.emit("[ОШИБКА] Не удалось импортировать sys_core.full_restart.full_restart")
+                    log_emitter.log_message.emit(traceback.format_exc())
                 except Exception:
                     pass
+                return
 
-        # 1) Заголовок и базовая среда
-        log_line("Полный перезапуск (GUI): начинаю. Сначала пришлю отчёт в GUI, затем выключу локальный API-сервер.")
+        async def _send(line: str):
+            """Отправка строк в GUI-лог через потокобезопасный PyQt-сигнал."""
+            try:
+                s = "" if line is None else str(line)
+                lines = s.splitlines() or [""]
+                for ln in lines:
+                    log_emitter.log_message.emit(ln)
+            except Exception:
+                pass
+
         try:
-            log_line(f"Рабочая папка: {BASE_DIR}")
+            asyncio.run(_full_restart(send=_send))
+        except SystemExit:
+            # Полный перезапуск штатно завершает процесс (watchdog поднимет заново)
+            raise
         except Exception:
-            log_line("Рабочая папка: <недоступна>")
-        try:
-            log_line(f"Python: {sys.executable}")
-        except Exception:
-            log_line("Python: <недоступно>")
-        try:
-            log_line(f"Аргументы: {sys.argv}")
-        except Exception:
-            log_line("Аргументы: <недоступны>")
-        try:
-            log_line(f"frozen: {getattr(sys, 'frozen', False)}")
-        except Exception:
-            pass
-        try:
-            log_line(f"NUITKA_ONEFILE_PARENT: {os.environ.get('NUITKA_ONEFILE_PARENT', '')}")
-        except Exception:
-            pass
-        try:
-            is_child = any(s in sys.argv for s in ("--child", "/child"))
-            log_line(f"child-режим (эвристика по argv): {is_child}")
-        except Exception:
-            pass
+            try:
+                log_emitter.log_message.emit("[ОШИБКА] Полный перезапуск завершился с ошибкой в GUI-потоке:")
+                log_emitter.log_message.emit(traceback.format_exc())
+            except Exception:
+                pass
+            # Фолбэк: всё равно выходим, чтобы внешний вотчдог поднял процесс
+            try:
+                os._exit(42)
+            except Exception:
+                pass
 
-        # 2) Мягко закрыть управляемый браузер
-        try:
-            import importlib
-            import asyncio
-
-            # Приоритетно берём модули из папки moduls
-            moduls_dir = os.path.join(BASE_DIR, "moduls")
-            if os.path.isdir(moduls_dir) and moduls_dir not in sys.path:
-                sys.path.insert(0, moduls_dir)
-
-            # Сначала пробуем уже загруженный модуль (важно для сохранения состояния контроллера)
-            m = sys.modules.get("nostartrunmodulbrowsrem") or sys.modules.get("moduls.nostartrunmodulbrowsrem")
-            if m is None:
-                m = importlib.import_module("nostartrunmodulbrowsrem")
-
-            ctrl = getattr(m, "CTRL", None)
-            if ctrl is None:
-                log_line("Браузер: модуль найден, но CTRL отсутствует — пропускаю закрытие.")
-            else:
-                selected = None
-                try:
-                    get_sel = getattr(ctrl, "get_selected", None)
-                    if callable(get_sel):
-                        selected = get_sel()
-                    else:
-                        selected = getattr(ctrl, "selected", None)
-                except Exception:
-                    selected = None
-
-                if selected:
-                    log_line(f"Браузер: найден выбранный контроллер '{selected}'. Пытаюсь закрыть мягко (таймаут 5с).")
-                    quit_fn = getattr(ctrl, "quit", None) or getattr(ctrl, "close", None) or getattr(ctrl, "shutdown", None)
-                    if not quit_fn:
-                        log_line("Браузер: у CTRL нет метода quit/close/shutdown — пропускаю закрытие.")
-                    else:
-                        try:
-                            # Может быть sync, может быть async — поддержим оба варианта
-                            if inspect.iscoroutinefunction(quit_fn):
-                                asyncio.run(asyncio.wait_for(quit_fn(selected), timeout=5.0))
-                            else:
-                                try:
-                                    res = quit_fn(selected, timeout=5)
-                                except TypeError:
-                                    res = quit_fn(selected)
-
-                                if inspect.isawaitable(res):
-                                    asyncio.run(asyncio.wait_for(res, timeout=5.0))
-
-                            log_line("Браузер: команда закрытия отправлена.")
-                        except Exception as e_quit:
-                            log_line(f"Браузер: ошибка при попытке закрытия: {e_quit}")
-                else:
-                    log_line("Браузер: управляемый браузер не выбран/не обнаружен — пропускаю закрытие.")
-        except ModuleNotFoundError as e:
-            log_line(f"Браузер: модуль nostartrunmodulbrowsrem не найден — пропускаю. Детали: {e}")
-        except Exception as e:
-            log_line(f"Браузер: ошибка/проблема при импорте модуля управления — пропускаю. Детали: {e}")
-        # 3) Список живых потоков
-        try:
-            ths = threading.enumerate()
-            log_line(f"Потоки живые: {len(ths)}")
-            for t in ths:
-                try:
-                    log_line(f" - {t.name} (daemon={t.daemon})")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 4) Отчёт уже весь ушёл в GUI построчно
-        log_line("Отчёт отправлен в GUI. Отключаю локальный API-сервер…")
-
-        # 5) Остановка локального Telegram Bot API
-        # 5a) Пытаемся через функции gui_serverapi (по аналогии с modulpsw)
-        try:
-            # Индикатор работы
-            is_running = None
-            for name in ("is_server_running", "server_is_running", "is_running", "running"):
-                val = getattr(gui_serverapi, name, None)
-                try:
-                    is_running = bool(val() if callable(val) else val)
-                except Exception:
-                    is_running = None
-                if is_running is not None:
-                    break
-            if is_running is None:
-                log_line("API-сервер: не удалось определить состояние через gui_serverapi — продолжаю.")
-            else:
-                log_line(f"API-сервер: состояние перед остановкой — running={is_running}")
-
-            # Функции остановки
-            stopped = False
-            for stop_name in ("stop_server_globally", "stop_server", "shutdown"):
-                stop_fn = getattr(gui_serverapi, stop_name, None)
-                if stop_fn:
-                    try:
-                        stop_fn()
-                        log_line(f"API-сервер: вызвана функция {stop_name}().")
-                        stopped = True
-                        break
-                    except Exception as e_stop:
-                        log_line(f"API-сервер: {stop_name}() вернул исключение: {e_stop}")
-            if not stopped:
-                log_line("API-сервер: подходящая функция остановки через gui_serverapi не найдена или не сработала.")
-        except Exception as e:
-            log_line(f"API-сервер: ошибка при обращении к gui_serverapi: {e}")
-
-        # 5b) Если у нас есть окно настроек сервера — попросим его остановиться
-        try:
-            if hasattr(self, "api_server_window") and self.api_server_window:
-                try:
-                    proc = self.api_server_window.proc
-                except Exception:
-                    proc = None
-                log_line("API-сервер: пробую остановить через окно настроек.")
-                try:
-                    self.api_server_window.stop_server()
-                    time.sleep(0.6)
-                except Exception as e:
-                    log_line(f"API-сервер: окно/процесс — ошибка при stop_server(): {e}")
-        except Exception:
-            pass
-
-        # 5c) Fallback: добиваем процесс под Windows (как в modulpsw)
-        try:
-            if _is_windows():
-                import subprocess
-                def _run_taskkill(args):
-                    try:
-                        cp = subprocess.run(args, capture_output=True, text=True, timeout=4)
-                        return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
-                    except Exception as ex:
-                        return -1, "", str(ex)
-
-                rc, so, se = _run_taskkill(["taskkill", "/IM", "telegram-bot-api.exe", "/T"])
-                log_line(f"taskkill /IM telegram-bot-api.exe /T → rc={rc}")
-                if so: log_line(f"stdout: {so}")
-                if se: log_line(f"stderr: {se}")
-                if rc != 0:
-                    rc2, so2, se2 = _run_taskkill(["taskkill", "/F", "/IM", "telegram-bot-api.exe", "/T"])
-                    log_line(f"taskkill /F /IM telegram-bot-api.exe /T → rc={rc2}")
-                    if so2: log_line(f"stdout: {so2}")
-                    if se2: log_line(f"stderr: {se2}")
-        except Exception as e:
-            log_line(f"API-сервер: ошибка при taskkill: {e}")
-
-        # 6) Хвостовое сообщение
-        log_line("Сервер остановлен. Перезапускаюсь…")
-        time.sleep(0.8)
-        os._exit(42)
 
     def on_log_scroll_changed(self, value):
         try:
@@ -1560,6 +1452,127 @@ class MainWindow(QMainWindow):
     def on_tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
             self.show_normal()
+
+
+    def _get_webpanel_backend(self):
+        """
+        Возвращает backend веб-панели тем же способом, что и gui_win_webpanel_window.py:
+        пробуем startrunmodulwebpanel, затем moduls.startrunmodulwebpanel.
+        """
+        last_err = None
+        for name in ("startrunmodulwebpanel", "moduls.startrunmodulwebpanel"):
+            try:
+                return importlib.import_module(name)
+            except Exception as e:
+                last_err = e
+        if last_err:
+            raise last_err
+        raise ImportError("Не удалось импортировать backend веб-панели")
+
+    @staticmethod
+    def _normalize_panel_url_for_browser(url: str) -> str:
+        """
+        Нормализует URL панели для открытия в браузере.
+        Если host=0.0.0.0, подменяем на 127.0.0.1 как в окне веб-панели.
+        """
+        try:
+            parts = urlsplit((url or "").strip())
+            host = parts.hostname or ""
+            if host == "0.0.0.0":
+                # Собираем netloc вручную, чтобы сохранить порт.
+                port = f":{parts.port}" if parts.port else ""
+                netloc = f"127.0.0.1{port}"
+                return urlunsplit((parts.scheme or "http", netloc, parts.path, parts.query, parts.fragment))
+            return url
+        except Exception:
+            return url
+
+    def _resolve_webpanel_url(self):
+        """
+        Возвращает (running, url, err_message)
+        running=True только если панель реально запущена.
+        url берётся из runtime (srv.url), как в gui_win_webpanel_window.py.
+        """
+        try:
+            backend = self._get_webpanel_backend()
+        except Exception as e:
+            return False, "", f"Не удалось подключиться к модулю веб-панели: {e}"
+
+        srv = getattr(backend, "_server", None)
+
+        running = False
+        try:
+            checker = getattr(backend, "_is_panel_running", None)
+            if callable(checker):
+                running = bool(checker())
+            elif srv is not None and hasattr(srv, "is_running"):
+                running = bool(srv.is_running())
+        except Exception:
+            running = False
+
+        if not running:
+            return False, "", "Панель не запущена. Сначала нажми «Запустить панель»."
+
+        # URL только от запущенного runtime, чтобы совпадало с логикой окна веб-панели.
+        url = ""
+        try:
+            if srv is not None and hasattr(srv, "url"):
+                url = str(srv.url() or "").strip()
+        except Exception:
+            url = ""
+
+        # Фолбэк на конфиг (на случай, если runtime не отдал URL, но статус running уже true).
+        if not url:
+            cfg = None
+            try:
+                if srv is not None:
+                    cfg = srv.runtime.config
+            except Exception:
+                cfg = None
+            if cfg is None:
+                try:
+                    panel_config = getattr(backend, "panel_config", None)
+                    load_cfg = getattr(panel_config, "load_config", None) if panel_config else None
+                    base_dir = getattr(backend, "base_dir", None)
+                    if callable(load_cfg):
+                        cfg = load_cfg(base_dir)
+                except Exception:
+                    cfg = None
+
+            try:
+                host = str(getattr(cfg, "host", "") or "").strip()
+                port = str(getattr(cfg, "port", "") or "").strip()
+                if host and port:
+                    if host == "0.0.0.0":
+                        host = "127.0.0.1"
+                    url = f"http://{host}:{port}"
+            except Exception:
+                url = ""
+
+        if not url:
+            return False, "", "Панель запущена, но URL не удалось определить."
+
+        return True, self._normalize_panel_url_for_browser(url), ""
+
+    def open_webpanel_in_browser(self):
+        """
+        Кнопка в main GUI: открывает веб-панель в браузере,
+        но только если панель запущена.
+        """
+        running, url, err = self._resolve_webpanel_url()
+        if not running:
+            QMessageBox.information(self, "Веб-панель", err or "Панель не запущена.")
+            return
+
+        try:
+            ok = webbrowser.open(url, new=2)
+            if ok:
+                self.status_label.setText(f"Открываю веб-панель: {url}")
+            else:
+                self.status_label.setText("Не удалось открыть браузер автоматически.")
+                QMessageBox.warning(self, "Веб-панель", f"Не удалось открыть браузер автоматически.\nАдрес панели:\n{url}")
+        except Exception as e:
+            QMessageBox.warning(self, "Веб-панель", f"Ошибка при открытии панели:\n{e}\n\nАдрес панели:\n{url}")
 
     def show_help(self):
         """Открыть справку. Модуль подгружается только по нажатию кнопки."""

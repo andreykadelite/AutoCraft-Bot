@@ -1,0 +1,1483 @@
+﻿{% extends "appbuilder/base.html" %}
+{% import "appbuilder/baselib.html" as baselib %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/panel.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="wac-container messenger-page" role="main" aria-label="Служебный мессенджер панели">
+  <div class="page-header messenger-header">
+    <div>
+      <h1>Служебный мессенджер панели</h1>
+      <p class="muted">Это мессенджер веб-панели для взаимодействия пользователей.</p>
+    </div>
+    <div class="badge" aria-label="Непрочитанных сообщений в чатах: {{ unread_total }}">
+      Непрочитанные в чатах: <span data-messenger-unread-total>{{ unread_total }}</span>
+    </div>
+  </div>
+
+  <div id="messenger-global-live-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="grid messenger-grid">
+    <aside class="messenger-left" aria-label="Панель выбора пользователей и чатов">
+      <section class="card messenger-users" aria-labelledby="messenger-users-title">
+        <h3 id="messenger-users-title">Пользователи</h3>
+        <form class="form messenger-user-form" id="messenger-user-form" onsubmit="return false;" novalidate>
+          <label for="messenger-user-search">Поиск пользователя</label>
+          <input
+            id="messenger-user-search"
+            type="search"
+            placeholder="Имя, фамилия, логин, роль"
+            autocomplete="off"
+            aria-describedby="messenger-user-help messenger-user-status"
+            aria-controls="messenger-user-results"
+          >
+          <div id="messenger-user-help" class="muted messenger-help">
+            Введите минимум 2 символа или нажмите «Показать всех».
+          </div>
+
+          <div class="messenger-user-actions">
+            <button type="button" class="btn" id="messenger-show-all" aria-label="Показать всех пользователей">Показать всех</button>
+            <button type="button" class="btn" id="messenger-clear-results" aria-label="Очистить результаты поиска пользователей">Очистить список</button>
+          </div>
+
+          <div id="messenger-user-status" class="messenger-status" role="status" aria-live="polite" aria-atomic="true"></div>
+          <ul
+            id="messenger-user-results"
+            class="messenger-user-results"
+            role="list"
+            aria-label="Результаты поиска пользователей"
+            aria-describedby="messenger-user-status"
+          ></ul>
+        </form>
+
+        <form
+          method="post"
+          action="{{ url_for('InternalMessengerView.start') }}"
+          id="messenger-start-form"
+          data-start-live-url="{{ url_for('InternalMessengerView.start_live') }}"
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="recipient_id" id="messenger-recipient-id" value="">
+          <button
+            type="submit"
+            class="btn-primary"
+            id="messenger-start-btn"
+            disabled
+            {% if not can_write %}aria-disabled="true"{% endif %}
+          >
+            Начать чат с выбранным пользователем
+          </button>
+        </form>
+      </section>
+
+      <section class="card messenger-chats" aria-labelledby="messenger-chats-title">
+        <div class="messenger-chats-head">
+          <h3 id="messenger-chats-title">Мои чаты</h3>
+        </div>
+        <form
+          method="post"
+          action="{{ url_for('InternalMessengerView.delete') }}"
+          id="messenger-delete-form"
+          data-delete-live-url="{{ url_for('InternalMessengerView.delete_live') }}"
+          data-confirm-message="Удалить выбранные чаты из вашего списка?"
+          data-confirm-danger="true"
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="messenger-chat-actions">
+            <button type="button" class="btn" id="messenger-select-all" {% if not chats %}disabled{% endif %}>
+              Выбрать все
+            </button>
+            <button
+              type="submit"
+              class="btn danger"
+              id="messenger-delete-btn"
+              {% if (not can_write) or (not chats) %}disabled aria-disabled="true"{% endif %}
+            >
+              Удалить выбранные
+            </button>
+          </div>
+
+          <ul class="messenger-chat-list" role="list" aria-label="Список чатов" data-messenger-chat-list>
+            {% for chat in chats %}
+              {% set chat_label = chat.other_user_label|default('', true)|trim %}
+              {% set chat_initial = chat_label[:1]|upper if chat_label else '?' %}
+              <li
+                class="messenger-chat-item{% if chat.id == selected_thread_id %} active{% endif %}"
+                data-thread-id="{{ chat.id }}"
+                data-chat-label="{{ chat_label }}"
+                data-chat-roles="{{ chat.other_user_roles or '' }}"
+              >
+                <label class="messenger-chat-check">
+                  <input
+                    type="checkbox"
+                    class="messenger-chat-checkbox"
+                    name="thread_id"
+                    value="{{ chat.id }}"
+                    aria-label="Выбрать чат с пользователем {{ chat_label if chat_label else 'Пользователь' }}"
+                  >
+                </label>
+                <div class="messenger-chat-main">
+                  <a
+                    href="{{ url_for('InternalMessengerView.list', thread_id=chat.id) }}"
+                    class="messenger-chat-link"
+                    data-thread-id="{{ chat.id }}"
+                    data-thread-label="{{ chat_label }}"
+                    data-thread-roles="{{ chat.other_user_roles or '' }}"
+                    aria-label="Открыть чат с {{ chat_label if chat_label else 'пользователем' }}{% if chat.other_user_roles %}. Роли: {{ chat.other_user_roles }}{% endif %}"
+                    {% if chat.id == selected_thread_id %}aria-current="page"{% endif %}
+                  >
+                    <span class="messenger-chat-identity">
+                      <span class="messenger-chat-avatar" aria-hidden="true">{{ chat_initial }}</span>
+                      <span class="messenger-chat-title-wrap">
+                        <span class="messenger-chat-title" data-chat-title>{{ chat_label if chat_label else 'Пользователь' }}</span>
+                      </span>
+                    </span>
+                    <span
+                      class="comm-badge"
+                      data-chat-unread
+                      aria-label="Непрочитанных сообщений: {{ chat.unread_count }}"
+                      {% if chat.unread_count <= 0 %}hidden{% endif %}
+                    >
+                      +{{ chat.unread_count }}
+                    </span>
+                  </a>
+                  <div class="muted messenger-chat-roles" data-chat-roles>{{ chat.other_user_roles or '' }}</div>
+                  <div class="messenger-chat-preview" data-chat-preview>{{ chat.last_preview }}</div>
+                  <div class="messenger-chat-time" data-chat-time>{{ chat.last_at or '-' }}</div>
+                </div>
+              </li>
+            {% else %}
+              <li class="messenger-empty">Чатов пока нет. Выберите пользователя, чтобы начать диалог.</li>
+            {% endfor %}
+          </ul>
+        </form>
+      </section>
+    </aside>
+
+    <section class="card messenger-thread" aria-labelledby="messenger-thread-title" data-messenger-thread-panel>
+      <div class="messenger-thread-head">
+        <h3 id="messenger-thread-title" data-messenger-thread-title>
+          {% if selected_thread_id and active_user_label %}
+            Чат с {{ active_user_label }}
+          {% else %}
+            Чат
+          {% endif %}
+        </h3>
+        <p
+          class="muted"
+          data-messenger-thread-roles
+          {% if not (selected_thread_id and active_user_roles) %}hidden{% endif %}
+        >
+          {{ active_user_roles if selected_thread_id and active_user_roles else '' }}
+        </p>
+      </div>
+
+      <div
+        class="muted messenger-truncated-note"
+        data-messenger-truncated-note
+        {% if not (selected_thread_id and active_truncated) %}hidden{% endif %}
+      >
+        Показаны последние {{ active_messages|length }} сообщений.
+      </div>
+
+      <div id="messenger-live-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+      <div class="messenger-log" data-messenger-log role="log" aria-live="polite" aria-relevant="additions text">
+        {% if selected_thread_id and active_messages %}
+          {% for msg in active_messages %}
+            {% set sender_label = msg.sender_label|default('', true)|trim %}
+            {% set sender_initial = 'Я' if msg.is_mine else (sender_label[:1]|upper if sender_label else '?') %}
+            <article class="messenger-msg{% if msg.is_mine %} mine{% endif %}" data-message-id="{{ msg.id }}" tabindex="-1">
+              <div class="messenger-msg-shell">
+                <div class="messenger-msg-avatar" aria-hidden="true">{{ sender_initial }}</div>
+                <div class="messenger-msg-bubble">
+                  <header class="messenger-msg-head">
+                    <span class="messenger-msg-sender">{{ 'Я' if msg.is_mine else (sender_label if sender_label else 'Пользователь') }}</span>
+                    <time class="messenger-msg-time">{{ msg.created_at }}</time>
+                  </header>
+                  <p class="messenger-msg-body">{{ msg.body }}</p>
+                </div>
+              </div>
+            </article>
+          {% endfor %}
+        {% elif selected_thread_id %}
+          <div class="messenger-empty" data-messenger-empty>В этом чате пока нет сообщений.</div>
+        {% else %}
+          <div class="messenger-empty" data-messenger-empty>Выберите чат слева, чтобы открыть переписку.</div>
+        {% endif %}
+      </div>
+
+      <div class="messenger-thread-footer">
+        <form
+          class="form messenger-send-form"
+          method="post"
+          action="{{ url_for('InternalMessengerView.send') }}"
+          id="messenger-send-form"
+          data-send-live-url="{{ url_for('InternalMessengerView.send_live') }}"
+          {% if not selected_thread_id %}hidden{% endif %}
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="thread_id" id="messenger-thread-id" value="{{ selected_thread_id if selected_thread_id else '' }}">
+
+          <label for="messenger-body">Сообщение</label>
+          <textarea
+            id="messenger-body"
+            name="body"
+            rows="5"
+            maxlength="4000"
+            required
+            {% if (not can_write) or (not selected_thread_id) %}disabled aria-disabled="true"{% endif %}
+          ></textarea>
+
+          <div class="messenger-send-actions">
+            <button
+              type="submit"
+              class="btn-primary"
+              id="messenger-send-btn"
+              {% if (not can_write) or (not selected_thread_id) %}disabled aria-disabled="true"{% endif %}
+            >
+              Отправить
+            </button>
+          </div>
+        </form>
+
+        <div
+          class="messenger-empty-state"
+          data-messenger-empty-state
+          role="status"
+          {% if selected_thread_id %}hidden{% endif %}
+        >
+          Чат не выбран.
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block add_tail_js %}
+  {{ super() }}
+  <script nonce="{{ baselib.get_nonce() }}">
+    (function () {
+      var urls = {
+        users: {{ url_for('InternalMessengerView.users')|tojson }},
+        live: {{ url_for('InternalMessengerView.live')|tojson }},
+        list: {{ url_for('InternalMessengerView.list')|tojson }},
+        threadMessagesTemplate: {{ url_for('InternalMessengerView.thread_messages', thread_id=0)|tojson }}
+      };
+
+      var els = {
+        searchInput: document.getElementById("messenger-user-search"),
+        showAllBtn: document.getElementById("messenger-show-all"),
+        clearBtn: document.getElementById("messenger-clear-results"),
+        resultsBox: document.getElementById("messenger-user-results"),
+        statusBox: document.getElementById("messenger-user-status"),
+        startForm: document.getElementById("messenger-start-form"),
+        recipientInput: document.getElementById("messenger-recipient-id"),
+        startBtn: document.getElementById("messenger-start-btn"),
+        selectAllBtn: document.getElementById("messenger-select-all"),
+        deleteForm: document.getElementById("messenger-delete-form"),
+        deleteBtn: document.getElementById("messenger-delete-btn"),
+        chatList: document.querySelector("[data-messenger-chat-list]"),
+        unreadTotalNode: document.querySelector("[data-messenger-unread-total]"),
+        globalLiveStatus: document.getElementById("messenger-global-live-status"),
+        threadLiveStatus: document.getElementById("messenger-live-status"),
+        messageLog: document.querySelector("[data-messenger-log]"),
+        threadTitle: document.querySelector("[data-messenger-thread-title]"),
+        threadRoles: document.querySelector("[data-messenger-thread-roles]"),
+        truncatedNote: document.querySelector("[data-messenger-truncated-note]"),
+        sendForm: document.getElementById("messenger-send-form"),
+        sendInput: document.getElementById("messenger-body"),
+        sendBtn: document.getElementById("messenger-send-btn"),
+        threadIdInput: document.getElementById("messenger-thread-id"),
+        emptyState: document.querySelector("[data-messenger-empty-state]")
+      };
+
+      if (!els.chatList || !els.messageLog) {
+        return;
+      }
+
+      var state = {
+        canWrite: {{ "true" if can_write else "false" }},
+        activeThreadId: {{ selected_thread_id|default(0, true) }},
+        lastMessageId: {{ active_last_message_id|default(0, true) }},
+        previousUnreadTotal: {{ unread_total|default(0, true) }},
+        activeUserLabel: {{ active_user_label|default("", true)|tojson }},
+        activeUserRoles: {{ active_user_roles|default("", true)|tojson }},
+        selectedRecipientId: 0,
+        selectedRecipientLabel: "",
+        searchTimer: null,
+        searchSeq: 0,
+        liveInFlight: false,
+        sendInFlight: false,
+        startInFlight: false,
+        deleteInFlight: false,
+        pollTimer: null,
+        audioContext: null,
+        audioEnabled: false
+      };
+
+      function escapeHtml(value) {
+        var text = value === undefined || value === null ? "" : String(value);
+        return text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function firstLetter(text, fallback) {
+        var value = text === undefined || text === null ? "" : String(text);
+        var trimmed = value.trim();
+        if (!trimmed) {
+          return fallback || "?";
+        }
+
+        for (var i = 0; i < trimmed.length; i += 1) {
+          var char = trimmed.charAt(i);
+          if (char !== " " && char !== "(" && char !== "[" && char !== "{") {
+            return char.toUpperCase();
+          }
+        }
+        return fallback || "?";
+      }
+
+      function senderLabelForMessage(msg, isMine) {
+        var raw = msg && msg.sender_label ? String(msg.sender_label).trim() : "";
+        if (isMine && (!raw || raw === "Вы")) {
+          return "Я";
+        }
+        if (raw) {
+          return raw;
+        }
+        return isMine ? "Я" : "Пользователь";
+      }
+
+      function senderInitialForMessage(msg, isMine) {
+        if (isMine) {
+          return "Я";
+        }
+        return firstLetter(msg && msg.sender_label ? msg.sender_label : "", "?");
+      }
+
+      function announceGlobal(text) {
+        if (els.globalLiveStatus) {
+          els.globalLiveStatus.textContent = text || "";
+        }
+      }
+
+      function announceThread(text) {
+        if (els.threadLiveStatus) {
+          els.threadLiveStatus.textContent = text || "";
+        }
+      }
+
+      function setStatus(text) {
+        if (els.statusBox) {
+          els.statusBox.textContent = text || "";
+        }
+      }
+
+      function ensureAudioEnabled() {
+        if (state.audioEnabled) {
+          return;
+        }
+        try {
+          var Ctx = window.AudioContext || window.webkitAudioContext;
+          if (!Ctx) {
+            return;
+          }
+          state.audioContext = state.audioContext || new Ctx();
+          if (state.audioContext.state === "suspended") {
+            state.audioContext.resume();
+          }
+          state.audioEnabled = true;
+        } catch (_e) {
+          state.audioEnabled = false;
+        }
+      }
+
+      function playIncomingSound() {
+        if (!state.audioEnabled || !state.audioContext) {
+          return;
+        }
+        try {
+          var now = state.audioContext.currentTime;
+          var osc = state.audioContext.createOscillator();
+          var gain = state.audioContext.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(880, now);
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+          osc.connect(gain);
+          gain.connect(state.audioContext.destination);
+          osc.start(now);
+          osc.stop(now + 0.17);
+        } catch (_e) {
+          // Silent fallback.
+        }
+      }
+
+      function focusMessageNode(node) {
+        if (!node || typeof node.focus !== "function") {
+          return;
+        }
+        node.setAttribute("tabindex", "-1");
+        try {
+          node.focus({ preventScroll: false });
+        } catch (_e) {
+          node.focus();
+        }
+      }
+
+      function clearResults() {
+        if (els.resultsBox) {
+          els.resultsBox.innerHTML = "";
+        }
+        setStatus("");
+      }
+
+      function setRecipient(id, label, buttonEl) {
+        state.selectedRecipientId = Number(id || 0);
+        state.selectedRecipientLabel = label || "";
+        if (els.recipientInput) {
+          els.recipientInput.value = state.selectedRecipientId ? String(state.selectedRecipientId) : "";
+        }
+
+        if (els.resultsBox) {
+          var options = els.resultsBox.querySelectorAll(".messenger-user-btn");
+          for (var i = 0; i < options.length; i += 1) {
+            options[i].classList.remove("selected");
+          }
+        }
+
+        if (buttonEl) {
+          buttonEl.classList.add("selected");
+        }
+
+        if (els.startBtn) {
+          var canSubmit = state.canWrite && state.selectedRecipientId > 0;
+          els.startBtn.disabled = !canSubmit;
+          els.startBtn.setAttribute("aria-disabled", canSubmit ? "false" : "true");
+        }
+
+        if (state.selectedRecipientId > 0) {
+          setStatus("Выбран пользователь: " + state.selectedRecipientLabel + ". Нажмите «Начать чат», чтобы открыть диалог.");
+        } else {
+          setStatus("Пользователь не выбран.");
+        }
+      }
+
+      function renderUsers(items, truncated, focusFirst) {
+        if (!els.resultsBox) {
+          return;
+        }
+        els.resultsBox.innerHTML = "";
+
+        if (!items || !items.length) {
+          setRecipient("", "", null);
+          setStatus("Пользователи не найдены.");
+          return;
+        }
+
+        setStatus(
+          truncated
+            ? ("Показаны первые " + items.length + " пользователей.")
+            : ("Найдено пользователей: " + items.length + ".")
+        );
+
+        for (var i = 0; i < items.length; i += 1) {
+          var item = items[i] || {};
+          var label = String(item.label || "Пользователь");
+          var rolesText = Array.isArray(item.roles) && item.roles.length ? item.roles.join(", ") : "";
+          var visibleLabel = label;
+          if (rolesText) {
+            var roleSuffix = " - " + rolesText;
+            if (visibleLabel.toLowerCase().endsWith(roleSuffix.toLowerCase())) {
+              visibleLabel = visibleLabel.slice(0, Math.max(0, visibleLabel.length - roleSuffix.length)).trim();
+            }
+          }
+          if (!visibleLabel) {
+            visibleLabel = label;
+          }
+
+          var srLabel = visibleLabel;
+          if (rolesText) {
+            srLabel += ". Роли: " + rolesText;
+          }
+
+          var li = document.createElement("li");
+          li.className = "messenger-user-item";
+
+          var btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "messenger-user-btn";
+          btn.setAttribute("aria-label", srLabel);
+          btn.setAttribute("data-user-id", String(item.id || ""));
+          btn.setAttribute("data-user-label", visibleLabel);
+
+          var identity = document.createElement("span");
+          identity.className = "messenger-user-identity";
+
+          var avatar = document.createElement("span");
+          avatar.className = "messenger-user-avatar";
+          avatar.setAttribute("aria-hidden", "true");
+          avatar.textContent = firstLetter(visibleLabel, "?");
+
+          var textBox = document.createElement("span");
+          textBox.className = "messenger-user-text";
+
+          var title = document.createElement("span");
+          title.className = "messenger-user-title";
+          title.textContent = visibleLabel;
+          textBox.appendChild(title);
+
+          if (rolesText) {
+            var meta = document.createElement("span");
+            meta.className = "messenger-user-meta";
+            meta.textContent = rolesText;
+            textBox.appendChild(meta);
+          }
+
+          identity.appendChild(avatar);
+          identity.appendChild(textBox);
+          btn.appendChild(identity);
+
+          btn.addEventListener("click", function (event) {
+            var target = event.currentTarget;
+            setRecipient(
+              target.getAttribute("data-user-id") || "",
+              target.getAttribute("data-user-label") || target.textContent || "",
+              target
+            );
+          });
+
+          li.appendChild(btn);
+          els.resultsBox.appendChild(li);
+        }
+
+        if (focusFirst) {
+          var first = els.resultsBox.querySelector(".messenger-user-btn");
+          if (first) {
+            first.focus();
+          }
+        }
+      }
+
+      function fetchUsers(query, showAll, focusFirst) {
+        if (!urls.users) {
+          return;
+        }
+        var params = new URLSearchParams();
+        if (query) {
+          params.append("q", query);
+        }
+        if (showAll) {
+          params.append("all", "1");
+          params.append("limit", "0");
+        }
+
+        var seq = state.searchSeq + 1;
+        state.searchSeq = seq;
+
+        fetch(urls.users + (params.toString() ? ("?" + params.toString()) : ""), {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+          cache: "no-store"
+        })
+          .then(function (resp) {
+            if (!resp.ok) {
+              throw new Error("Пользователи недоступны");
+            }
+            return resp.json();
+          })
+          .then(function (data) {
+            if (seq !== state.searchSeq) {
+              return;
+            }
+            renderUsers(data.items || [], !!data.truncated, !!focusFirst);
+          })
+          .catch(function () {
+            if (seq !== state.searchSeq) {
+              return;
+            }
+            renderUsers([], false, false);
+          });
+      }
+
+      function updateUnreadTotal(total, options) {
+        var opts = options || {};
+        var value = Number(total || 0);
+        var previous = Number(state.previousUnreadTotal || 0);
+
+        if (els.unreadTotalNode) {
+          els.unreadTotalNode.textContent = String(value);
+        }
+
+        if (value > previous) {
+          var diff = value - previous;
+          if (opts.playSound !== false) {
+            playIncomingSound();
+          }
+          if (opts.announce !== false) {
+            announceGlobal("Появились новые сообщения в чатах: " + diff + ".");
+          }
+        }
+
+        state.previousUnreadTotal = value;
+      }
+
+      function buildChatItemHtml(chat, checkedIds) {
+        var chatId = Number(chat.id || 0);
+        var isActive = chatId === Number(state.activeThreadId || 0);
+        var unreadCount = Number(chat.unread_count || 0);
+        var checked = checkedIds.has(chatId) ? " checked" : "";
+        var currentAttr = isActive ? ' aria-current="page"' : "";
+        var badgeHidden = unreadCount > 0 ? "" : " hidden";
+        var label = String(chat.other_user_label || "Пользователь");
+        var roles = String(chat.other_user_roles || "");
+        var initial = firstLetter(label, "?");
+        var linkAria = "Открыть чат с " + label + (roles ? (". Роли: " + roles) : "");
+
+        return (
+          '<li class="messenger-chat-item' + (isActive ? ' active' : '') + '" data-thread-id="' + chatId + '" data-chat-label="' + escapeHtml(label) + '" data-chat-roles="' + escapeHtml(roles) + '">' +
+            '<label class="messenger-chat-check">' +
+              '<input type="checkbox" class="messenger-chat-checkbox" name="thread_id" value="' + chatId + '"' + checked + ' aria-label="Выбрать чат с пользователем ' + escapeHtml(label) + '">' +
+            '</label>' +
+            '<div class="messenger-chat-main">' +
+              '<a href="' + urls.list + '?thread_id=' + encodeURIComponent(String(chatId)) + '" class="messenger-chat-link" data-thread-id="' + chatId + '" data-thread-label="' + escapeHtml(label) + '" data-thread-roles="' + escapeHtml(roles) + '" aria-label="' + escapeHtml(linkAria) + '"' + currentAttr + '>' +
+                '<span class="messenger-chat-identity">' +
+                  '<span class="messenger-chat-avatar" aria-hidden="true">' + escapeHtml(initial) + '</span>' +
+                  '<span class="messenger-chat-title-wrap">' +
+                    '<span class="messenger-chat-title" data-chat-title>' + escapeHtml(label) + '</span>' +
+                  '</span>' +
+                '</span>' +
+                '<span class="comm-badge" data-chat-unread aria-label="Непрочитанных сообщений: ' + unreadCount + '"' + badgeHidden + '>+' + unreadCount + '</span>' +
+              '</a>' +
+              '<div class="muted messenger-chat-roles" data-chat-roles>' + escapeHtml(roles) + '</div>' +
+              '<div class="messenger-chat-preview" data-chat-preview>' + escapeHtml(chat.last_preview || '') + '</div>' +
+              '<div class="messenger-chat-time" data-chat-time>' + escapeHtml(chat.last_at || '-') + '</div>' +
+            '</div>' +
+          '</li>'
+        );
+      }
+      function syncDeleteButton() {
+        if (!els.deleteBtn) {
+          return;
+        }
+        if (!state.canWrite || !els.deleteForm) {
+          els.deleteBtn.setAttribute("disabled", "disabled");
+          els.deleteBtn.setAttribute("aria-disabled", "true");
+          return;
+        }
+
+        var checked = els.deleteForm.querySelectorAll(".messenger-chat-checkbox:checked").length;
+        if (checked > 0) {
+          els.deleteBtn.removeAttribute("disabled");
+          els.deleteBtn.setAttribute("aria-disabled", "false");
+        } else {
+          els.deleteBtn.setAttribute("disabled", "disabled");
+          els.deleteBtn.setAttribute("aria-disabled", "true");
+        }
+      }
+
+      function findChatMeta(threadId) {
+        if (!els.chatList || !threadId) {
+          return { label: "", roles: "" };
+        }
+        var row = els.chatList.querySelector('.messenger-chat-item[data-thread-id="' + String(threadId) + '"]');
+        if (!row) {
+          return { label: "", roles: "" };
+        }
+        return {
+          label: row.getAttribute("data-chat-label") || "",
+          roles: row.getAttribute("data-chat-roles") || ""
+        };
+      }
+
+      function setActiveChatVisual(threadId) {
+        if (!els.chatList) {
+          return;
+        }
+        var rows = els.chatList.querySelectorAll(".messenger-chat-item");
+        for (var i = 0; i < rows.length; i += 1) {
+          var row = rows[i];
+          var id = Number(row.getAttribute("data-thread-id") || 0);
+          var link = row.querySelector(".messenger-chat-link");
+          var isActive = id === Number(threadId || 0);
+          row.classList.toggle("active", isActive);
+          if (link) {
+            if (isActive) {
+              link.setAttribute("aria-current", "page");
+            } else {
+              link.removeAttribute("aria-current");
+            }
+          }
+        }
+      }
+
+      function syncChatList(chats) {
+        if (!els.chatList || !Array.isArray(chats)) {
+          return;
+        }
+
+        var checkedIds = new Set();
+        if (els.deleteForm) {
+          var checkedInputs = els.deleteForm.querySelectorAll(".messenger-chat-checkbox:checked");
+          for (var i = 0; i < checkedInputs.length; i += 1) {
+            checkedIds.add(Number(checkedInputs[i].value || 0));
+          }
+        }
+
+        if (!chats.length) {
+          els.chatList.innerHTML = '<li class="messenger-empty">Чатов пока нет. Выберите пользователя, чтобы начать диалог.</li>';
+          syncDeleteButton();
+          if (state.activeThreadId) {
+            clearActiveThread("Открытый чат больше недоступен.", false);
+          }
+          return;
+        }
+
+        var html = "";
+        var hasActive = false;
+        for (var j = 0; j < chats.length; j += 1) {
+          var chat = chats[j] || {};
+          if (Number(chat.id || 0) === Number(state.activeThreadId || 0)) {
+            hasActive = true;
+          }
+          html += buildChatItemHtml(chat, checkedIds);
+        }
+
+        els.chatList.innerHTML = html;
+        syncDeleteButton();
+
+        if (state.activeThreadId && !hasActive) {
+          clearActiveThread("Открытый чат удален из списка.", false);
+        } else {
+          setActiveChatVisual(state.activeThreadId);
+        }
+      }
+
+      function setThreadUiSelected(isSelected) {
+        var selected = !!isSelected;
+
+        if (els.sendForm) {
+          els.sendForm.hidden = !selected;
+        }
+        if (els.emptyState) {
+          els.emptyState.hidden = selected;
+        }
+        if (els.threadIdInput) {
+          els.threadIdInput.value = selected ? String(state.activeThreadId || "") : "";
+        }
+
+        var canSend = state.canWrite && selected;
+        if (els.sendInput) {
+          els.sendInput.disabled = !canSend;
+          els.sendInput.setAttribute("aria-disabled", canSend ? "false" : "true");
+        }
+        if (els.sendBtn) {
+          els.sendBtn.disabled = !canSend;
+          els.sendBtn.setAttribute("aria-disabled", canSend ? "false" : "true");
+        }
+      }
+
+      function syncThreadHeader() {
+        if (els.threadTitle) {
+          els.threadTitle.textContent = state.activeUserLabel
+            ? ("Чат с " + state.activeUserLabel)
+            : "Чат";
+        }
+        if (els.threadRoles) {
+          if (state.activeUserRoles) {
+            els.threadRoles.hidden = false;
+            els.threadRoles.textContent = state.activeUserRoles;
+          } else {
+            els.threadRoles.hidden = true;
+            els.threadRoles.textContent = "";
+          }
+        }
+        if (els.truncatedNote) {
+          els.truncatedNote.hidden = true;
+        }
+      }
+
+      function clearMessageLog(text) {
+        if (!els.messageLog) {
+          return;
+        }
+        var message = text || "Выберите чат слева, чтобы открыть переписку.";
+        els.messageLog.innerHTML = '<div class="messenger-empty" data-messenger-empty>' + escapeHtml(message) + '</div>';
+      }
+
+      function appendMessage(msg, options) {
+        if (!els.messageLog || !msg) {
+          return null;
+        }
+        var opts = options || {};
+        var id = Number(msg.id || 0);
+        if (!id) {
+          return null;
+        }
+
+        var existing = els.messageLog.querySelector('[data-message-id="' + String(id) + '"]');
+        if (existing) {
+          return existing;
+        }
+
+        var emptyNode = els.messageLog.querySelector("[data-messenger-empty]");
+        if (emptyNode) {
+          emptyNode.remove();
+        }
+
+        var article = document.createElement("article");
+        var isMine = !!msg.is_mine;
+        var senderLabel = senderLabelForMessage(msg, isMine);
+        var senderInitial = senderInitialForMessage(msg, isMine);
+
+        article.className = "messenger-msg" + (isMine ? " mine" : "");
+        article.setAttribute("data-message-id", String(id));
+        article.setAttribute("tabindex", "-1");
+        article.innerHTML =
+          '<div class="messenger-msg-shell">' +
+            '<div class="messenger-msg-avatar" aria-hidden="true">' + escapeHtml(senderInitial) + '</div>' +
+            '<div class="messenger-msg-bubble">' +
+              '<header class="messenger-msg-head">' +
+                '<span class="messenger-msg-sender">' + escapeHtml(senderLabel) + '</span>' +
+                '<time class="messenger-msg-time">' + escapeHtml(msg.created_at || "") + '</time>' +
+              '</header>' +
+              '<p class="messenger-msg-body">' + escapeHtml(msg.body || "") + '</p>' +
+            '</div>' +
+          '</div>';
+
+        els.messageLog.appendChild(article);
+
+        if (id > state.lastMessageId) {
+          state.lastMessageId = id;
+        }
+
+        if (opts.focus) {
+          els.messageLog.scrollTop = els.messageLog.scrollHeight;
+          focusMessageNode(article);
+        }
+
+        return article;
+      }
+
+      function setThreadMessages(messages, lastId, focusLast) {
+        if (!els.messageLog) {
+          return;
+        }
+        els.messageLog.innerHTML = "";
+
+        var list = Array.isArray(messages) ? messages : [];
+        var lastNode = null;
+
+        if (!list.length) {
+          clearMessageLog("В этом чате пока нет сообщений.");
+          state.lastMessageId = Number(lastId || 0);
+          return;
+        }
+
+        for (var i = 0; i < list.length; i += 1) {
+          lastNode = appendMessage(list[i], { focus: false });
+        }
+
+        state.lastMessageId = Number(lastId || state.lastMessageId || 0);
+        if (focusLast && lastNode) {
+          els.messageLog.scrollTop = els.messageLog.scrollHeight;
+          focusMessageNode(lastNode);
+        }
+      }
+
+      function appendLiveMessages(messages) {
+        var list = Array.isArray(messages) ? messages : [];
+        if (!list.length) {
+          return { incoming: 0, hasAppended: false };
+        }
+
+        var incoming = 0;
+        var lastNode = null;
+        var hasAppended = false;
+
+        for (var i = 0; i < list.length; i += 1) {
+          var msg = list[i] || {};
+          var node = appendMessage(msg, { focus: false });
+          if (node) {
+            hasAppended = true;
+            lastNode = node;
+            if (!msg.is_mine) {
+              incoming += 1;
+            }
+          }
+        }
+
+        if (lastNode) {
+          els.messageLog.scrollTop = els.messageLog.scrollHeight;
+          focusMessageNode(lastNode);
+        }
+
+        if (incoming > 0) {
+          announceThread("Получено новых сообщений: " + incoming + ".");
+        }
+
+        return { incoming: incoming, hasAppended: hasAppended };
+      }
+
+      function buildThreadMessagesUrl(threadId, sinceId) {
+        var path = String(urls.threadMessagesTemplate || "");
+        if (path.indexOf("/0/messages") !== -1) {
+          path = path.replace("/0/messages", "/" + encodeURIComponent(String(threadId)) + "/messages");
+        } else {
+          path = path.replace(/0(?=\/messages$)/, String(threadId));
+        }
+        if (sinceId && Number(sinceId) > 0) {
+          path += "?since_id=" + encodeURIComponent(String(sinceId));
+        }
+        return path;
+      }
+
+      function applyThreadMeta(label, roles) {
+        state.activeUserLabel = String(label || "");
+        state.activeUserRoles = String(roles || "");
+        syncThreadHeader();
+      }
+
+      function updateHistoryForThread(threadId) {
+        if (!window.history || typeof window.history.replaceState !== "function") {
+          return;
+        }
+        if (!threadId) {
+          window.history.replaceState({}, "", urls.list);
+          return;
+        }
+        window.history.replaceState({}, "", urls.list + "?thread_id=" + encodeURIComponent(String(threadId)));
+      }
+
+      function clearActiveThread(message, keepUrl) {
+        state.activeThreadId = 0;
+        state.lastMessageId = 0;
+        applyThreadMeta("", "");
+        setActiveChatVisual(0);
+        setThreadUiSelected(false);
+        clearMessageLog(message || "Выберите чат слева, чтобы открыть переписку.");
+        if (!keepUrl) {
+          updateHistoryForThread(0);
+        }
+      }
+
+      function loadThreadMessages(threadId, focusLast) {
+        if (!threadId) {
+          return;
+        }
+
+        fetch(buildThreadMessagesUrl(threadId, 0), {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+          cache: "no-store"
+        })
+          .then(function (resp) {
+            if (!resp.ok) {
+              throw new Error("Не удалось загрузить чат.");
+            }
+            return resp.json();
+          })
+          .then(function (data) {
+            if (Number(threadId || 0) !== Number(state.activeThreadId || 0)) {
+              return;
+            }
+            setThreadMessages(data.items || [], Number(data.last_message_id || 0), !!focusLast);
+            pollLive(true);
+          })
+          .catch(function (error) {
+            announceThread((error && error.message) ? error.message : "Ошибка загрузки чата.");
+          });
+      }
+
+      function activateThread(threadId, options) {
+        var opts = options || {};
+        var id = Number(threadId || 0);
+        if (!id) {
+          clearActiveThread("Чат не выбран.", !!opts.keepUrl);
+          return;
+        }
+
+        state.activeThreadId = id;
+        state.lastMessageId = 0;
+
+        var meta = {
+          label: opts.label || "",
+          roles: opts.roles || ""
+        };
+        if (!meta.label) {
+          meta = findChatMeta(id);
+        }
+
+        applyThreadMeta(meta.label, meta.roles);
+        setActiveChatVisual(id);
+        setThreadUiSelected(true);
+        clearMessageLog("Загрузка сообщений...");
+
+        if (els.threadIdInput) {
+          els.threadIdInput.value = String(id);
+        }
+
+        if (opts.pushUrl !== false) {
+          updateHistoryForThread(id);
+        }
+
+        if (opts.fetchMessages !== false) {
+          loadThreadMessages(id, true);
+        }
+      }
+
+      function collectCheckedThreadIds() {
+        if (!els.deleteForm) {
+          return [];
+        }
+        var values = [];
+        var nodes = els.deleteForm.querySelectorAll(".messenger-chat-checkbox:checked");
+        for (var i = 0; i < nodes.length; i += 1) {
+          values.push(Number(nodes[i].value || 0));
+        }
+        return values.filter(function (id) { return id > 0; });
+      }
+
+      function sendMessageLive() {
+        if (!els.sendForm || !els.sendInput || !state.canWrite || state.sendInFlight || !state.activeThreadId) {
+          return;
+        }
+
+        var sendLiveUrl = els.sendForm.getAttribute("data-send-live-url") || "";
+        if (!sendLiveUrl) {
+          return;
+        }
+
+        var body = (els.sendInput.value || "").trim();
+        if (!body) {
+          announceThread("Введите текст сообщения.");
+          return;
+        }
+
+        state.sendInFlight = true;
+        els.sendInput.setAttribute("aria-busy", "true");
+        if (els.sendBtn) {
+          els.sendBtn.setAttribute("aria-busy", "true");
+        }
+
+        var formData = new FormData(els.sendForm);
+        formData.set("thread_id", String(state.activeThreadId));
+
+        fetch(sendLiveUrl, {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+          headers: { Accept: "application/json" }
+        })
+          .then(function (resp) {
+            return resp.json().then(function (data) {
+              if (!resp.ok || !data || data.ok === false) {
+                throw new Error((data && data.message) ? data.message : "Не удалось отправить сообщение.");
+              }
+              return data;
+            });
+          })
+          .then(function (data) {
+            els.sendInput.value = "";
+            appendMessage(data.message || null, { focus: true });
+            announceThread("Сообщение отправлено.");
+
+            if (typeof data.last_message_id !== "undefined") {
+              state.lastMessageId = Math.max(state.lastMessageId, Number(data.last_message_id || 0));
+            }
+            if (Array.isArray(data.chats)) {
+              syncChatList(data.chats);
+            }
+            if (typeof data.unread_total !== "undefined") {
+              updateUnreadTotal(data.unread_total, { announce: false, playSound: false });
+            }
+          })
+          .catch(function (error) {
+            announceThread((error && error.message) ? error.message : "Ошибка отправки сообщения.");
+          })
+          .finally(function () {
+            state.sendInFlight = false;
+            els.sendInput.removeAttribute("aria-busy");
+            if (els.sendBtn) {
+              els.sendBtn.removeAttribute("aria-busy");
+            }
+          });
+      }
+
+      function startChatLive() {
+        if (!els.startForm || !state.canWrite || state.startInFlight) {
+          return;
+        }
+        var startLiveUrl = els.startForm.getAttribute("data-start-live-url") || "";
+        if (!startLiveUrl) {
+          return;
+        }
+
+        if (!state.selectedRecipientId) {
+          setStatus("Сначала выберите пользователя из списка.");
+          return;
+        }
+
+        state.startInFlight = true;
+        if (els.startBtn) {
+          els.startBtn.setAttribute("aria-busy", "true");
+        }
+
+        var formData = new FormData(els.startForm);
+
+        fetch(startLiveUrl, {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+          headers: { Accept: "application/json" }
+        })
+          .then(function (resp) {
+            return resp.json().then(function (data) {
+              if (!resp.ok || !data || data.ok === false) {
+                throw new Error((data && data.message) ? data.message : "Не удалось открыть чат.");
+              }
+              return data;
+            });
+          })
+          .then(function (data) {
+            if (Array.isArray(data.chats)) {
+              syncChatList(data.chats);
+            }
+            if (typeof data.unread_total !== "undefined") {
+              updateUnreadTotal(data.unread_total, { announce: false, playSound: false });
+            }
+
+            activateThread(Number(data.thread_id || 0), {
+              label: data.active_user_label || state.selectedRecipientLabel,
+              roles: data.active_user_roles || "",
+              pushUrl: true,
+              fetchMessages: false
+            });
+            setThreadMessages(data.messages || [], Number(data.last_message_id || 0), true);
+
+            if (els.searchInput) {
+              els.searchInput.focus();
+            }
+            setStatus("Чат открыт. Можно отправлять сообщения.");
+            announceThread("Чат открыт.");
+          })
+          .catch(function (error) {
+            setStatus((error && error.message) ? error.message : "Не удалось открыть чат.");
+          })
+          .finally(function () {
+            state.startInFlight = false;
+            if (els.startBtn) {
+              els.startBtn.removeAttribute("aria-busy");
+            }
+          });
+      }
+
+      function deleteSelectedChatsLive() {
+        if (!els.deleteForm || !state.canWrite || state.deleteInFlight) {
+          return;
+        }
+
+        var deleteLiveUrl = els.deleteForm.getAttribute("data-delete-live-url") || "";
+        if (!deleteLiveUrl) {
+          return;
+        }
+
+        var checkedIds = collectCheckedThreadIds();
+        if (!checkedIds.length) {
+          announceThread("Выберите хотя бы один чат для удаления.");
+          syncDeleteButton();
+          return;
+        }
+
+        var confirmText = els.deleteForm.getAttribute("data-confirm-message") || "Удалить выбранные чаты?";
+        if (!window.confirm(confirmText)) {
+          return;
+        }
+
+        state.deleteInFlight = true;
+        if (els.deleteBtn) {
+          els.deleteBtn.setAttribute("aria-busy", "true");
+        }
+
+        var formData = new FormData(els.deleteForm);
+
+        fetch(deleteLiveUrl, {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+          headers: { Accept: "application/json" }
+        })
+          .then(function (resp) {
+            return resp.json().then(function (data) {
+              if (!resp.ok) {
+                throw new Error((data && data.message) ? data.message : "Не удалось удалить чаты.");
+              }
+              return data;
+            });
+          })
+          .then(function (data) {
+            if (Array.isArray(data.chats)) {
+              syncChatList(data.chats);
+            }
+            if (typeof data.unread_total !== "undefined") {
+              updateUnreadTotal(data.unread_total, { announce: false, playSound: false });
+            }
+
+            var activeWasDeleted = checkedIds.indexOf(Number(state.activeThreadId || 0)) !== -1;
+            if (activeWasDeleted) {
+              clearActiveThread("Чат удален.", false);
+            }
+
+            announceThread(data.message || "Чаты обновлены.");
+            syncDeleteButton();
+          })
+          .catch(function (error) {
+            announceThread((error && error.message) ? error.message : "Не удалось удалить чаты.");
+          })
+          .finally(function () {
+            state.deleteInFlight = false;
+            if (els.deleteBtn) {
+              els.deleteBtn.removeAttribute("aria-busy");
+            }
+            syncDeleteButton();
+          });
+      }
+      function buildLiveUrl() {
+        var params = new URLSearchParams();
+        if (state.activeThreadId) {
+          params.append("thread_id", String(state.activeThreadId));
+        }
+        if (state.lastMessageId) {
+          params.append("since_id", String(state.lastMessageId));
+        }
+        return urls.live + (params.toString() ? ("?" + params.toString()) : "");
+      }
+
+      function pollDelay() {
+        if (document.hidden) {
+          return 6000;
+        }
+        return state.activeThreadId ? 2200 : 3200;
+      }
+
+      function scheduleNextPoll(delay) {
+        if (state.pollTimer) {
+          clearTimeout(state.pollTimer);
+        }
+        state.pollTimer = window.setTimeout(function () {
+          pollLive(false);
+        }, Number(delay || pollDelay()));
+      }
+
+      function pollLive(forceNow) {
+        if (!urls.live) {
+          return;
+        }
+        if (state.liveInFlight) {
+          if (!forceNow) {
+            scheduleNextPoll();
+          }
+          return;
+        }
+
+        state.liveInFlight = true;
+        fetch(buildLiveUrl(), {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+          cache: "no-store"
+        })
+          .then(function (resp) {
+            if (!resp.ok) {
+              throw new Error("Не удалось обновить данные мессенджера.");
+            }
+            return resp.json();
+          })
+          .then(function (data) {
+            if (Array.isArray(data.chats)) {
+              syncChatList(data.chats);
+            }
+
+            var incomingInActive = 0;
+            if (Number(data.thread_id || 0) === Number(state.activeThreadId || 0)) {
+              var appended = appendLiveMessages(data.messages || []);
+              incomingInActive = Number(appended.incoming || 0);
+              state.lastMessageId = Math.max(state.lastMessageId, Number(data.last_message_id || 0));
+              if (incomingInActive > 0) {
+                playIncomingSound();
+              }
+            }
+
+            if (typeof data.unread_total !== "undefined") {
+              updateUnreadTotal(data.unread_total, {
+                announce: true,
+                playSound: incomingInActive <= 0
+              });
+            }
+          })
+          .catch(function (error) {
+            announceGlobal((error && error.message)
+              ? (error.message + " Повторная попытка будет выполнена автоматически.")
+              : "Не удалось обновить данные мессенджера. Повторная попытка будет выполнена автоматически.");
+          })
+          .finally(function () {
+            state.liveInFlight = false;
+            scheduleNextPoll();
+          });
+      }
+
+      if (els.searchInput) {
+        els.searchInput.addEventListener("keydown", function (event) {
+          if (event.key === "ArrowDown" && els.resultsBox) {
+            var first = els.resultsBox.querySelector(".messenger-user-btn");
+            if (first) {
+              event.preventDefault();
+              first.focus();
+            }
+          }
+        });
+
+        els.searchInput.addEventListener("input", function () {
+          var value = (els.searchInput.value || "").trim();
+          if (state.searchTimer) {
+            clearTimeout(state.searchTimer);
+          }
+          state.searchTimer = setTimeout(function () {
+            if (value.length < 2) {
+              clearResults();
+              setRecipient("", "", null);
+              return;
+            }
+            fetchUsers(value, false, false);
+          }, 240);
+        });
+      }
+
+      if (els.showAllBtn) {
+        els.showAllBtn.addEventListener("click", function () {
+          fetchUsers("", true, true);
+        });
+      }
+
+      if (els.clearBtn) {
+        els.clearBtn.addEventListener("click", function () {
+          clearResults();
+          setRecipient("", "", null);
+          if (els.searchInput) {
+            els.searchInput.value = "";
+            els.searchInput.focus();
+          }
+        });
+      }
+
+      if (els.startForm) {
+        els.startForm.addEventListener("submit", function (event) {
+          event.preventDefault();
+          startChatLive();
+        });
+      }
+
+      if (els.sendForm) {
+        els.sendForm.addEventListener("submit", function (event) {
+          event.preventDefault();
+          sendMessageLive();
+        });
+      }
+
+      if (els.sendInput) {
+        els.sendInput.addEventListener("keydown", function (event) {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            sendMessageLive();
+          }
+        });
+      }
+
+      if (els.chatList) {
+        els.chatList.addEventListener("click", function (event) {
+          var link = event.target.closest(".messenger-chat-link");
+          if (!link) {
+            return;
+          }
+          event.preventDefault();
+          var threadId = Number(link.getAttribute("data-thread-id") || 0);
+          var label = link.getAttribute("data-thread-label") || "";
+          var roles = link.getAttribute("data-thread-roles") || "";
+          activateThread(threadId, {
+            label: label,
+            roles: roles,
+            pushUrl: true,
+            fetchMessages: true
+          });
+        });
+      }
+
+      if (els.selectAllBtn && els.deleteForm) {
+        els.selectAllBtn.addEventListener("click", function () {
+          var checkboxes = els.deleteForm.querySelectorAll(".messenger-chat-checkbox");
+          if (!checkboxes.length) {
+            return;
+          }
+          var hasUnchecked = false;
+          for (var i = 0; i < checkboxes.length; i += 1) {
+            if (!checkboxes[i].checked) {
+              hasUnchecked = true;
+              break;
+            }
+          }
+          for (var j = 0; j < checkboxes.length; j += 1) {
+            checkboxes[j].checked = hasUnchecked;
+          }
+          syncDeleteButton();
+        });
+
+        els.deleteForm.addEventListener("change", function (event) {
+          var target = event.target;
+          if (!target || !target.classList || !target.classList.contains("messenger-chat-checkbox")) {
+            return;
+          }
+          syncDeleteButton();
+        });
+
+        els.deleteForm.addEventListener("submit", function (event) {
+          event.preventDefault();
+          deleteSelectedChatsLive();
+        });
+      }
+
+      document.addEventListener("visibilitychange", function () {
+        scheduleNextPoll(400);
+      });
+
+      ["click", "keydown", "touchstart"].forEach(function (name) {
+        document.addEventListener(name, ensureAudioEnabled, { passive: true, once: true });
+      });
+
+      syncDeleteButton();
+      setRecipient("", "", null);
+      updateUnreadTotal(state.previousUnreadTotal, { announce: false, playSound: false });
+      setThreadUiSelected(!!state.activeThreadId);
+      syncThreadHeader();
+
+      if (state.activeThreadId) {
+        setActiveChatVisual(state.activeThreadId);
+        var initialLast = els.messageLog.querySelector(".messenger-msg:last-of-type");
+        if (initialLast) {
+          focusMessageNode(initialLast);
+        }
+      }
+
+      pollLive(false);
+    })();
+  </script>
+{% endblock %}

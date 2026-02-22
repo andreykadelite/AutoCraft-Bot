@@ -1,0 +1,40 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>События Windows</h1>
+    <p class="muted">Поиск по журналам событий (System, Application, Security и др.).</p>
+  </div>
+</div>
+
+<form class="filter-bar" method="get" aria-label="Фильтр событий Windows">
+  <label for="log">
+    Журнал
+    <input id="log" type="text" name="log" value="{{ log_name }}" placeholder="System">
+  </label>
+  <label for="level">
+    Уровень
+    <input id="level" type="text" name="level" value="{{ level }}" placeholder="2">
+  </label>
+  <label for="provider">
+    Источник
+    <input id="provider" type="text" name="provider" value="{{ provider }}" placeholder="">
+  </label>
+  <label for="event_id">
+    ID события
+    <input id="event_id" type="text" name="event_id" value="{{ event_id }}" placeholder="">
+  </label>
+  <label for="limit">
+    Лимит
+    <input id="limit" type="number" name="limit" value="{{ limit }}" min="1" max="200">
+  </label>
+  <button type="submit" class="btn-primary">Применить</button>
+</form>
+
+<div class="card">
+  <pre class="log-block" aria-label="Вывод журнала событий">
+{% for line in logs %}{{ line }}
+{% endfor %}  </pre>
+</div>
+{% endblock %}

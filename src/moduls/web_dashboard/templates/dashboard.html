@@ -1,0 +1,1423 @@
+﻿{% extends "panel_base.html" %}
+
+{% macro yesno(value) -%}
+  {% if value is none %}-{% elif value %}Да{% else %}Нет{% endif %}
+{%- endmacro %}
+
+{% block panel_content %}
+<div class="page-header" data-overview-url="{{ url_for('WacIndexView.overview_data') }}" data-overview-refresh="{{ overview_refresh_seconds }}">
+  <div>
+    <h1>Обзор</h1>
+    <p class="muted">Сводка по состоянию системы и последним событиям.</p>
+  </div>
+  <div class="badge" aria-label="Время последнего обновления" data-overview-updated>{{ now.strftime('%d.%m.%Y %H:%M') }}</div>
+</div>
+<span id="overview-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+{% if login_progress %}
+<div
+  class="alert dashboard-login-progress {% if login_progress.error %}alert-warning{% else %}alert-info{% endif %}"
+  id="dashboard-login-progress"
+  data-login-progress-status-url="{{ login_progress_status_url }}"
+  data-login-progress-done="{{ 1 if login_progress.done else 0 }}"
+  data-login-progress-has-error="{{ 1 if login_progress.error else 0 }}"
+>
+  <strong>Вход выполнен.</strong>
+  <span data-login-progress-message>
+    {% if login_progress.error %}
+      {{ login_progress.error }}
+    {% elif login_progress.done %}
+      Подготовка данных завершена.
+    {% else %}
+      {{ login_progress.message or 'Фоновая загрузка данных продолжается.' }}
+    {% endif %}
+  </span>
+  <ol class="dashboard-login-progress-steps" data-login-progress-steps aria-label="Статус фоновой загрузки">
+    {% for step in login_progress.steps %}
+      {% if step.detail %}
+        {% set step_status_text = step.detail %}
+      {% elif step.status == "done" %}
+        {% set step_status_text = "Готово" %}
+      {% elif step.status == "in_progress" %}
+        {% set step_status_text = "Выполняется" %}
+      {% elif step.status == "error" %}
+        {% set step_status_text = "Ошибка" %}
+      {% else %}
+        {% set step_status_text = "Ожидание" %}
+      {% endif %}
+      <li
+        class="dashboard-login-progress-step"
+        data-step-id="{{ step.id }}"
+        data-step-label="{{ step.label }}"
+        data-step-status="{{ step.status }}"
+        aria-label="{{ step.label }}: {{ step_status_text }}"
+      >
+        <span class="dashboard-login-progress-step-label">{{ step.label }}</span>
+        <span class="dashboard-login-progress-step-separator" aria-hidden="true">&nbsp;—&nbsp;</span>
+        <span class="dashboard-login-progress-step-status">
+          <span class="dashboard-login-progress-step-status-prefix">Статус:&nbsp;</span>
+          <span data-step-status-text>{{ step_status_text }}</span>
+        </span>
+      </li>
+    {% endfor %}
+  </ol>
+  <div class="dashboard-retry-wrap" data-login-progress-retry-wrap{% if not login_progress.error %} hidden{% endif %}>
+    <a class="btn" href="{{ url_for('WacIndexView.overview_retry') }}">Повторить загрузку</a>
+  </div>
+</div>
+{% endif %}
+{% set reboot_info = security.reboot_pending_details or {} %}
+{% set reboot_reasons = reboot_info.reasons or [] %}
+
+{% if security.reboot_pending %}
+<div class="alert alert-warning" role="alert">
+  <strong>Требуется перезагрузка:</strong>
+  {% if reboot_reasons %}
+    {% for reason in reboot_reasons %}
+      {{ reason.title or reason.id or 'Причина не определена' }}{% if reason.details %} ({{ reason.details }}){% endif %}{% if not loop.last %}; {% endif %}
+    {% endfor %}
+  {% else %}
+    обнаружены признаки незавершённого обновления или конфигурации.
+  {% endif %}
+</div>
+{% endif %}
+
+{% if ps_error %}
+<div class="alert alert-warning" role="alert">
+  <strong>Внимание:</strong> Не удалось полностью получить данные системы. {{ ps_error }}
+  <div class="dashboard-retry-wrap">
+    <a class="btn" href="{{ url_for('WacIndexView.overview_retry') }}" aria-label="Повторить загрузку недостающих данных системы">
+      Повторить
+    </a>
+  </div>
+</div>
+{% endif %}
+
+<div class="tiles" role="list">
+  <div class="tile" role="listitem" aria-label="Нагрузка центрального процессора">
+    <div class="tile-title">ЦП</div>
+    <div class="tile-value" data-overview-value="cpu_percent">{{ cpu | default('-', true) }}%</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Использование памяти">
+    <div class="tile-title">Память</div>
+    <div class="tile-value"><span data-overview-value="memory.used_gb">{{ memory.used_gb | default('-', true) }}</span> ГБ</div>
+    <div class="tile-sub">из <span data-overview-value="memory.total_gb">{{ memory.total_gb | default('-', true) }}</span> ГБ (<span data-overview-value="memory.percent">{{ memory.percent | default('-', true) }}</span>%)</div>
+    <div class="tile-sub">Свободно <span data-overview-value="memory.free_gb">{{ memory.free_gb | default('-', true) }}</span> ГБ</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Время работы системы">
+    <div class="tile-title">Аптайм</div>
+    <div class="tile-value" data-overview-value="uptime_human">{{ system.uptime_human | default('-', true) }}</div>
+    <div class="tile-sub">С момента последней загрузки</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Использование дисков">
+    <div class="tile-title">Диски</div>
+    <div class="tile-value" data-overview-value="disk_percent">{{ disk_percent | default('-', true) }}%</div>
+    <div class="tile-sub">Локальных дисков: {{ disks | length }}</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Сетевой трафик">
+    <div class="tile-title">Сеть</div>
+    <div class="tile-value" data-overview-value="net_io.sent_human">{{ net_io.sent_human | default('-') }}</div>
+    <div class="tile-sub">Получено <span data-overview-value="net_io.recv_human">{{ net_io.recv_human | default('-') }}</span></div>
+    <div class="tile-sub">Пакеты <span data-overview-value="net_io.packets_sent">{{ net_io.packets_sent | default('-', true) }}</span> / <span data-overview-value="net_io.packets_recv">{{ net_io.packets_recv | default('-', true) }}</span></div>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="system-title">
+    {% set power_info = power or {} %}
+    {% set internal_batteries = power_info.internal_batteries or [] %}
+    {% set portable_batteries = power_info.portable_batteries or [] %}
+    {% set portable_candidates = power_info.portable_battery_candidates or [] %}
+    {% set portable_adapters = power_info.portable_ac_adapters or [] %}
+    {% set portable_unknown = power_info.portable_unknown_devices or [] %}
+    {% set ups_devices = power_info.ups_devices or [] %}
+    {% set pnp_power_devices = power_info.pnp_devices or [] %}
+    {% set serial_ups_devices = power_info.serial_ups_candidates or [] %}
+    {% set power_paths = power_info.paths or [] %}
+    <h3 id="system-title">Система</h3>
+    {% if power_info.error %}
+    <div class="alert alert-warning" role="alert">
+      <strong>Питание:</strong> {{ power_info.error }}
+    </div>
+    {% endif %}
+    <dl class="info-list">
+      <div>
+        <dt>Имя компьютера</dt>
+        <dd>{{ system.hostname or '-' }}</dd>
+      </div>
+      <div>
+        <dt>ОС</dt>
+        <dd>{{ (winver.product_name or system.os_name) | default('-', true) }}</dd>
+      </div>
+      <div>
+        <dt>Версия</dt>
+        <dd>{{ system.os_version or '-' }}{% if system.os_build %} (сборка {{ system.os_build }}{% if winver.ubr %}.{{ winver.ubr }}{% endif %}){% endif %}</dd>
+      </div>
+      <div>
+        <dt>Редакция</dt>
+        <dd>{{ winver.edition_id or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Архитектура</dt>
+        <dd>{{ system.architecture or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Домена/раб. группа</dt>
+        <dd>
+          {% if system.part_of_domain %}
+            {{ system.domain or '-' }}
+          {% elif system.workgroup %}
+            {{ system.workgroup }}
+          {% else %}
+            -
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Роль в домене</dt>
+        <dd>{{ system.domain_role or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Часовой пояс</dt>
+        <dd>{{ timezone.name or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Время работы</dt>
+        <dd>{{ system.uptime_human or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Последняя загрузка</dt>
+        <dd>{{ system.boot_time_human or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Процессор</dt>
+        <dd>{{ system.cpu_name or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Ядра / потоки</dt>
+        <dd>{{ system.cpu_cores or '-' }} / {{ system.cpu_logical or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Частота</dt>
+        <dd>
+          {% if system.cpu_current_mhz %}{{ system.cpu_current_mhz }} МГц{% elif system.cpu_max_mhz %}{{ system.cpu_max_mhz }} МГц{% else %}-{% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Производитель</dt>
+        <dd>{{ system.manufacturer or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Модель</dt>
+        <dd>{{ system.model or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Аккумулятор / ИБП</dt>
+        <dd data-overview-value="power.summary">
+          {{ power_info.summary or 'Не обнаружено' }}
+          {% if power_info.percent is not none %}
+            (<span data-overview-value="power.percent">{{ power_info.percent }}</span>%)
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+
+    <details class="details-block">
+      <summary>
+        Аккумулятор и ИБП
+        {% if power_info.present %}
+          {% if power_info.percent is not none %} ({{ power_info.percent }}%){% endif %}
+        {% else %}
+          (не обнаружены)
+        {% endif %}
+      </summary>
+      <dl class="info-list">
+        <div>
+          <dt>Сводка</dt>
+          <dd data-overview-value="power.summary">{{ power_info.summary or 'Не обнаружено' }}</dd>
+        </div>
+        <div>
+          <dt>Питание от сети</dt>
+          <dd>
+            {% if power_info.on_ac is none %}-{% elif power_info.on_ac %}Да{% else %}Нет{% endif %}
+          </dd>
+        </div>
+        <div>
+          <dt>Заряд</dt>
+          <dd>{% if power_info.percent is not none %}<span data-overview-value="power.percent">{{ power_info.percent }}</span>%{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Статус контроллера питания</dt>
+          <dd>{{ power_info.charge_status or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Оценка остатка</dt>
+          <dd>{% if power_info.runtime_human %}{{ power_info.runtime_human }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Встроенный аккумулятор</dt>
+          <dd>{{ yesno(power_info.has_internal_battery) }}</dd>
+        </div>
+        <div>
+          <dt>ИБП</dt>
+          <dd>{{ yesno(power_info.has_ups) }}</dd>
+        </div>
+        <div>
+          <dt>Портативные батареи</dt>
+          <dd>{{ portable_batteries | length }}</dd>
+        </div>
+        <div>
+          <dt>Кандидаты PortableBattery</dt>
+          <dd>{{ portable_candidates | length }}</dd>
+        </div>
+        <div>
+          <dt>Отфильтровано AC Adapter</dt>
+          <dd>{{ portable_adapters | length }}</dd>
+        </div>
+        <div>
+          <dt>NoSystemBattery</dt>
+          <dd>{{ yesno(power_info.no_system_battery) }}</dd>
+        </div>
+        <div>
+          <dt>BatteryFlag</dt>
+          <dd>{{ power_info.battery_flag if power_info.battery_flag is not none else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Обнаруженные вендоры</dt>
+          <dd>{{ power_info.detected_vendors | join(', ') if power_info.detected_vendors else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Источник данных</dt>
+          <dd>{{ power_info.source or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Диагностика</dt>
+          <dd>{{ power_info.diagnostics | join('; ') if power_info.diagnostics else '-' }}</dd>
+        </div>
+      </dl>
+
+      <details class="details-block">
+        <summary>Встроенные аккумуляторы ({{ internal_batteries | length }})</summary>
+        <table class="table table-compact">
+          <caption class="sr-only">Данные внутренних аккумуляторов</caption>
+          <thead>
+            <tr>
+              <th scope="col">Устройство</th>
+              <th scope="col">Статус</th>
+              <th scope="col">Заряд</th>
+              <th scope="col">Остаток</th>
+              <th scope="col">Химия</th>
+              <th scope="col">Производитель</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in internal_batteries %}
+            <tr>
+              <td>{{ item.name or '-' }}</td>
+              <td>{{ item.status_text or item.status or '-' }}</td>
+              <td>{{ item.charge_percent if item.charge_percent is not none else '-' }}{% if item.charge_percent is not none %}%{% endif %}</td>
+              <td>{{ item.runtime_human or '-' }}</td>
+              <td>{{ item.chemistry or '-' }}</td>
+              <td>{{ item.manufacturer or '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+
+      <details class="details-block">
+        <summary>ИБП ({{ ups_devices | length }})</summary>
+        <table class="table table-compact">
+          <caption class="sr-only">Данные источников бесперебойного питания</caption>
+          <thead>
+            <tr>
+              <th scope="col">Устройство</th>
+              <th scope="col">Статус</th>
+              <th scope="col">Заряд</th>
+              <th scope="col">Остаток</th>
+              <th scope="col">Производитель</th>
+              <th scope="col">Источник</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in ups_devices %}
+            <tr>
+              <td>{{ item.name or '-' }}</td>
+              <td>{{ item.status or '-' }}</td>
+              <td>{{ item.charge_percent if item.charge_percent is not none else '-' }}{% if item.charge_percent is not none %}%{% endif %}</td>
+              <td>{{ item.runtime_human or '-' }}</td>
+              <td>{{ item.manufacturer or '-' }}</td>
+              <td>{{ item.source or '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+
+      <details class="details-block">
+        <summary>Портативные батареи ({{ portable_batteries | length }})</summary>
+        <table class="table table-compact">
+          <caption class="sr-only">Данные портативных аккумуляторов</caption>
+          <thead>
+            <tr>
+              <th scope="col">Устройство</th>
+              <th scope="col">Статус</th>
+              <th scope="col">Заряд</th>
+              <th scope="col">Остаток</th>
+              <th scope="col">Интерфейс</th>
+              <th scope="col">Производитель</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in portable_batteries %}
+            <tr>
+              <td>{{ item.name or '-' }}</td>
+              <td>{{ item.status_text or item.status or '-' }}</td>
+              <td>{{ item.charge_percent if item.charge_percent is not none else '-' }}{% if item.charge_percent is not none %}%{% endif %}</td>
+              <td>{{ item.runtime_human or '-' }}</td>
+              <td>{{ item.connection or '-' }}</td>
+              <td>{{ item.manufacturer or '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+
+      <details class="details-block">
+        <summary>Разбор PortableBattery: почему признано/не признано ({{ portable_candidates | length }})</summary>
+        <table class="table table-compact">
+          <caption class="sr-only">Причины классификации Win32_PortableBattery</caption>
+          <thead>
+            <tr>
+              <th scope="col">Устройство</th>
+              <th scope="col">Классификация</th>
+              <th scope="col">Причина</th>
+              <th scope="col">Интерфейс</th>
+              <th scope="col">Производитель</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in portable_candidates %}
+            <tr>
+              <td>{{ item.name or '-' }}</td>
+              <td>{{ item.detected_label or item.detected_type or '-' }}</td>
+              <td>{{ item.detection_reason or '-' }}</td>
+              <td>{{ item.connection or '-' }}</td>
+              <td>{{ item.manufacturer or '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if portable_unknown %}
+        <p class="muted">Не классифицировано: {{ portable_unknown | length }}. Проверьте модель устройства и драйверы Battery/ACPI.</p>
+        {% endif %}
+      </details>
+
+      <details class="details-block">
+        <summary>Каналы получения данных</summary>
+        <table class="table table-compact">
+          <caption class="sr-only">Методы определения аккумулятора и ИБП</caption>
+          <thead>
+            <tr>
+              <th scope="col">Канал</th>
+              <th scope="col">Назначение</th>
+              <th scope="col">Статус</th>
+              <th scope="col">Детали</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for path in power_paths %}
+            <tr>
+              <td>{{ path.channel or '-' }}</td>
+              <td>{{ path.target or '-' }}</td>
+              <td>{{ path.status or '-' }}</td>
+              <td>{{ path.details or '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+
+      <details class="details-block">
+        <summary>PnP/USB и COM-кандидаты</summary>
+        <table class="table table-compact">
+          <caption class="sr-only">Устройства питания, найденные через PnP</caption>
+          <thead>
+            <tr>
+              <th scope="col">Устройство</th>
+              <th scope="col">Интерфейс</th>
+              <th scope="col">Статус</th>
+              <th scope="col">Производитель</th>
+              <th scope="col">Источник</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in pnp_power_devices %}
+            <tr>
+              <td>{{ item.name or '-' }}</td>
+              <td>{{ item.connection or '-' }}</td>
+              <td>{{ item.status or '-' }}</td>
+              <td>{{ item.manufacturer or '-' }}</td>
+              <td>{{ item.source or '-' }}</td>
+            </tr>
+            {% endfor %}
+            {% for item in serial_ups_devices %}
+            <tr>
+              <td>{{ item.name or item.port or '-' }}</td>
+              <td>{{ item.connection or '-' }}</td>
+              <td>{{ item.status or '-' }}</td>
+              <td>-</td>
+              <td>{{ item.source or '-' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not pnp_power_devices and not serial_ups_devices %}
+            <tr><td colspan="5">Нет данных</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </details>
+
+      <details class="details-block">
+        <summary>Инструменты и заметки</summary>
+        <dl class="info-list">
+          <div>
+            <dt>apcaccess</dt>
+            <dd>{{ yesno(power_info.tools.apcaccess if power_info.tools else none) }}</dd>
+          </div>
+          <div>
+            <dt>upsc (NUT)</dt>
+            <dd>{{ yesno(power_info.tools.upsc if power_info.tools else none) }}</dd>
+          </div>
+          <div>
+            <dt>Служба SNMP</dt>
+            <dd>{{ yesno(power_info.tools.snmp_service if power_info.tools else none) }}</dd>
+          </div>
+          <div>
+            <dt>Примечания</dt>
+            <dd>{{ power_info.notes | join('; ') if power_info.notes else '-' }}</dd>
+          </div>
+        </dl>
+      </details>
+    </details>
+
+    <details class="details-block">
+      <summary>Дополнительные сведения об ОС</summary>
+      <dl class="info-list">
+        <div>
+          <dt>Тип системы</dt>
+          <dd>{{ system.product_type or '-' }}</dd>
+        </div>
+        <div>
+          <dt>DisplayVersion</dt>
+          <dd>{{ winver.display_version or '-' }}</dd>
+        </div>
+        <div>
+          <dt>ReleaseId</dt>
+          <dd>{{ winver.release_id or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Тип установки</dt>
+          <dd>{{ winver.installation_type or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Дата установки</dt>
+          <dd>{{ system.install_time_human or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Системная папка</dt>
+          <dd>{{ system.system_directory or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Windows</dt>
+          <dd>{{ system.windows_directory or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Локаль</dt>
+          <dd>{{ system.locale or '-' }}{% if system.os_language %} ({{ system.os_language }}){% endif %}</dd>
+        </div>
+        <div>
+          <dt>Языки интерфейса</dt>
+          <dd>{{ system.mui_languages | join(', ') if system.mui_languages else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Пользователь ОС</dt>
+          <dd>{{ system.registered_user or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Организация</dt>
+          <dd>{{ system.organization or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Серийный номер ОС</dt>
+          <dd>{{ system.os_serial or '-' }}</dd>
+        </div>
+      </dl>
+    </details>
+
+    <details class="details-block">
+      <summary>Оборудование и прошивки</summary>
+      <dl class="info-list">
+        <div>
+          <dt>Тип платформы</dt>
+          <dd>{{ system.system_type or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Тип устройства</dt>
+          <dd>{{ system.device_type or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Тип корпуса</dt>
+          <dd>{{ system.chassis_types | join(', ') if system.chassis_types else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Тип ПК</dt>
+          <dd>{{ system.pc_system_type or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Семейство системы</dt>
+          <dd>{{ system.system_family or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Hypervisor</dt>
+          <dd>{{ yesno(system.hypervisor_present) }}</dd>
+        </div>
+        <div>
+          <dt>BIOS</dt>
+          <dd>{{ system.bios_version or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Производитель BIOS</dt>
+          <dd>{{ system.bios_manufacturer or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Дата BIOS</dt>
+          <dd>{{ system.bios_release or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Серийный номер BIOS</dt>
+          <dd>{{ system.bios_serial or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Производитель корпуса</dt>
+          <dd>{{ system.enclosure_manufacturer or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Серийный номер корпуса</dt>
+          <dd>{{ system.enclosure_serial or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Asset tag</dt>
+          <dd>{{ system.asset_tag or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Плата</dt>
+          <dd>{{ system.baseboard_manufacturer or '-' }} {{ system.baseboard_product or '' }}</dd>
+        </div>
+        <div>
+          <dt>Серийный номер платы</dt>
+          <dd>{{ system.baseboard_serial or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Версия платы</dt>
+          <dd>{{ system.baseboard_version or '-' }}</dd>
+        </div>
+        <div>
+          <dt>UUID системы</dt>
+          <dd>{{ system.system_uuid or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Продукт системы</dt>
+          <dd>{{ system.system_product_name or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Вендор системы</dt>
+          <dd>{{ system.system_product_vendor or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Идентификатор продукта</dt>
+          <dd>{{ system.system_product_id or '-' }}</dd>
+        </div>
+      </dl>
+    </details>
+  </section>
+
+  <section class="card" aria-labelledby="security-title">
+    <h3 id="security-title">Безопасность</h3>
+    {% set defender = security.defender or {} %}
+    {% set tpm = security.tpm or {} %}
+    {% set tpm_devices = tpm.devices or [] %}
+    {% set secure_boot_info = security.secure_boot_details or {} %}
+    {% set bitlocker_info = security.bitlocker_meta or {} %}
+    {% set bitlocker_readability = bitlocker_info.readability or {} %}
+    {% set bitlocker_readability_reasons = bitlocker_readability.reasons or [] %}
+    {% set firewall_profiles = security.firewall or [] %}
+    {% set bitlocker_volumes = security.bitlocker or [] %}
+    {% if secure_boot_info.error %}
+    <div class="alert alert-warning" role="alert">
+      <strong>Secure Boot:</strong> {{ secure_boot_info.error }}
+    </div>
+    {% endif %}
+    {% if bitlocker_info.error %}
+    <div class="alert alert-warning" role="alert">
+      <strong>BitLocker:</strong> {{ bitlocker_info.error }}
+    </div>
+    {% endif %}
+    {% if tpm.error %}
+    <div class="alert alert-warning" role="alert">
+      <strong>TPM:</strong> {{ tpm.error }}
+    </div>
+    {% endif %}
+    <dl class="info-list">
+      <div>
+        <dt>Secure Boot</dt>
+        <dd>{{ yesno(security.secure_boot) }}</dd>
+      </div>
+      <div>
+        <dt>Secure Boot (статус)</dt>
+        <dd>{{ secure_boot_info.state or '-' }}</dd>
+      </div>
+      <div>
+        <dt>TPM</dt>
+        <dd>{{ yesno(tpm.present) }}</dd>
+      </div>
+      <div>
+        <dt>TPM готов</dt>
+        <dd>{{ yesno(tpm.ready) }}</dd>
+      </div>
+      <div>
+        <dt>Defender (RTP)</dt>
+        <dd>{{ yesno(defender.realtime) }}</dd>
+      </div>
+      <div>
+        <dt>Брандмауэр</dt>
+        <dd>
+          {% if firewall_profiles %}
+            включено {{ firewall_profiles | selectattr('enabled') | list | length }} из {{ firewall_profiles | length }}
+          {% else %}
+            -
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>BitLocker</dt>
+        <dd>{{ bitlocker_volumes | length }}</dd>
+      </div>
+      <div>
+        <dt>BitLocker (статус)</dt>
+        <dd>{{ bitlocker_info.summary or '-' }}</dd>
+      </div>
+    </dl>
+
+    <details class="details-block">
+      <summary>Secure Boot</summary>
+      <dl class="info-list">
+        <div>
+          <dt>Включен</dt>
+          <dd>{{ yesno(security.secure_boot) }}</dd>
+        </div>
+        <div>
+          <dt>Поддерживается</dt>
+          <dd>{{ yesno(secure_boot_info.supported) }}</dd>
+        </div>
+        <div>
+          <dt>Состояние</dt>
+          <dd>{{ secure_boot_info.state or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Источник данных</dt>
+          <dd>{{ secure_boot_info.source or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Тип прошивки</dt>
+          <dd>{% if secure_boot_info.firmware_type is not none %}{{ secure_boot_info.firmware_type }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>UEFISecureBootEnabled (реестр)</dt>
+          <dd>{% if secure_boot_info.registry_value is not none %}{{ secure_boot_info.registry_value }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Диагностика</dt>
+          <dd>{{ secure_boot_info.diagnostics | join('; ') if secure_boot_info.diagnostics else '-' }}</dd>
+        </div>
+      </dl>
+    </details>
+
+    <details class="details-block">
+      <summary>Причины перезагрузки</summary>
+      <table class="table table-compact">
+        <caption class="sr-only">Причины, по которым системе требуется перезагрузка</caption>
+        <thead>
+          <tr>
+            <th scope="col">Причина</th>
+            <th scope="col">Детали</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for reason in reboot_reasons %}
+          <tr>
+            <td>{{ reason.title or reason.id or '-' }}</td>
+            <td>{{ reason.details or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="2">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if reboot_info.diagnostics %}
+      <p class="muted">Диагностика: {{ reboot_info.diagnostics | join('; ') }}</p>
+      {% endif %}
+    </details>
+
+    <details class="details-block">
+      <summary>Защитник Windows</summary>
+      <dl class="info-list">
+        <div>
+          <dt>Служба</dt>
+          <dd>{{ yesno(defender.service) }}</dd>
+        </div>
+        <div>
+          <dt>Антивирус</dt>
+          <dd>{{ yesno(defender.antivirus) }}</dd>
+        </div>
+        <div>
+          <dt>Антишпион</dt>
+          <dd>{{ yesno(defender.antispyware) }}</dd>
+        </div>
+        <div>
+          <dt>Защита в реальном времени</dt>
+          <dd>{{ yesno(defender.realtime) }}</dd>
+        </div>
+        <div>
+          <dt>Защита NIS</dt>
+          <dd>{{ yesno(defender.nis) }}</dd>
+        </div>
+        <div>
+          <dt>Защита от изменений</dt>
+          <dd>{{ yesno(defender.tamper) }}</dd>
+        </div>
+        <div>
+          <dt>Подписи</dt>
+          <dd>{{ defender.signature_version or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Подписи обновлены</dt>
+          <dd>{{ defender.signature_updated or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Антишпионские подписи</dt>
+          <dd>{{ defender.antispyware_signature_updated or '-' }}</dd>
+        </div>
+        <div>
+          <dt>NIS подписи</dt>
+          <dd>{{ defender.nis_signature_updated or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Движок</dt>
+          <dd>{{ defender.engine_version or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Версия продукта</dt>
+          <dd>{{ defender.product_version or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Последний быстрый скан</dt>
+          <dd>{{ defender.quick_scan_end or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Последний полный скан</dt>
+          <dd>{{ defender.full_scan_end or '-' }}</dd>
+        </div>
+      </dl>
+    </details>
+
+    <details class="details-block">
+      <summary>Брандмауэр Windows</summary>
+      <table class="table table-compact">
+        <caption class="sr-only">Профили брандмауэра Windows</caption>
+        <thead>
+          <tr>
+            <th scope="col">Профиль</th>
+            <th scope="col">Включён</th>
+            <th scope="col">Входящие</th>
+            <th scope="col">Исходящие</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for profile in firewall_profiles %}
+          <tr>
+            <td>{{ profile.name or '-' }}</td>
+            <td>{{ yesno(profile.enabled) }}</td>
+            <td>{{ profile.inbound or '-' }}</td>
+            <td>{{ profile.outbound or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+
+    <details class="details-block">
+      <summary>BitLocker</summary>
+      <table class="table table-compact">
+        <caption class="sr-only">Статус BitLocker</caption>
+        <thead>
+          <tr>
+            <th scope="col">Том</th>
+            <th scope="col">Тип</th>
+            <th scope="col">Защита</th>
+            <th scope="col">Замок</th>
+            <th scope="col">Метод</th>
+            <th scope="col">%</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for volume in bitlocker_volumes %}
+          <tr>
+            <td>{{ volume.mount or '-' }}</td>
+            <td>{{ volume.type or '-' }}</td>
+            <td>{{ volume.protection or '-' }}</td>
+            <td>{{ volume.lock or '-' }}</td>
+            <td>{{ volume.method or '-' }}</td>
+            <td>{{ volume.percent | default('-', true) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <dl class="info-list">
+        <div>
+          <dt>Источники</dt>
+          <dd>{{ bitlocker_info.sources | join(', ') if bitlocker_info.sources else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Доступ ограничен</dt>
+          <dd>{{ yesno(bitlocker_info.access_denied) }}</dd>
+        </div>
+        <div>
+          <dt>Диагностика</dt>
+          <dd>{{ bitlocker_info.diagnostics | join('; ') if bitlocker_info.diagnostics else '-' }}</dd>
+        </div>
+      </dl>
+      {% if not bitlocker_volumes %}
+      <div class="alert alert-info" role="status">
+        <strong>Почему BitLocker не читается:</strong>
+        {% if bitlocker_readability_reasons %}
+          {% for reason in bitlocker_readability_reasons %}
+            <br>{{ reason.title or reason.id or 'Причина не определена' }}{% if reason.details %}: {{ reason.details }}{% endif %}
+          {% endfor %}
+        {% else %}
+          причина не определена.
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if bitlocker_info.manage_bde_raw_snippet %}
+      <details class="details-block">
+        <summary>Фрагмент вывода manage-bde</summary>
+        <pre>{{ bitlocker_info.manage_bde_raw_snippet }}</pre>
+      </details>
+      {% endif %}
+    </details>
+
+    <details class="details-block">
+      <summary>TPM</summary>
+      <dl class="info-list">
+        <div>
+          <dt>TPM присутствует</dt>
+          <dd>{{ yesno(tpm.present) }}</dd>
+        </div>
+        <div>
+          <dt>TPM активирован</dt>
+          <dd>{{ yesno(tpm.activated) }}</dd>
+        </div>
+        <div>
+          <dt>TPM включён</dt>
+          <dd>{{ yesno(tpm.enabled) }}</dd>
+        </div>
+        <div>
+          <dt>TPM готов</dt>
+          <dd>{{ yesno(tpm.ready) }}</dd>
+        </div>
+        <div>
+          <dt>TPM во владении</dt>
+          <dd>{{ yesno(tpm.owned) }}</dd>
+        </div>
+        <div>
+          <dt>Производитель</dt>
+          <dd>{{ tpm.manufacturer or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Идентификатор производителя</dt>
+          <dd>{{ tpm.manufacturer_id or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Спецификация</dt>
+          <dd>{{ tpm.spec or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Версия производителя</dt>
+          <dd>{{ tpm.manufacturer_version or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Информация производителя</dt>
+          <dd>{{ tpm.manufacturer_version_info or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Физическое присутствие</dt>
+          <dd>{{ tpm.physical_presence or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Auto Provisioning</dt>
+          <dd>{{ tpm.auto_provisioning or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Managed Auth Level</dt>
+          <dd>{{ tpm.managed_auth_level or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Блокировка</dt>
+          <dd>{{ yesno(tpm.locked_out) }}</dd>
+        </div>
+        <div>
+          <dt>Счетчик блокировок</dt>
+          <dd>{{ tpm.lockout_count | default('-', true) }} / {{ tpm.lockout_max | default('-', true) }}</dd>
+        </div>
+        <div>
+          <dt>Время восстановления</dt>
+          <dd>{{ tpm.lockout_heal_time or '-' }}</dd>
+        </div>
+        <div>
+          <dt>SelfTest</dt>
+          <dd>{{ tpm.self_test or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Требуется перезапуск</dt>
+          <dd>{{ yesno(tpm.restart_pending) }}</dd>
+        </div>
+        <div>
+          <dt>Источник данных</dt>
+          <dd>{{ tpm.source or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Устройства TPM (SecurityDevices)</dt>
+          <dd>{{ tpm_devices | length }}</dd>
+        </div>
+        <div>
+          <dt>Диагностика</dt>
+          <dd>{{ tpm.diagnostics | join('; ') if tpm.diagnostics else '-' }}</dd>
+        </div>
+      </dl>
+      <table class="table table-compact">
+        <caption class="sr-only">Устройства TPM из SecurityDevices</caption>
+        <thead>
+          <tr>
+            <th scope="col">Устройство</th>
+            <th scope="col">Статус</th>
+            <th scope="col">Служба</th>
+            <th scope="col">Производитель</th>
+            <th scope="col">Источник</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in tpm_devices %}
+          <tr>
+            <td>{{ item.name or item.instance_id or '-' }}</td>
+            <td>{{ item.status or '-' }}</td>
+            <td>{{ item.service or '-' }}</td>
+            <td>{{ item.manufacturer or '-' }}</td>
+            <td>{{ item.source or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </section>
+
+  <section class="card" aria-labelledby="maintenance-title">
+    <h3 id="maintenance-title">Обслуживание</h3>
+    {% set service_state_map = {
+      'Running': 'Работает',
+      'Stopped': 'Остановлена',
+      'Paused': 'Приостановлена',
+      'Start Pending': 'Запускается',
+      'Stop Pending': 'Останавливается',
+      'Pause Pending': 'Приостанавливается',
+      'Continue Pending': 'Продолжается'
+    } %}
+    {% set service_mode_map = {
+      'Auto': 'Автоматически',
+      'Automatic': 'Автоматически',
+      'Manual': 'Вручную',
+      'Disabled': 'Отключена',
+      'Boot': 'Загрузка',
+      'System': 'Система'
+    } %}
+    <dl class="info-list">
+      <div>
+        <dt>Последнее обновление</dt>
+        <dd>
+          {% if updates.hotfix_installed_human and updates.hotfix_installed_human != '-' %}
+            {{ updates.hotfix_installed_human }}
+            {% if updates.hotfix_id %}({{ updates.hotfix_id }}){% endif %}
+          {% else %}
+            -
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Описание обновления</dt>
+        <dd>{{ updates.hotfix_description or '-' }}</dd>
+      </div>
+      <div>
+        <dt>Установлено</dt>
+        <dd>{{ updates.hotfix_installed_by or '-' }}</dd>
+      </div>
+    </dl>
+
+    <details class="details-block">
+      <summary>Ключевые службы</summary>
+      <table class="table table-compact">
+        <caption class="sr-only">Состояние ключевых служб Windows</caption>
+        <thead>
+          <tr>
+            <th scope="col">Служба</th>
+            <th scope="col">Состояние</th>
+            <th scope="col">Запуск</th>
+            <th scope="col">Учетная запись</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for svc in services %}
+          <tr>
+            <td>{{ svc.display_name or svc.name or '-' }}</td>
+            <td>{{ service_state_map.get(svc.state, svc.state or '-') }}</td>
+            <td>{{ service_mode_map.get(svc.start_mode, svc.start_mode or '-') }}</td>
+            <td>{{ svc.start_name or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </section>
+</div>
+
+<div class="grid">
+  <section class="card" aria-labelledby="memory-title">
+    <h3 id="memory-title">Память и подкачка</h3>
+    <table class="table table-compact">
+      <caption class="sr-only">Состояние оперативной памяти</caption>
+      <thead>
+        <tr>
+          <th scope="col">Показатель</th>
+          <th scope="col">Значение</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Всего</td>
+          <td>{{ memory.total_gb | default('-', true) }} ГБ</td>
+        </tr>
+        <tr>
+          <td>Использовано</td>
+          <td>{{ memory.used_gb | default('-', true) }} ГБ</td>
+        </tr>
+        <tr>
+          <td>Свободно</td>
+          <td>{{ memory.free_gb | default('-', true) }} ГБ</td>
+        </tr>
+        <tr>
+          <td>Доступно</td>
+          <td>{{ memory.available_gb | default('-', true) }} ГБ</td>
+        </tr>
+        <tr>
+          <td>Кэш</td>
+          <td>{{ memory.cached_gb | default('-', true) }} ГБ</td>
+        </tr>
+        <tr>
+          <td>Буферы</td>
+          <td>{{ memory.buffers_gb | default('-', true) }} ГБ</td>
+        </tr>
+        <tr>
+          <td>Использовано, %</td>
+          <td>{{ memory.percent | default('-', true) }}%</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <details class="details-block">
+      <summary>Подкачка (swap)</summary>
+      <dl class="info-list">
+        <div>
+          <dt>Всего</dt>
+          <dd>{{ swap.total_gb | default('-', true) }} ГБ</dd>
+        </div>
+        <div>
+          <dt>Использовано</dt>
+          <dd>{{ swap.used_gb | default('-', true) }} ГБ</dd>
+        </div>
+        <div>
+          <dt>Свободно</dt>
+          <dd>{{ swap.free_gb | default('-', true) }} ГБ</dd>
+        </div>
+        <div>
+          <dt>Использовано, %</dt>
+          <dd>{{ swap.percent | default('-', true) }}%</dd>
+        </div>
+      </dl>
+    </details>
+
+    <details class="details-block">
+      <summary>Файлы подкачки</summary>
+      <table class="table table-compact">
+        <caption class="sr-only">Файлы подкачки Windows</caption>
+        <thead>
+          <tr>
+            <th scope="col">Файл</th>
+            <th scope="col">Выделено, ГБ</th>
+            <th scope="col">Использовано, ГБ</th>
+            <th scope="col">Пик, ГБ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pf in pagefiles %}
+          <tr>
+            <td>{{ pf.name or '-' }}</td>
+            <td>{{ pf.allocated_gb | default('-', true) }}</td>
+            <td>{{ pf.current_gb | default('-', true) }}</td>
+            <td>{{ pf.peak_gb | default('-', true) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </section>
+
+  <section class="card" aria-labelledby="storage-title">
+    <h3 id="storage-title">Диски</h3>
+  <p class="muted">Всего <span data-overview-value="disk_totals.total_gb">{{ disk_totals.total_gb | default('-', true) }}</span> ГБ, свободно <span data-overview-value="disk_totals.free_gb">{{ disk_totals.free_gb | default('-', true) }}</span> ГБ.</p>
+    <table class="table">
+      <caption class="sr-only">Информация о дисках</caption>
+      <thead>
+        <tr>
+          <th scope="col">Диск</th>
+          <th scope="col">Метка</th>
+          <th scope="col">Файловая система</th>
+          <th scope="col">Всего, ГБ</th>
+          <th scope="col">Использовано, ГБ</th>
+          <th scope="col">Свободно, ГБ</th>
+          <th scope="col">% занято</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in disks %}
+        <tr>
+          <td>{{ d.device or '-' }}</td>
+          <td>{{ d.label or '-' }}</td>
+          <td>{{ d.fs or '-' }}</td>
+          <td>{{ d.total_gb | default('-', true) }}</td>
+          <td>{{ d.used_gb | default('-', true) }}</td>
+          <td>{{ d.free_gb | default('-', true) }}</td>
+          <td>{{ d.percent | default('-', true) }}%</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <details class="details-block">
+      <summary>Физические диски</summary>
+      <table class="table table-compact">
+        <caption class="sr-only">Физические накопители</caption>
+        <thead>
+          <tr>
+            <th scope="col">Модель</th>
+            <th scope="col">Интерфейс</th>
+            <th scope="col">Тип</th>
+            <th scope="col">Размер, ГБ</th>
+            <th scope="col">Серийный номер</th>
+            <th scope="col">Прошивка</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pd in physical_disks %}
+          <tr>
+            <td>{{ pd.model or '-' }}</td>
+            <td>{{ pd.interface or '-' }}</td>
+            <td>{{ pd.media_type or '-' }}</td>
+            <td>{{ pd.size_gb | default('-', true) }}</td>
+            <td>{{ pd.serial or '-' }}</td>
+            <td>{{ pd.firmware or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6">Нет данных</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="network-title">
+  <h3 id="network-title">Сеть</h3>
+  <div class="network-summary" role="list">
+    <div role="listitem">
+      <span class="label">Отправлено</span>
+      <span class="value" data-overview-value="net_io.sent_human">{{ net_io.sent_human | default('-') }}</span>
+    </div>
+    <div role="listitem">
+      <span class="label">Получено</span>
+      <span class="value" data-overview-value="net_io.recv_human">{{ net_io.recv_human | default('-') }}</span>
+    </div>
+    <div role="listitem">
+      <span class="label">Пакеты</span>
+      <span class="value"><span data-overview-value="net_io.packets_sent">{{ net_io.packets_sent | default('-', true) }}</span> / <span data-overview-value="net_io.packets_recv">{{ net_io.packets_recv | default('-', true) }}</span></span>
+    </div>
+  </div>
+
+  <details class="details-block">
+    <summary>Интерфейсы ({{ interfaces | length }})</summary>
+    <table class="table">
+      <caption class="sr-only">Интерфейсы сети</caption>
+      <thead>
+        <tr>
+          <th scope="col">Интерфейс</th>
+          <th scope="col">IP-адреса</th>
+          <th scope="col">Подсеть</th>
+          <th scope="col">Шлюз</th>
+          <th scope="col">DNS</th>
+          <th scope="col">MAC</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for iface in interfaces %}
+        <tr>
+          <td>{{ iface.name or '-' }}</td>
+          <td>{{ iface.ip | join(', ') if iface.ip else '-' }}</td>
+          <td>{{ iface.subnet | join(', ') if iface.subnet else '-' }}</td>
+          <td>{{ iface.gateway | join(', ') if iface.gateway else '-' }}</td>
+          <td>{{ iface.dns | join(', ') if iface.dns else '-' }}</td>
+          <td>{{ iface.mac or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</section>
+
+{% set status_map = {'queued': 'в очереди', 'running': 'выполняется', 'success': 'успешно', 'failed': 'ошибка'} %}
+{% set audit_map = {'ok': 'успешно', 'fail': 'ошибка'} %}
+
+<div class="grid">
+  <section class="card" aria-labelledby="metrics-title">
+    <h3 id="metrics-title">График метрик</h3>
+    <p class="sr-only" id="metricsChartDesc">График отображает последние показатели процессора, памяти и диска.</p>
+    <canvas id="metricsChart" height="120" role="img" aria-describedby="metricsChartDesc"></canvas>
+  </section>
+  <section class="card" aria-labelledby="jobs-title">
+    <h3 id="jobs-title">Последние задания</h3>
+    <table class="table">
+      <caption class="sr-only">Журнал последних заданий панели</caption>
+      <thead>
+        <tr>
+          <th scope="col">Время</th>
+          <th scope="col">Операция</th>
+          <th scope="col">Статус</th>
+          <th scope="col">Пользователь</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>{{ job.created_at.strftime('%H:%M:%S') }}</td>
+          <td>{{ job.operation }}</td>
+          <td>{{ status_map.get(job.status, job.status) }}</td>
+          <td>{{ job.user }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="audit-title">
+  <h3 id="audit-title">Последние события аудита</h3>
+  <table class="table">
+    <caption class="sr-only">Журнал аудита панели</caption>
+    <thead>
+      <tr>
+        <th scope="col">Время</th>
+        <th scope="col">Пользователь</th>
+        <th scope="col">Действие</th>
+        <th scope="col">Результат</th>
+        <th scope="col">Источник</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in audit %}
+      <tr>
+        <td>{{ item.created_at.strftime('%H:%M:%S') }}</td>
+        <td>{{ item.user }}</td>
+        <td>{{ item.action }}</td>
+        <td>{{ audit_map.get(item.result, item.result) }}</td>
+        <td>{{ item.source }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if login_progress_status_url %}
+<script src="{{ url_for('static', filename='js/dashboard_login_progress.js', v='20260222e') }}"></script>
+{% endif %}
+
+<script>
+  const labels = [{% for m in metrics %}'{{ m.created_at.strftime('%H:%M') }}'{% if not loop.last %},{% endif %}{% endfor %}];
+  const cpu = [{% for m in metrics %}{{ m.cpu|round(1) }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const mem = [{% for m in metrics %}{{ m.memory|round(1) }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const disk = [{% for m in metrics %}{{ m.disk|round(1) }}{% if not loop.last %},{% endif %}{% endfor %}];
+
+  const ctx = document.getElementById('metricsChart');
+  if (ctx) {
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'ЦП %', data: cpu, borderColor: '#2f74ff', backgroundColor: 'rgba(47,116,255,0.2)', tension: 0.2 },
+          { label: 'Память %', data: mem, borderColor: '#27ae60', backgroundColor: 'rgba(39,174,96,0.2)', tension: 0.2 },
+          { label: 'Диск %', data: disk, borderColor: '#f39c12', backgroundColor: 'rgba(243,156,18,0.2)', tension: 0.2 }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: true, max: 100 }
+        }
+      }
+    });
+  }
+</script>
+{% endblock %}

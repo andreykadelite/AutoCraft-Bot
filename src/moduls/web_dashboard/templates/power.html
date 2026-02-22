@@ -1,0 +1,348 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Питание устройства</h1>
+    <p class="muted">
+      Управление питанием с подтверждением паролем, планированием и аудитом.
+    </p>
+  </div>
+  {% if active_action %}
+  <div class="badge">
+    Активное действие: {{ active_action.action_label }} ({{ active_action.status_label }})
+  </div>
+  {% endif %}
+</div>
+
+{% if active_action %}
+<section
+  class="card power-active-card"
+  data-power-status-url="{{ status_url }}"
+  data-power-active-fingerprint="{{ active_action.id }}:{{ active_action.status }}:{{ active_action.verification }}"
+>
+  <h3>Текущее запланированное действие</h3>
+  <div class="power-active-grid">
+    <div>
+      <div class="power-active-line">
+        <span class="power-active-label">Действие:</span>
+        <span>{{ active_action.action_label }}</span>
+      </div>
+      <div class="power-active-line">
+        <span class="power-active-label">Статус:</span>
+        <span class="status-chip {{ active_action.status_chip }}">{{ active_action.status_label }}</span>
+      </div>
+      <div class="power-active-line">
+        <span class="power-active-label">Проверка:</span>
+        <span>{{ active_action.verification_label }}</span>
+      </div>
+      <div class="power-active-line">
+        <span class="power-active-label">Время запуска:</span>
+        <span>{{ active_action.scheduled_for_display }}</span>
+      </div>
+      {% if active_action.delay_label %}
+      <div class="power-active-line">
+        <span class="power-active-label">Интервал:</span>
+        <span>{{ active_action.delay_label }}</span>
+      </div>
+      {% endif %}
+      {% if active_action.verification_details %}
+      <p class="muted power-active-details">{{ active_action.verification_details }}</p>
+      {% endif %}
+    </div>
+    <div class="power-timer-wrap">
+      {% if active_action.status == "pending" %}
+      <div
+        class="power-countdown"
+        data-power-countdown
+        data-target-ts="{{ active_action.countdown_target_ts }}"
+      >
+        До выполнения: ...
+      </div>
+      {% else %}
+      <div class="power-countdown done">Состояние: {{ active_action.status_label }}</div>
+      {% endif %}
+
+      {% if can_action and unlocked and active_action.status == "pending" %}
+      <form
+        method="post"
+        action="{{ url_for('PowerView.cancel') }}"
+        data-confirm-message="Отменить запланированное действие питания?"
+        data-confirm-danger="true"
+      >
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn danger" type="submit">Отменить действие</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<section class="card power-lock-card">
+  <h3>Доступ к управлению</h3>
+  {% if unlocked %}
+  <p class="muted">Доступ подтвержден паролем до {{ unlock_expires_display }}.</p>
+  <form method="post" action="{{ url_for('PowerView.lock') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn" type="submit">Заблокировать управление</button>
+  </form>
+  {% else %}
+  <p class="muted">
+    Для входа в раздел питания подтвердите пароль текущего пользователя панели.
+  </p>
+  {% if unlock_retry_after > 0 %}
+  <div class="alert alert-warning" role="alert">
+    Слишком много неверных попыток. Повторите через {{ unlock_retry_after }} сек.
+  </div>
+  {% endif %}
+  <form class="form power-unlock-form" method="post" action="{{ url_for('PowerView.unlock') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>
+      Текущий пароль пользователя панели
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button class="btn-primary" type="submit">Подтвердить вход</button>
+  </form>
+  {% endif %}
+</section>
+
+{% if unlocked %}
+<div class="grid power-grid">
+  <section class="card">
+    <h3>Быстрые действия</h3>
+    {% if can_action %}
+    <div class="power-action-list">
+      {% for action in action_choices %}
+      <form
+        method="post"
+        action="{{ url_for('PowerView.instant_action', action=action.code) }}"
+        data-confirm-message="{{ action.confirm_now | e }}"
+        data-confirm-danger="{{ 'true' if action.code in ['shutdown', 'restart'] else 'false' }}"
+      >
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn {% if action.code in ['shutdown', 'restart'] %}danger{% endif %}" type="submit">
+          {{ action.label }}
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">
+      У вашей роли нет разрешения на выполнение действий питания (`can_action`).
+      Разрешение можно выдать в администрировании ролей.
+    </p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Разовое планирование</h3>
+    {% if can_action %}
+    <form class="form power-schedule-form" method="post" action="{{ url_for('PowerView.schedule') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <label>
+        Что сделать
+        <select name="action" required>
+          {% for action in action_choices %}
+          <option value="{{ action.code }}" {% if selected_action == action.code %}selected{% endif %}>
+            {{ action.label }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="power-delay-grid" role="group" aria-label="Выбор интервала">
+        {% for delay in delay_choices %}
+        <label class="power-delay-option">
+          <input
+            type="checkbox"
+            name="delay_option"
+            value="{{ delay.code }}"
+            data-delay-option
+            {% if selected_delay == delay.code %}checked{% endif %}
+          >
+          <span>{{ delay.label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      <label
+        class="power-custom-time-wrap{% if selected_delay != 'custom' %} hidden{% endif %}"
+        data-custom-time-wrap
+      >
+        Свое время запуска
+        <input
+          type="datetime-local"
+          name="custom_time"
+          data-custom-time-input
+          value="{{ custom_time }}"
+          min="{{ min_custom_time }}"
+        >
+      </label>
+
+      <div class="power-form-actions">
+        <button class="btn-primary" type="submit">Применить</button>
+      </div>
+    </form>
+    {% else %}
+    <p class="muted">
+      Планирование недоступно: для вашей роли не выдано разрешение `can_action`.
+    </p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Повторяющиеся действия</h3>
+    {% if can_action %}
+    <form class="form power-recurring-form" method="post" action="{{ url_for('PowerView.schedule_recurring') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <label>
+        Что сделать
+        <select name="action" required>
+          {% for action in action_choices %}
+          <option value="{{ action.code }}" {% if selected_recurring_action == action.code %}selected{% endif %}>
+            {{ action.label }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <fieldset class="power-weekday-grid" aria-label="Дни недели для расписания" data-recurring-days-group>
+        <legend>Дни недели</legend>
+        {% for day in recurring_weekday_choices %}
+        <label class="power-weekday-option">
+          <input
+            type="checkbox"
+            name="days"
+            value="{{ day.value }}"
+            data-recurring-day
+            {% if day.value in selected_recurring_days %}checked{% endif %}
+          >
+          <span class="power-weekday-short" aria-hidden="true">{{ day.short }}</span>
+          <span class="sr-only">{{ day.label }}</span>
+        </label>
+        {% endfor %}
+      </fieldset>
+      <p class="muted power-recurring-hint">Выберите хотя бы один день.</p>
+
+      <label class="power-recurring-time-wrap">
+        Время запуска
+        <input type="time" name="time_of_day" value="{{ selected_recurring_time }}" step="60" required>
+      </label>
+
+      <div class="power-form-actions">
+        <button class="btn-primary" type="submit">Применить</button>
+        <button class="btn" type="reset">Отменить изменения</button>
+      </div>
+    </form>
+
+    {% if recurring_schedules %}
+    <div class="table-scroll">
+      <table class="table table-compact">
+        <caption class="sr-only">Список повторяющихся действий питания</caption>
+        <thead>
+          <tr>
+            <th>Статус</th>
+            <th>Действие</th>
+            <th>Дни</th>
+            <th>Время</th>
+            <th>Следующий запуск</th>
+            <th>Последний запуск</th>
+            <th>Управление</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in recurring_schedules %}
+          <tr>
+            <td><span class="status-chip {{ item.status_chip }}">{{ item.enabled_label }}</span></td>
+            <td>{{ item.action_label }}</td>
+            <td>{{ item.days_short_label }}</td>
+            <td>{{ item.time_of_day }}</td>
+            <td>{{ item.next_run_display or "—" }}</td>
+            <td>{{ item.last_run_display or "—" }}</td>
+            <td>
+              <div class="power-recurring-actions">
+                <form method="post" action="{{ url_for('PowerView.toggle_recurring', schedule_id=item.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="enabled" value="{{ '0' if item.enabled else '1' }}">
+                  <button
+                    class="btn"
+                    type="submit"
+                    aria-label="{{ 'Отключить' if item.enabled else 'Включить' }} расписание: {{ item.action_label }}, {{ item.days_long_label }} {{ item.time_of_day }}"
+                  >
+                    {{ 'Отключить' if item.enabled else 'Включить' }}
+                  </button>
+                </form>
+                <form
+                  method="post"
+                  action="{{ url_for('PowerView.delete_recurring', schedule_id=item.id) }}"
+                  data-confirm-message="Удалить расписание {{ item.action_label }}: {{ item.days_short_label }} {{ item.time_of_day }}?"
+                  data-confirm-danger="true"
+                >
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button
+                    class="btn danger"
+                    type="submit"
+                    aria-label="Удалить расписание: {{ item.action_label }}, {{ item.days_long_label }} {{ item.time_of_day }}"
+                  >
+                    Удалить
+                  </button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">Повторяющиеся действия пока не настроены.</p>
+    {% endif %}
+    {% else %}
+    <p class="muted">
+      Повторяющиеся действия недоступны: для вашей роли не выдано разрешение `can_action`.
+    </p>
+    {% endif %}
+  </section>
+</div>
+{% endif %}
+
+{% if recent_actions %}
+<section class="card">
+  <h3>История планирования</h3>
+  <div class="table-scroll">
+    <table class="table table-compact">
+      <thead>
+        <tr>
+          <th>Создано</th>
+          <th>Действие</th>
+          <th>Запуск</th>
+          <th>Статус</th>
+          <th>Проверка</th>
+          <th>Инициатор</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in recent_actions %}
+        <tr>
+          <td>{{ item.created_at_display }}</td>
+          <td>{{ item.action_label }}</td>
+          <td>{{ item.scheduled_for_display }}</td>
+          <td><span class="status-chip {{ item.status_chip }}">{{ item.status_label }}</span></td>
+          <td>{{ item.verification_label }}</td>
+          <td>{{ item.requested_by }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block add_tail_js %}
+  {{ super() }}
+  <script src="{{ url_for('static', filename='js/power.js') }}"></script>
+{% endblock %}

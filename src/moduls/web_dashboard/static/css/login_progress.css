@@ -1,0 +1,119 @@
+.login-progress .login-progress-bar {
+  margin-bottom: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background-color: #e9eef5;
+  overflow: hidden;
+}
+.login-progress .login-progress-bar .progress-bar {
+  transition: width 0.4s ease;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.login-progress-intro {
+  margin-bottom: 12px;
+  color: #444;
+}
+
+.login-progress-status {
+  margin-bottom: 12px;
+  font-weight: 600;
+  color: #222;
+}
+
+.login-progress-steps {
+  list-style: none;
+  padding-left: 0;
+  margin: 0 0 16px;
+}
+
+.login-progress-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.login-progress-step-label {
+  font-weight: 600;
+  color: #222;
+}
+
+.login-progress-step-separator {
+  color: #8b96a5;
+  margin: 0 4px;
+}
+
+.login-progress-step-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: #666;
+}
+
+.login-progress-step-status::before {
+  content: "—";
+  color: #8b96a5;
+}
+
+.login-progress-step-separator + .login-progress-step-status::before {
+  content: "";
+}
+
+.login-progress-step-status-prefix {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.login-progress-step[data-step-status="in_progress"] .login-progress-step-status {
+  color: #0b5da5;
+}
+.login-progress-step[data-step-status="in_progress"] {
+  background: linear-gradient(90deg, rgba(11, 93, 165, 0.08), transparent 60%);
+}
+
+.login-progress-step[data-step-status="done"] .login-progress-step-status {
+  color: #1c7c1c;
+}
+
+.login-progress-step[data-step-status="error"] .login-progress-step-status {
+  color: #b52323;
+}
+
+.login-progress-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.login-progress-hint {
+  color: #666;
+  font-size: 0.9em;
+  margin: 0;
+}
+
+.login-progress .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-progress .login-progress-bar .progress-bar {
+    transition: none;
+  }
+  .progress-bar-striped.active {
+    animation: none;
+  }
+}

@@ -35,6 +35,16 @@ _startrun_modules: list[str] = []
 _nostartrun_modules: list[str] = []
 
 
+# ---------- Исключения (модули, которые НЕ импортируем никогда) ----------
+
+# Важно: имена указываются БЕЗ .py, в нижнем регистре.
+# Эти файлы будут игнорироваться всегда, независимо от startrun/nostartrun.
+_NEVER_IMPORT_MODULES: set[str] = {
+    'startrunmodulwebpanel',
+    'windows_startup',
+}
+
+
 # ---------- Вспомогательные функции для хранения результатов ----------
 
 def _set_import_results_list(lst: list[tuple[str, bool, Exception | None]] | None) -> None:
@@ -172,6 +182,9 @@ def _discover_plugin_modules() -> tuple[list[str], list[str]]:
     global _startrun_modules, _nostartrun_modules
 
     if _startrun_modules or _nostartrun_modules:
+        # На всякий случай выкидываем исключённые модули (если списки уже кэшированы)
+        _startrun_modules = [m for m in _startrun_modules if m.lower() not in _NEVER_IMPORT_MODULES]
+        _nostartrun_modules = [m for m in _nostartrun_modules if m.lower() not in _NEVER_IMPORT_MODULES]
         return _startrun_modules, _nostartrun_modules
 
     here = _ensure_own_dir_in_sys_path()
@@ -186,6 +199,9 @@ def _discover_plugin_modules() -> tuple[list[str], list[str]]:
             # Не трогаем сам менеджер
             this_module_name = os.path.splitext(os.path.basename(__file__))[0]
             if name == this_module_name:
+                continue
+            # Никогда не импортируем эти модули (жёсткий запрет)
+            if name.lower() in _NEVER_IMPORT_MODULES:
                 continue
             module_names.append(name)
     except Exception:
@@ -217,6 +233,10 @@ def _import_module(dp: Dispatcher, short_name: str) -> None:
     Если в модуле есть register_handlers(dp), вызывает её.
     """
     _ensure_own_dir_in_sys_path()
+
+    # Жёсткий запрет: эти модули не импортируем никогда
+    if short_name.lower() in _NEVER_IMPORT_MODULES:
+        return
 
     candidates: list[str] = [
         f"moduls.{short_name}",

@@ -1,0 +1,51 @@
+{% extends "panel_base.html" %}
+
+{% block panel_content %}
+<div class="page-header">
+  <div>
+    <h1>Настройки панели</h1>
+    <p class="muted">Базовые параметры работы сервера.</p>
+  </div>
+</div>
+
+<div class="card">
+  <form method="post" class="form" aria-label="Настройки панели">
+    {% if csrf_token is defined and csrf_token %}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% endif %}
+    <label>Хост
+      <input type="text" name="host" value="{{ cfg.host }}">
+    </label>
+    <label>Порт
+      <input type="number" name="port" value="{{ cfg.port }}">
+    </label>
+    <label>Отладка
+      <select name="debug">
+        <option value="0" {% if not cfg.debug %}selected{% endif %}>Выключена</option>
+        <option value="1" {% if cfg.debug %}selected{% endif %}>Включена</option>
+      </select>
+    </label>
+    <label>Хранение (дней)
+      <input type="number" name="retention_days" value="{{ cfg.retention_days }}">
+    </label>
+    <label>Обновление обзора, сек
+      <input type="number" name="overview_refresh_seconds" value="{{ cfg.overview_refresh_seconds }}" min="0" max="120" step="1">
+      <span class="muted">0 — отключить, рекомендуемый диапазон 2–120 сек.</span>
+    </label>
+    <button type="submit" class="btn-primary">Сохранить</button>
+  </form>
+  {% if can_restart %}
+  <form method="post"
+        action="{{ url_for('SettingsView.restart') }}"
+        style="margin-top: 12px;"
+        data-confirm-message="Перезапустить веб-панель сейчас? Во время перезапуска страница может быть временно недоступна."
+        data-confirm-danger="true">
+    {% if csrf_token is defined and csrf_token %}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% endif %}
+    <button type="submit" class="btn danger">Перезапустить веб-панель</button>
+  </form>
+  {% endif %}
+  <div class="muted">Для применения настроек перезапустите панель.</div>
+</div>
+{% endblock %}

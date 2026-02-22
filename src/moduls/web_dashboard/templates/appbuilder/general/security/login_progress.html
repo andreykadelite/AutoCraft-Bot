@@ -1,0 +1,69 @@
+﻿{% extends "appbuilder/base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/login_progress.css', v='20260222d') }}">
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="login-progress" id="login-progress" data-token="{{ token }}" data-status-url="{{ url_for('PanelAuthDBView.login_progress_status', token=token) }}" data-next-url="{{ next_url }}" aria-busy="true">
+    <div id="loginbox" style="margin-top:50px;" class="mainbox col-md-8 col-md-offset-2 col-sm-10 col-sm-offset-1">
+      <div class="panel panel-primary">
+        <div class="panel-heading">
+          <div class="panel-title">{{ title }}</div>
+        </div>
+        <div class="panel-body">
+          <p class="login-progress-intro">Выполняется подготовка входа. Сейчас мы загружаем профиль, права доступа и системную информацию.</p>
+          <div class="progress login-progress-bar" role="group" aria-label="Прогресс подготовки">
+            <div id="login-progress-bar" class="progress-bar progress-bar-striped active" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ progress.percent }}" aria-valuetext="{{ progress.percent }}%" aria-describedby="login-progress-status login-progress-percent" style="width: {{ progress.percent }}%;">
+              <span id="login-progress-percent">{{ progress.percent }}%</span>
+            </div>
+          </div>
+          <div id="login-progress-status" class="login-progress-status" role="status" aria-live="polite" aria-atomic="true">{{ progress.message }}</div>
+          <ol id="login-progress-steps" class="login-progress-steps" aria-live="polite" aria-label="Этапы подготовки">
+            {% for step in progress.steps %}
+              {% if step.detail %}
+                {% set step_status_text = step.detail %}
+              {% elif step.status == "done" %}
+                {% set step_status_text = "Готово" %}
+              {% elif step.status == "in_progress" %}
+                {% set step_status_text = "Выполняется" %}
+              {% elif step.status == "error" %}
+                {% set step_status_text = "Ошибка" %}
+              {% else %}
+                {% set step_status_text = "Ожидание" %}
+              {% endif %}
+              <li
+                class="login-progress-step"
+                data-step-id="{{ step.id }}"
+                data-step-label="{{ step.label }}"
+                data-step-status="{{ step.status }}"
+                aria-label="{{ step.label }}: {{ step_status_text }}"
+                {% if step.status == "in_progress" %} aria-current="step"{% endif %}
+              >
+                <span class="login-progress-step-label">{{ step.label }}</span>
+                <span class="login-progress-step-separator" aria-hidden="true">&nbsp;—&nbsp;</span>
+                <span class="login-progress-step-status">
+                  <span class="login-progress-step-status-prefix">Статус:&nbsp;</span>
+                  <span data-step-status-text>{{ step_status_text }}</span>
+                </span>
+              </li>
+            {% endfor %}
+          </ol>
+          <div class="login-progress-actions">
+            <a id="login-progress-continue" class="btn btn-primary" href="{{ next_url }}" hidden>Продолжить</a>
+            <a class="btn btn-default" href="{{ appbuilder.get_url_for_logout }}">Выйти</a>
+          </div>
+          <p class="login-progress-hint">Если подготовка занимает больше обычного, проверьте нагрузку системы и доступ к диску.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block add_tail_js %}
+  {{ super() }}
+  <script src="{{ url_for('static', filename='js/login_progress.js', v='20260222e') }}" nonce="{{ baselib.get_nonce() }}"></script>
+{% endblock %}

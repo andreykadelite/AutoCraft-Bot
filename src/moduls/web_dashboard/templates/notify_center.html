@@ -1,0 +1,58 @@
+{% extends "appbuilder/base.html" %}
+
+{% block content %}
+<div class="wac-container notify-center-page" role="main" aria-label="Уведомления AutoCraft">
+  <div class="page-header">
+    <div>
+      <h1>Уведомления AutoCraft</h1>
+      <p class="muted">История событий панели: сохранение настроек, действия пользователей и сервисные операции.</p>
+    </div>
+    <div class="badge" aria-label="Непрочитанных уведомлений AutoCraft: {{ unread_count }}">
+      Непрочитанные: {{ unread_count }}
+    </div>
+  </div>
+
+  <section class="card notify-center-card" aria-labelledby="notify-center-history-title">
+    <div class="notify-center-head">
+      <h3 id="notify-center-history-title">История событий</h3>
+      <p class="muted">При открытии страницы уведомления AutoCraft помечаются как прочитанные. История остаётся в базе, очистка скрывает её только для текущего пользователя.</p>
+      <div class="notify-center-actions">
+        <button
+          type="button"
+          class="btn btn-default"
+          data-system-mark-read
+          data-system-mark-read-url="{{ url_for('SystemNotifyCenterView.mark_system_read') }}"
+        >
+          Отметить всё как прочитанное
+        </button>
+        <button
+          type="button"
+          class="btn btn-default"
+          data-system-clear
+          data-system-clear-url="{{ clear_url }}"
+        >
+          Очистить историю
+        </button>
+      </div>
+    </div>
+    {% if history %}
+      <ul class="notify-center-list" role="list" aria-label="Список уведомлений AutoCraft">
+        {% for item in history %}
+          <li class="notify-center-item notify-level-{{ item.level }}">
+            <div class="notify-center-item-head">
+              <strong>{{ item.title }}</strong>
+              <span class="notify-center-item-date">{{ item.created_at }}</span>
+            </div>
+            <div class="notify-center-item-body">{{ item.body }}</div>
+            <div class="notify-center-item-meta">
+              Действие: {{ item.action }}{% if item.target %} • Цель: {{ item.target }}{% endif %} • Результат: {{ item.result }}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="notify-center-empty">Уведомлений AutoCraft пока нет.</div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

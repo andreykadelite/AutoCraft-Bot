@@ -1,0 +1,2 @@
+"""Win+R plugin package."""
+
