@@ -47,7 +47,7 @@
         Включить удаленный рабочий стол
       </button>
       <button class="btn" type="button" id="rd-fullscreen-toggle" aria-pressed="false">
-        Fullscreen
+        Полный экран
       </button>
     </div>
 
@@ -110,6 +110,10 @@
       <button class="btn" type="button" id="rd-keyboard-toggle">Клавиатура: выкл</button>
       <button class="btn" type="button" id="rd-clear-focus">Снять фокус</button>
     </div>
+    <p class="muted" id="rd-capture-hint">
+      Выход из режима захвата: <strong>Ctrl + Alt + Shift + I</strong>.
+      Комбинация обрабатывается локально и отключает управление.
+    </p>
 
     <div
       class="rd-errors"
@@ -133,11 +137,16 @@
 
     <div class="rd-hotkeys" aria-label="Комбинации клавиш">
       <button class="btn" type="button" data-hotkey="ctrl+alt+del">Ctrl + Alt + Del</button>
+      <button class="btn" type="button" data-hotkey="ctrl+alt+end">Ctrl + Alt + End</button>
       <button class="btn" type="button" data-hotkey="alt+tab">Alt + Tab</button>
       <button class="btn" type="button" data-hotkey="win+r">Win + R</button>
       <button class="btn" type="button" data-hotkey="win+d">Win + D</button>
       <button class="btn" type="button" data-hotkey="win+e">Win + E</button>
     </div>
+    <p class="muted">
+      Важно: часть системных сочетаний может блокироваться Windows или браузером.
+      Если команда не выполнилась, используйте альтернативную кнопку или физическую клавиатуру.
+    </p>
   </section>
 
   <section class="card rd-side-card" aria-label="Дополнительные функции">

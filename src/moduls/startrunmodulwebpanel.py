@@ -163,10 +163,10 @@ def register_utility(*args, **kwargs):  # type: ignore
 # --- Состояние ---
 webpanel_mode: Dict[int, bool] = {}
 webpanel_step: Dict[int, str] = {}
+webpanel_ctx: Dict[int, Dict[str, Any]] = {}
 
 _server_lock = threading.Lock()
 _server: Optional[WebPanelServerT] = None
-_last_generated_password: Optional[str] = None
 _restart_lock = threading.Lock()
 _restart_in_progress: bool = False
 
@@ -183,9 +183,9 @@ BTN_STOP = "Остановить веб-панель"
 BTN_RESTART = "Перезапустить веб-панель"
 BTN_STATUS = "Статус веб-панели"
 BTN_URL = "Адрес панели"
-BTN_CHANGE_PASS = "Сменить пароль панели"
-BTN_CANCEL_PASS = "Отмена смены пароля"
-BTN_SHOW_CREDENTIALS = "Показать логин и пароль"
+BTN_CHANGE_PASS = "Добавить пользователя"
+BTN_CANCEL_PASS = "Отмена операции с пользователями"
+BTN_SHOW_CREDENTIALS = "Менеджер пользователей"
 BTN_API = "API панели"
 BTN_LOGS = "Последние логи панели"
 BTN_SETTINGS = "Настройки панели"
@@ -194,6 +194,12 @@ BTN_AUTOSTART_ON = "Включить автозапуск панели"
 BTN_AUTOSTART_OFF = "Выключить автозапуск панели"
 BTN_BACK = "Назад в утилиты"
 BTN_MINIMIZE = "Свернуть веб-панель"
+BTN_USER_MANAGER_REFRESH = "Обновить список пользователей"
+BTN_USER_SHOW_CREDENTIALS = "Показать логин/пароль пользователя"
+BTN_USER_CHANGE_PASSWORD = "Сменить пароль пользователя"
+BTN_USER_DELETE = "Удалить пользователя"
+BTN_USER_SELECT_OTHER = "Выбрать другого пользователя"
+BTN_USER_MANAGER_EXIT = "Выйти из менеджера пользователей"
 
 # Старые подписи (для совместимости, если у пользователя где-то остались старые клавиатуры/сообщения)
 BTN_START_OLD = "Старт веб-панели"
@@ -561,6 +567,15 @@ def _autostart_panel_on_import() -> None:
         write_bot_log('[webpanel] Автозапуск пропущен: web_dashboard не доступен.')
         return
 
+    try:
+        start_block_reason = _get_panel_start_block_reason_safe()
+    except Exception as e:
+        write_bot_log(f'Автозапуск веб-панели: не удалось проверить пользователей: {e}')
+        return
+    if start_block_reason:
+        write_bot_log(f'Автозапуск веб-панели пропущен: {start_block_reason}')
+        return
+
     # В watchdog-схеме автозапускаемся только в child-процессе.
     if not _should_autostart_in_this_process():
         try:
@@ -592,7 +607,7 @@ def _get_keyboard(password_mode: bool = False, settings_mode: bool = False) -> R
     """Динамическая клавиатура: показывает только корректные кнопки по текущему статусу."""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
 
-    # Режим смены пароля: по ТЗ оставляем только кнопку отмены
+    # Режим пользовательского мастера: оставляем только кнопку отмены
     if password_mode:
         kb.add(BTN_CANCEL_PASS)
         return kb
@@ -624,8 +639,123 @@ def _get_keyboard(password_mode: bool = False, settings_mode: bool = False) -> R
     return kb
 
 
+def _get_cancel_keyboard() -> ReplyKeyboardMarkupT:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(BTN_CANCEL_PASS)
+    return kb
+
+
+def _get_role_select_keyboard(roles: list[str]) -> ReplyKeyboardMarkupT:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    ordered = sorted({(item or "").strip() for item in roles if (item or "").strip()})
+    for role_name in ordered:
+        kb.add(role_name)
+    kb.add(BTN_CANCEL_PASS)
+    return kb
+
+
+def _get_user_select_keyboard(users: list[dict[str, Any]]) -> ReplyKeyboardMarkupT:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    usernames = sorted(
+        {
+            str(item.get("username") or "").strip()
+            for item in users
+            if str(item.get("username") or "").strip()
+        }
+    )
+    for login in usernames:
+        kb.add(login)
+    kb.add(BTN_USER_MANAGER_REFRESH, BTN_USER_MANAGER_EXIT)
+    return kb
+
+
+def _get_user_actions_keyboard() -> ReplyKeyboardMarkupT:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(BTN_USER_SHOW_CREDENTIALS, BTN_USER_CHANGE_PASSWORD)
+    kb.add(BTN_USER_DELETE, BTN_USER_SELECT_OTHER)
+    kb.add(BTN_USER_MANAGER_EXIT)
+    return kb
+
+
+def _format_user_line(item: dict[str, Any]) -> str:
+    username = str(item.get("username") or "").strip()
+    name = str(item.get("name") or "").strip() or username
+    roles = item.get("roles") or []
+    roles_text = ", ".join([str(r).strip() for r in roles if str(r).strip()]) or "без роли"
+    active = "активен" if bool(item.get("active", True)) else "отключен"
+    pwd_state = str(item.get("password_state") or "").strip().lower()
+    if pwd_state == "saved":
+        pwd_mark = "сохранён"
+    elif pwd_state == "hash_only":
+        pwd_mark = "только хэш"
+    elif pwd_state == "missing":
+        pwd_mark = "не задан"
+    else:
+        pwd_mark = "сохранён" if bool(item.get("password_saved")) else "не сохранён"
+    return f"- {username} ({name}) | роли: {roles_text} | {active} | пароль: {pwd_mark}"
+
+
+def _format_users_list_text(users: list[dict[str, Any]]) -> str:
+    if not users:
+        return "Пользователи не найдены."
+    lines = [_format_user_line(item) for item in users]
+    return "Пользователи панели:\n" + "\n".join(lines)
+
+
+def _load_panel_users_safe() -> list[dict[str, Any]]:
+    return panel_config.list_panel_users(base_dir)
+
+
+def _load_panel_roles_safe() -> list[str]:
+    return panel_config.list_panel_roles(base_dir)
+
+
+def _get_panel_bootstrap_state_safe() -> dict[str, Any]:
+    getter = getattr(panel_config, "get_panel_bootstrap_state", None)
+    if callable(getter):
+        return getter(base_dir)
+    users = _load_panel_users_safe()
+    super_admin_users = []
+    for item in users:
+        roles = [str(role).strip() for role in (item.get("roles") or []) if str(role).strip()]
+        if "Super Admin" in roles:
+            super_admin_users.append(str(item.get("username") or "").strip())
+    return {
+        "has_users": bool(users),
+        "has_super_admin": bool(super_admin_users),
+        "super_admin_users": super_admin_users,
+        "user_count": len(users),
+    }
+
+
+def _get_panel_start_block_reason_safe() -> str:
+    reason_getter = getattr(panel_config, "get_panel_start_block_reason", None)
+    if callable(reason_getter):
+        return str(reason_getter(base_dir) or "").strip()
+    state = _get_panel_bootstrap_state_safe()
+    if not bool(state.get("has_users")):
+        return (
+            "Панель не может быть запущена: не найдено ни одного пользователя. "
+            "Создайте первого пользователя с ролью Super Admin."
+        )
+    if not bool(state.get("has_super_admin")):
+        return (
+            "Панель не может быть запущена: отсутствует пользователь с ролью Super Admin. "
+            "Создайте первого Super Admin или назначьте роль существующему пользователю."
+        )
+    return ""
+
+
+def _first_super_admin_hint_text() -> str:
+    return (
+        "Первый запуск панели:\n"
+        "создайте первого пользователя с ролью Super Admin.\n"
+        "Введите логин (по умолчанию: admin)."
+    )
+
+
 def _ensure_server() -> WebPanelServerT:
-    global _server, _last_generated_password
+    global _server
     if not _WEBPANEL_AVAILABLE or WebPanelServer is None or panel_config is None:
         raise RuntimeError(f'web_dashboard недоступен: {_WEBPANEL_IMPORT_ERROR}')
     with _server_lock:
@@ -636,8 +766,6 @@ def _ensure_server() -> WebPanelServerT:
             if _server.runtime.config.host in ("127.0.0.1", "localhost"):
                 _server.runtime.config.host = "0.0.0.0"
                 panel_config.save_config(base_dir, _server.runtime.config)
-
-            _last_generated_password = _server.runtime.generated_password
         return _server
 
 
@@ -728,6 +856,12 @@ def _panel_status() -> str:
             return f"Панель запущена: {srv.url()}"
         except Exception:
             return "Панель запущена."
+    try:
+        block_reason = _get_panel_start_block_reason_safe()
+    except Exception:
+        block_reason = ""
+    if block_reason:
+        return f"Панель не запущена.\n{block_reason}"
     return "Панель не запущена."
 
 
@@ -759,6 +893,21 @@ def _safe_audit(
 ) -> None:
     if not srv:
         return
+    # Важно для отзывчивости GUI/бота:
+    # если панель ещё не запускалась, runtime.audit() форсирует тяжёлый bootstrap Flask/FAB.
+    # Для операций до первого старта это даёт заметные "подвисания", поэтому audit
+    # пишем только когда приложение уже инициализировано или сервер реально запущен.
+    try:
+        runtime = getattr(srv, "runtime", None)
+        app_loaded = bool(getattr(runtime, "app", None) is not None)
+    except Exception:
+        app_loaded = False
+    if not app_loaded:
+        try:
+            if not bool(srv.is_running()):
+                return
+        except Exception:
+            return
     try:
         srv.runtime.audit(actor, action, result, **kwargs)
     except Exception as e:
@@ -935,6 +1084,7 @@ def register_handlers(dp: DispatcherT):
         user_id = message.from_user.id
         webpanel_mode[user_id] = True
         webpanel_step.pop(user_id, None)
+        webpanel_ctx.pop(user_id, None)
 
         try:
             srv = _ensure_server()
@@ -943,6 +1093,7 @@ def register_handlers(dp: DispatcherT):
             write_bot_log(f"Ошибка инициализации веб-панели: {e}")
             webpanel_mode.pop(user_id, None)
             webpanel_step.pop(user_id, None)
+            webpanel_ctx.pop(user_id, None)
             await message.answer(
                 _format_error("инициализировать веб-панель", e),
                 reply_markup=get_utilities_keyboard(),
@@ -950,18 +1101,34 @@ def register_handlers(dp: DispatcherT):
             return
 
         status_text = _panel_status()
-        password_hint = ""
-        if _last_generated_password:
-            password_hint = (
-                f"\nПароль администратора сгенерирован автоматически: `{_last_generated_password}`. "
-                f"Смените его в панели или командой \"{BTN_CHANGE_PASS}\"."
+        try:
+            start_block_reason = _get_panel_start_block_reason_safe()
+        except Exception as e:
+            start_block_reason = _format_error("проверить готовность запуска панели", e)
+
+        if start_block_reason:
+            webpanel_step[user_id] = "await_first_super_admin_login"
+            webpanel_ctx[user_id] = {
+                "first_admin_login_default": "admin",
+                "first_admin_flow_source": "entry",
+            }
+            await message.answer(
+                "Модуль <Веб-панель AutoCraft>.\n"
+                "Панель показывает метрики Windows/AutoCraft в реальном времени, имеет API и веб-интерфейс.\n"
+                f"{status_text}\n"
+                f"URL: {srv.url()}\n\n"
+                f"{start_block_reason}\n\n"
+                f"{_first_super_admin_hint_text()}",
+                reply_markup=_get_cancel_keyboard(),
+                parse_mode="Markdown",
             )
+            return
 
         await message.answer(
             "Модуль <Веб-панель AutoCraft>.\n"
             "Панель показывает метрики Windows/AutoCraft в реальном времени, имеет API и веб-интерфейс.\n"
             f"{status_text}\n"
-            f"URL: {srv.url()}{password_hint}",
+            f"URL: {srv.url()}",
             reply_markup=_get_keyboard(password_mode=False),
             parse_mode="Markdown",
         )
@@ -1005,6 +1172,7 @@ def register_handlers(dp: DispatcherT):
         url = srv.url() if (running and srv) else None
         webpanel_mode.pop(user_id, None)
         webpanel_step.pop(user_id, None)
+        webpanel_ctx.pop(user_id, None)
         text = "Возврат в утилиты."
         if running:
             text += "\nВнимание: веб-панель всё ещё запущена."
@@ -1022,6 +1190,7 @@ def register_handlers(dp: DispatcherT):
         user_id = message.from_user.id
         webpanel_mode.pop(user_id, None)
         webpanel_step.pop(user_id, None)
+        webpanel_ctx.pop(user_id, None)
 
         # Важно: здесь мы НЕ останавливаем сервер. Только предупреждаем.
         srv = _server
@@ -1047,6 +1216,27 @@ def register_handlers(dp: DispatcherT):
                 return
 
         want_start = message.text in (BTN_START, BTN_START_OLD)
+        if want_start:
+            try:
+                start_block_reason = _get_panel_start_block_reason_safe()
+            except Exception as e:
+                await message.answer(
+                    _format_error("проверить готовность запуска панели", e),
+                    reply_markup=_get_keyboard(password_mode=False),
+                )
+                return
+            if start_block_reason:
+                webpanel_step[message.from_user.id] = "await_first_super_admin_login"
+                webpanel_ctx[message.from_user.id] = {
+                    "first_admin_login_default": "admin",
+                    "first_admin_flow_source": "start",
+                }
+                await message.answer(
+                    f"{start_block_reason}\n\n{_first_super_admin_hint_text()}",
+                    reply_markup=_get_cancel_keyboard(),
+                )
+                return
+
         try:
             srv = _ensure_server()
         except Exception as e:
@@ -1087,8 +1277,6 @@ def register_handlers(dp: DispatcherT):
                 _safe_audit(srv, str(message.from_user.id), "panel_start", True, source="telegram")
 
                 reply_text = f"Панель запущена.\nАдрес: {srv.url()}"
-                if _last_generated_password:
-                    reply_text += f"\nПароль по умолчанию: `{_last_generated_password}`"
 
                 await message.answer(
                     reply_text,
@@ -1250,30 +1438,107 @@ def register_handlers(dp: DispatcherT):
             reply_markup=_get_keyboard(password_mode=False),
         )
 
-    # --- Логин/пароль ---
+    # --- Менеджер пользователей: вход ---
     @dp.message_handler(
         lambda m: _is_authorized(m.from_user.id)
         and webpanel_mode.get(m.from_user.id)
         and m.text == BTN_SHOW_CREDENTIALS
     )
-    async def webpanel_show_credentials(message: MessageT):
-        cfg = panel_config.load_config(base_dir)
-        login = cfg.admin_login or "admin"
-        password = cfg.admin_password or _last_generated_password or ""
-        if not cfg.admin_password and _last_generated_password:
-            cfg.admin_login = login
-            cfg.admin_password = _last_generated_password
-            panel_config.save_config(base_dir, cfg)
-        if not password:
+    async def webpanel_user_manager_entry(message: MessageT):
+        user_id = message.from_user.id
+        try:
+            users = await asyncio.to_thread(_load_panel_users_safe)
+        except Exception as e:
             await message.answer(
-                f"Логин панели: {login}\n"
-                "Пароль не сохранён. Смените пароль через бота или в панели, чтобы сохранить его.",
+                _format_error("получить список пользователей панели", e),
                 reply_markup=_get_keyboard(password_mode=False),
             )
             return
+        webpanel_step[user_id] = "await_user_select"
+        webpanel_ctx[user_id] = {}
         await message.answer(
-            f"Логин панели: {login}\nПароль панели: {password}",
+            _format_users_list_text(users) + "\n\nВыберите пользователя (кнопкой с логином).",
+            reply_markup=_get_user_select_keyboard(users),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) in {"await_user_select", "await_user_action"}
+        and m.text == BTN_USER_MANAGER_REFRESH
+    )
+    async def webpanel_user_manager_refresh(message: MessageT):
+        user_id = message.from_user.id
+        try:
+            users = await asyncio.to_thread(_load_panel_users_safe)
+        except Exception as e:
+            await message.answer(
+                _format_error("обновить список пользователей", e),
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        webpanel_step[user_id] = "await_user_select"
+        webpanel_ctx[user_id] = {}
+        await message.answer(
+            _format_users_list_text(users) + "\n\nВыберите пользователя.",
+            reply_markup=_get_user_select_keyboard(users),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) in {"await_user_select", "await_user_action"}
+        and m.text == BTN_USER_MANAGER_EXIT
+    )
+    async def webpanel_user_manager_exit(message: MessageT):
+        webpanel_step.pop(message.from_user.id, None)
+        webpanel_ctx.pop(message.from_user.id, None)
+        await message.answer(
+            "Менеджер пользователей закрыт.",
             reply_markup=_get_keyboard(password_mode=False),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_user_select"
+        and m.text not in {BTN_USER_MANAGER_REFRESH, BTN_USER_MANAGER_EXIT}
+    )
+    async def webpanel_user_manager_select(message: MessageT):
+        selected_login = (message.text or "").strip()
+        if not selected_login:
+            await message.answer(
+                "Выберите пользователя кнопкой из списка.",
+                reply_markup=_get_user_select_keyboard(await asyncio.to_thread(_load_panel_users_safe)),
+            )
+            return
+        try:
+            users = await asyncio.to_thread(_load_panel_users_safe)
+        except Exception as e:
+            await message.answer(
+                _format_error("получить список пользователей", e),
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        user_map = {
+            str(item.get("username") or "").strip(): item
+            for item in users
+            if str(item.get("username") or "").strip()
+        }
+        if selected_login not in user_map:
+            await message.answer(
+                "Пользователь не найден в списке. Нажмите обновление и выберите снова.",
+                reply_markup=_get_user_select_keyboard(users),
+            )
+            return
+        webpanel_ctx[message.from_user.id] = {"selected_username": selected_login}
+        webpanel_step[message.from_user.id] = "await_user_action"
+        selected_info = user_map[selected_login]
+        await message.answer(
+            "Выбран пользователь:\n"
+            + _format_user_line(selected_info)
+            + "\n\nВыберите действие.",
+            reply_markup=_get_user_actions_keyboard(),
         )
 
     # --- Логи ---
@@ -1415,99 +1680,646 @@ def register_handlers(dp: DispatcherT):
             reply_markup=_get_keyboard(password_mode=False),
         )
 
-    # --- Смена пароля: вход в режим ---
+    # --- Первый запуск: создание первого Super Admin ---
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_first_super_admin_login"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_first_admin_login(message: MessageT):
+        default_login = "admin"
+        ctx = webpanel_ctx.setdefault(message.from_user.id, {})
+        raw_login = (message.text or "").strip()
+        login = raw_login or str(ctx.get("first_admin_login_default") or default_login)
+        if len(login) < 3 or (" " in login):
+            await message.answer(
+                "Логин должен быть минимум 3 символа и без пробелов.\n"
+                "Введите логин первого Super Admin (Enter = admin).",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+
+        try:
+            users = await asyncio.to_thread(_load_panel_users_safe)
+        except Exception as e:
+            await message.answer(
+                _format_error("проверить логин первого Super Admin", e),
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+
+        used = {
+            str(item.get("username") or "").strip().casefold()
+            for item in users
+            if str(item.get("username") or "").strip()
+        }
+        if login.casefold() in used:
+            await message.answer(
+                "Пользователь с таким логином уже существует. Введите другой логин.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+
+        ctx["first_admin_login"] = login
+        webpanel_step[message.from_user.id] = "await_first_super_admin_password"
+        await message.answer(
+            f"Введите пароль для {login} (минимум 6 символов).",
+            reply_markup=_get_cancel_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_first_super_admin_password"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_first_admin_password(message: MessageT):
+        password = (message.text or "").strip()
+        if len(password) < 6:
+            await message.answer(
+                "Пароль слишком короткий. Минимум 6 символов.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+
+        ctx = webpanel_ctx.setdefault(message.from_user.id, {})
+        ctx["first_admin_password"] = password
+        webpanel_step[message.from_user.id] = "await_first_super_admin_password_confirm"
+        await message.answer(
+            "Повторите пароль для подтверждения.",
+            reply_markup=_get_cancel_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_first_super_admin_password_confirm"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_first_admin_password_confirm(message: MessageT):
+        password_confirm = (message.text or "").strip()
+        ctx = webpanel_ctx.get(message.from_user.id, {})
+        login = str(ctx.get("first_admin_login") or "").strip()
+        password = str(ctx.get("first_admin_password") or "").strip()
+        if not login or not password:
+            webpanel_step.pop(message.from_user.id, None)
+            webpanel_ctx.pop(message.from_user.id, None)
+            await message.answer(
+                "Данные мастера первого запуска потеряны. Начните заново.",
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+
+        if password != password_confirm:
+            webpanel_step[message.from_user.id] = "await_first_super_admin_password"
+            await message.answer(
+                "Пароли не совпадают. Введите пароль снова.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+
+        try:
+            await asyncio.to_thread(
+                panel_config.create_panel_user,
+                base_dir,
+                login,
+                login,
+                password,
+                "Super Admin",
+            )
+        except Exception as e:
+            await message.answer(
+                _format_error("создать первого Super Admin", e),
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+
+        flow_source = str(ctx.get("first_admin_flow_source") or "").strip().lower()
+        webpanel_step.pop(message.from_user.id, None)
+        webpanel_ctx.pop(message.from_user.id, None)
+
+        if flow_source == "start":
+            try:
+                srv = _ensure_server()
+                with _server_lock:
+                    srv.start()
+                started = await _await_effective_state(srv, True, timeout=8.0)
+                if started:
+                    _safe_audit(
+                        srv,
+                        str(message.from_user.id),
+                        "panel_start_after_first_super_admin",
+                        True,
+                        source="telegram",
+                    )
+                    await message.answer(
+                        f"Первый пользователь {login} (Super Admin) создан.\n"
+                        f"Панель запущена.\nАдрес: {srv.url()}",
+                        reply_markup=_get_keyboard(password_mode=False),
+                    )
+                    return
+                await message.answer(
+                    f"Первый пользователь {login} (Super Admin) создан, "
+                    "но запуск панели не подтверждён.",
+                    reply_markup=_get_keyboard(password_mode=False),
+                )
+                return
+            except Exception as e:
+                await message.answer(
+                    f"Первый пользователь {login} (Super Admin) создан, "
+                    f"но панель не удалось запустить: {e}",
+                    reply_markup=_get_keyboard(password_mode=False),
+                )
+                return
+
+        await message.answer(
+            f"Первый пользователь {login} (Super Admin) создан.\n"
+            "Теперь можно запускать веб-панель.",
+            reply_markup=_get_keyboard(password_mode=False),
+        )
+
+    # --- Добавление пользователя: вход в мастер ---
     @dp.message_handler(
         lambda m: _is_authorized(m.from_user.id)
         and webpanel_mode.get(m.from_user.id)
         and m.text == BTN_CHANGE_PASS
     )
-    async def webpanel_change_pass(message: MessageT):
-        webpanel_step[message.from_user.id] = "await_password"
+    async def webpanel_add_user_start(message: MessageT):
+        user_id = message.from_user.id
+        webpanel_step[user_id] = "await_new_user_login"
+        webpanel_ctx[user_id] = {}
         await message.answer(
-            "Введите новый пароль администратора (минимум 6 символов).\n"
-            f"Чтобы выйти из режима смены пароля, нажмите: {BTN_CANCEL_PASS}",
-            reply_markup=_get_keyboard(password_mode=True),
+            "Введите логин нового пользователя (без пробелов).\n"
+            f"Для отмены нажмите: {BTN_CANCEL_PASS}",
+            reply_markup=_get_cancel_keyboard(),
         )
 
-    # --- Смена пароля: отмена ---
     @dp.message_handler(
         lambda m: _is_authorized(m.from_user.id)
         and webpanel_mode.get(m.from_user.id)
-        and webpanel_step.get(m.from_user.id) == "await_password"
+        and webpanel_step.get(m.from_user.id)
+        in {
+            "await_first_super_admin_login",
+            "await_first_super_admin_password",
+            "await_first_super_admin_password_confirm",
+            "await_new_user_login",
+            "await_new_user_name",
+            "await_new_user_role",
+            "await_new_user_password",
+            "await_user_change_password",
+            "await_user_delete_confirm",
+        }
         and (m.text or "").strip() in {BTN_CANCEL_PASS, "Отмена"}
     )
-    async def webpanel_cancel_pass(message: MessageT):
+    async def webpanel_users_cancel(message: MessageT):
         webpanel_step.pop(message.from_user.id, None)
-        await message.answer("Ок, смену пароля отменил.", reply_markup=_get_keyboard(password_mode=False))
+        webpanel_ctx.pop(message.from_user.id, None)
+        await message.answer(
+            "Операция с пользователями отменена.",
+            reply_markup=_get_keyboard(password_mode=False),
+        )
 
-    # --- Смена пароля: сохранение ---
     @dp.message_handler(
         lambda m: _is_authorized(m.from_user.id)
         and webpanel_mode.get(m.from_user.id)
-        and webpanel_step.get(m.from_user.id) == "await_password"
+        and webpanel_step.get(m.from_user.id) == "await_new_user_login"
         and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
     )
-    async def webpanel_save_pass(message: MessageT):
+    async def webpanel_add_user_login(message: MessageT):
+        login = (message.text or "").strip()
+        if len(login) < 3 or (" " in login):
+            await message.answer(
+                "Логин некорректный. Минимум 3 символа, без пробелов.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        try:
+            users = await asyncio.to_thread(_load_panel_users_safe)
+        except Exception as e:
+            await message.answer(
+                _format_error("проверить логин пользователя", e),
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        used = {
+            str(item.get("username") or "").strip().casefold()
+            for item in users
+            if str(item.get("username") or "").strip()
+        }
+        if login.casefold() in used:
+            await message.answer(
+                "Пользователь с таким логином уже существует. Введите другой логин.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        ctx = webpanel_ctx.setdefault(message.from_user.id, {})
+        ctx["new_user_login"] = login
+        webpanel_step[message.from_user.id] = "await_new_user_name"
+        await message.answer(
+            "Введите имя пользователя (можно оставить короткое, например: Оператор).",
+            reply_markup=_get_cancel_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_new_user_name"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_add_user_name(message: MessageT):
+        display_name = (message.text or "").strip()
+        if not display_name:
+            await message.answer(
+                "Имя не может быть пустым. Введите имя пользователя.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        try:
+            roles = await asyncio.to_thread(_load_panel_roles_safe)
+        except Exception as e:
+            await message.answer(
+                _format_error("получить список ролей", e),
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        ctx = webpanel_ctx.setdefault(message.from_user.id, {})
+        ctx["new_user_name"] = display_name
+        webpanel_step[message.from_user.id] = "await_new_user_role"
+        await message.answer(
+            "Выберите роль для нового пользователя.",
+            reply_markup=_get_role_select_keyboard(roles),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_new_user_role"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_add_user_role(message: MessageT):
+        role_name = (message.text or "").strip()
+        try:
+            roles = await asyncio.to_thread(_load_panel_roles_safe)
+        except Exception as e:
+            await message.answer(
+                _format_error("получить список ролей", e),
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        if role_name not in roles:
+            await message.answer(
+                "Роль не найдена. Выберите роль кнопкой из списка.",
+                reply_markup=_get_role_select_keyboard(roles),
+            )
+            return
+        ctx = webpanel_ctx.setdefault(message.from_user.id, {})
+        ctx["new_user_role"] = role_name
+        webpanel_step[message.from_user.id] = "await_new_user_password"
+        await message.answer(
+            "Введите пароль для нового пользователя (минимум 6 символов).",
+            reply_markup=_get_cancel_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_new_user_password"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_add_user_password(message: MessageT):
+        password = (message.text or "").strip()
+        if len(password) < 6:
+            await message.answer(
+                "Пароль слишком короткий. Минимум 6 символов.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        ctx = webpanel_ctx.get(message.from_user.id, {})
+        login = str(ctx.get("new_user_login") or "").strip()
+        name = str(ctx.get("new_user_name") or "").strip()
+        role_name = str(ctx.get("new_user_role") or "").strip()
+        if not login or not name or not role_name:
+            webpanel_step.pop(message.from_user.id, None)
+            webpanel_ctx.pop(message.from_user.id, None)
+            await message.answer(
+                "Данные мастера добавления потеряны. Начните заново.",
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        try:
+            await asyncio.to_thread(
+                panel_config.create_panel_user,
+                base_dir,
+                login,
+                name,
+                password,
+                role_name,
+            )
+            srv = _ensure_server()
+            _safe_audit(srv, str(message.from_user.id), "create_user_via_bot", True, source="telegram")
+        except Exception as e:
+            try:
+                srv = _ensure_server()
+                _safe_audit(
+                    srv,
+                    str(message.from_user.id),
+                    "create_user_via_bot",
+                    False,
+                    source="telegram",
+                    details=str(e),
+                )
+            except Exception:
+                pass
+            await message.answer(
+                _format_error("добавить пользователя панели", e),
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        webpanel_step.pop(message.from_user.id, None)
+        webpanel_ctx.pop(message.from_user.id, None)
+        await message.answer(
+            f"Пользователь создан.\nЛогин: {login}\nПароль: {password}\nРоль: {role_name}",
+            reply_markup=_get_keyboard(password_mode=False),
+        )
+
+    # --- Менеджер пользователей: действия с выбранным пользователем ---
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_user_action"
+        and m.text == BTN_USER_SELECT_OTHER
+    )
+    async def webpanel_user_select_other(message: MessageT):
+        try:
+            users = await asyncio.to_thread(_load_panel_users_safe)
+        except Exception as e:
+            await message.answer(
+                _format_error("получить список пользователей", e),
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        webpanel_step[message.from_user.id] = "await_user_select"
+        webpanel_ctx[message.from_user.id] = {}
+        await message.answer(
+            _format_users_list_text(users) + "\n\nВыберите пользователя.",
+            reply_markup=_get_user_select_keyboard(users),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_user_action"
+        and m.text == BTN_USER_SHOW_CREDENTIALS
+    )
+    async def webpanel_user_show_credentials(message: MessageT):
+        ctx = webpanel_ctx.get(message.from_user.id, {})
+        username = str(ctx.get("selected_username") or "").strip()
+        if not username:
+            await message.answer(
+                "Сначала выберите пользователя.",
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        try:
+            payload = await asyncio.to_thread(panel_config.get_panel_user_credentials, base_dir, username)
+        except Exception as e:
+            await message.answer(
+                _format_error("показать логин и пароль пользователя", e),
+                reply_markup=_get_user_actions_keyboard(),
+            )
+            return
+        stored_password = str(payload.get("password") or "")
+        password_state = str(payload.get("password_state") or "").strip().lower()
+        if not stored_password:
+            if password_state == "hash_only":
+                stored_password = "(в БД хранится только хэш, текущий пароль нельзя показать; задайте новый через «Сменить пароль пользователя»)"
+            else:
+                stored_password = "(пароль не задан или не сохранён в открытом виде; задайте новый через «Сменить пароль пользователя»)"
+        await message.answer(
+            f"Логин: {payload.get('username')}\nПароль: {stored_password}",
+            reply_markup=_get_user_actions_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_user_action"
+        and m.text == BTN_USER_CHANGE_PASSWORD
+    )
+    async def webpanel_user_change_password_start(message: MessageT):
+        ctx = webpanel_ctx.get(message.from_user.id, {})
+        username = str(ctx.get("selected_username") or "").strip()
+        if not username:
+            await message.answer(
+                "Сначала выберите пользователя.",
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        webpanel_step[message.from_user.id] = "await_user_change_password"
+        await message.answer(
+            f"Введите новый пароль для пользователя {username} (минимум 6 символов).",
+            reply_markup=_get_cancel_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_user_change_password"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_user_change_password_save(message: MessageT):
         new_password = (message.text or "").strip()
         if len(new_password) < 6:
             await message.answer(
-                "Пароль слишком короткий, попробуйте снова (>=6 символов) или нажмите отмену.",
-                reply_markup=_get_keyboard(password_mode=True),
+                "Пароль слишком короткий. Минимум 6 символов.",
+                reply_markup=_get_cancel_keyboard(),
             )
             return
-
-        try:
-            srv = _ensure_server()
-        except Exception as e:
-            write_bot_log(f"Ошибка инициализации веб-панели: {e}")
+        ctx = webpanel_ctx.get(message.from_user.id, {})
+        username = str(ctx.get("selected_username") or "").strip()
+        if not username:
+            webpanel_step.pop(message.from_user.id, None)
             await message.answer(
-                _format_error("сменить пароль панели", e),
-                reply_markup=_get_keyboard(password_mode=True),
+                "Пользователь не выбран. Откройте менеджер заново.",
+                reply_markup=_get_keyboard(password_mode=False),
             )
             return
         try:
-            panel_config.update_user_password(
-                srv.runtime.config,
-                "admin",
+            await asyncio.to_thread(
+                panel_config.set_panel_user_password,
+                base_dir,
+                username,
                 new_password,
-                role="Super Admin",
-                base_dir=base_dir,
             )
-            panel_config.save_config(base_dir, srv.runtime.config)
-            _safe_audit(srv, str(message.from_user.id), "change_password_via_bot", True, source="telegram")
-        except Exception as e:
-            write_bot_log(f"Ошибка смены пароля панели: {e}")
+            srv = _ensure_server()
             _safe_audit(
                 srv,
                 str(message.from_user.id),
-                "change_password_via_bot",
-                False,
+                "change_user_password_via_bot",
+                True,
                 source="telegram",
-                details=str(e),
+                target=username,
             )
+        except Exception as e:
+            try:
+                srv = _ensure_server()
+                _safe_audit(
+                    srv,
+                    str(message.from_user.id),
+                    "change_user_password_via_bot",
+                    False,
+                    source="telegram",
+                    target=username,
+                    details=str(e),
+                )
+            except Exception:
+                pass
             await message.answer(
-                _format_error("сменить пароль панели", e),
-                reply_markup=_get_keyboard(password_mode=True),
+                _format_error("сменить пароль пользователя", e),
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        webpanel_step[message.from_user.id] = "await_user_action"
+        await message.answer(
+            f"Пароль пользователя {username} обновлён.",
+            reply_markup=_get_user_actions_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_user_action"
+        and m.text == BTN_USER_DELETE
+    )
+    async def webpanel_user_delete_start(message: MessageT):
+        ctx = webpanel_ctx.get(message.from_user.id, {})
+        username = str(ctx.get("selected_username") or "").strip()
+        if not username:
+            await message.answer(
+                "Сначала выберите пользователя.",
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        webpanel_step[message.from_user.id] = "await_user_delete_confirm"
+        await message.answer(
+            f"Подтвердите удаление пользователя {username}.\n"
+            "Напишите: УДАЛИТЬ",
+            reply_markup=_get_cancel_keyboard(),
+        )
+
+    @dp.message_handler(
+        lambda m: _is_authorized(m.from_user.id)
+        and webpanel_mode.get(m.from_user.id)
+        and webpanel_step.get(m.from_user.id) == "await_user_delete_confirm"
+        and (m.text or "").strip() not in {BTN_CANCEL_PASS, "Отмена"}
+    )
+    async def webpanel_user_delete_confirm(message: MessageT):
+        if (message.text or "").strip().upper() != "УДАЛИТЬ":
+            await message.answer(
+                "Для удаления отправьте точное подтверждение: УДАЛИТЬ",
+                reply_markup=_get_cancel_keyboard(),
+            )
+            return
+        ctx = webpanel_ctx.get(message.from_user.id, {})
+        username = str(ctx.get("selected_username") or "").strip()
+        if not username:
+            webpanel_step.pop(message.from_user.id, None)
+            await message.answer(
+                "Пользователь не выбран. Откройте менеджер заново.",
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        try:
+            await asyncio.to_thread(panel_config.delete_panel_user, base_dir, username)
+            srv = _ensure_server()
+            _safe_audit(
+                srv,
+                str(message.from_user.id),
+                "delete_user_via_bot",
+                True,
+                source="telegram",
+                target=username,
+            )
+        except Exception as e:
+            try:
+                srv = _ensure_server()
+                _safe_audit(
+                    srv,
+                    str(message.from_user.id),
+                    "delete_user_via_bot",
+                    False,
+                    source="telegram",
+                    target=username,
+                    details=str(e),
+                )
+            except Exception:
+                pass
+            await message.answer(
+                _format_error("удалить пользователя", e),
+                reply_markup=_get_cancel_keyboard(),
             )
             return
 
-        global _last_generated_password
-        _last_generated_password = None
-
-        webpanel_step.pop(message.from_user.id, None)
-        write_bot_log(f"Пароль панели изменён через бот пользователем {message.from_user.id}")
-
-        await message.answer("Пароль панели обновлён. Используйте его при входе.", reply_markup=_get_keyboard(password_mode=False))
+        try:
+            users = await asyncio.to_thread(_load_panel_users_safe)
+        except Exception as e:
+            webpanel_step.pop(message.from_user.id, None)
+            webpanel_ctx.pop(message.from_user.id, None)
+            await message.answer(
+                "Пользователь удалён, но не удалось перечитать список: "
+                + _format_error("получить список пользователей", e),
+                reply_markup=_get_keyboard(password_mode=False),
+            )
+            return
+        webpanel_step[message.from_user.id] = "await_user_select"
+        webpanel_ctx[message.from_user.id] = {}
+        await message.answer(
+            f"Пользователь {username} удалён.\n\n" + _format_users_list_text(users),
+            reply_markup=_get_user_select_keyboard(users),
+        )
 
     # --- Fallback ---
     @dp.message_handler(lambda m: _is_authorized(m.from_user.id) and webpanel_mode.get(m.from_user.id))
     async def webpanel_fallback(message: MessageT):
-        if webpanel_step.get(message.from_user.id) == "await_password":
+        step = webpanel_step.get(message.from_user.id)
+        if step in {
+            "await_first_super_admin_login",
+            "await_first_super_admin_password",
+            "await_first_super_admin_password_confirm",
+        }:
             await message.answer(
-                "Сейчас режим смены пароля. Введите новый пароль или нажмите отмену.",
-                reply_markup=_get_keyboard(password_mode=True),
+                "Сейчас выполняется мастер первого запуска. "
+                "Введите запрошенные данные или нажмите отмену.",
+                reply_markup=_get_cancel_keyboard(),
             )
-        elif webpanel_step.get(message.from_user.id) == "await_settings":
+        elif step in {
+            "await_new_user_login",
+            "await_new_user_name",
+            "await_new_user_role",
+            "await_new_user_password",
+            "await_user_change_password",
+            "await_user_delete_confirm",
+        }:
+            await message.answer(
+                "Сейчас выполняется операция с пользователями. Используйте текущие подсказки или нажмите отмену.",
+                reply_markup=_get_cancel_keyboard(),
+            )
+        elif step == "await_user_select":
+            try:
+                users = await asyncio.to_thread(_load_panel_users_safe)
+            except Exception:
+                users = []
+            await message.answer(
+                "Выберите пользователя кнопкой ниже.",
+                reply_markup=_get_user_select_keyboard(users),
+            )
+        elif step == "await_user_action":
+            await message.answer(
+                "Выберите действие для выбранного пользователя.",
+                reply_markup=_get_user_actions_keyboard(),
+            )
+        elif step == "await_settings":
             await message.answer(
                 "Сейчас режим настройки панели. Введите параметры или нажмите отмену.",
                 reply_markup=_get_keyboard(settings_mode=True),

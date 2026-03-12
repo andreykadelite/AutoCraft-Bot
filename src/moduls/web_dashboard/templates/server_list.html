@@ -1,8 +1,497 @@
-{% extends "appbuilder/general/model/list.html" %}
+﻿{% extends "panel_base.html" %}
 
-{% block list_search scoped %}
-  <div class="alert alert-info" role="status">
-    В разработке: добавление и управление серверами.
+{% block panel_content %}
+{% set mode = settings.get("mode", "multi") if settings else "multi" %}
+{% set running = status.get("running", False) if status else False %}
+{% set mode_labels = {"server": "Сервер", "client": "Клиент", "multi": "Комбинированный"} %}
+{% set mode_label = mode_labels.get(mode, mode) %}
+{% set remote_access_state = remote_access or {} %}
+{% set grant_state = remote_access_state.get("grant_state") or {} %}
+{% set grant_status_labels = {
+  "idle": "ожидание", "pending": "ожидает подтверждения", "approved": "доступ подтверждён",
+  "denied": "доступ отклонён", "expired": "срок действия истёк", "cancelled": "запрос отменён",
+  "disabled": "отключено", "manual_required": "требуется ручное подтверждение"
+} %}
+{% set peer_control_status_labels = {
+  "idle": "не запрошен", "pending": "ожидает ответа", "approved": "одобрен",
+  "denied": "отклонён", "expired": "истёк", "cancelled": "отменён",
+  "disabled": "отключено", "manual_required": "требуется запрос", "error": "ошибка"
+} %}
+{% set decision_labels = {"allow": "разрешить", "deny": "запретить", "prompt": "спрашивать каждый раз"} %}
+{% set peers_count = peers | length %}
+{% set pending_count = remote_access_state.get("pending_count", 0) %}
+{% set pending_requests = remote_access_state.get("pending_requests", []) %}
+{% set first_pending = pending_requests[0] if pending_requests else None %}
+{% set controller_enabled = settings.get("remote_control_controller_enabled", True) if settings else True %}
+{% set target_enabled = settings.get("remote_control_target_enabled", True) if settings else True %}
+{% set remote_role_mode = "dual" if controller_enabled and target_enabled else ("controller" if controller_enabled else ("target" if target_enabled else "controller")) %}
+{% set require_approval = settings.get("remote_control_require_approval", True) if settings else True %}
+{% set multicast_enabled = settings.get("multicast_enabled", True) if settings else True %}
+{% set multicast_joined = status.get("multicast_joined", False) if status else False %}
+{% set advertise_panel = settings.get("advertise_panel", True) if settings else True %}
+{% set status_error = (status.get("last_error", "") if status else "") | trim %}
+{% set debug_cfg = debug_logging or {} %}
+{% set debug_enabled = debug_cfg.get("enabled", False) %}
+{% set debug_level = debug_cfg.get("level", "MAX") %}
+{% set debug_max_mb = debug_cfg.get("max_mb", 5) %}
+{% set debug_backup_count = debug_cfg.get("backup_count", 7) %}
+{% set debug_log_path = debug_cfg.get("path", "") %}
+
+<div
+  class="page-header"
+  data-lan-state-url="{{ state_url }}"
+  data-lan-settings-signature="{{ settings_signature }}"
+  data-lan-peers-signature="{{ peers_signature }}"
+  data-lan-selected-node-id="{{ selected_node_id or '' }}"
+  data-lan-select-url-template="{{ url_for('ServerView.select_target', node_id='__NODE__') }}"
+  data-lan-request-url-template="{{ request_control_url_template }}"
+  data-lan-respond-url-template="{{ respond_request_url_template }}"
+  data-lan-policy-url-template="{{ policy_url_template }}"
+  data-lan-remove-peer-url-template="{{ remove_peer_url_template }}"
+  data-lan-frontend-debug-url="{{ frontend_debug_log_url }}"
+  data-lan-csrf="{{ csrf_token() }}"
+  data-lan-can-action="{{ 1 if can_action else 0 }}"
+>
+  <div>
+    <h1>Серверы и обнаружение в ЛВС</h1>
+    <p class="muted">Управление службой, компьютерами и удалённым доступом.</p>
   </div>
-  {{ super() }}
+  <div class="status-chip {{ 'ok' if running else 'warn' }}" id="lan-running-chip" role="status" aria-live="polite" aria-atomic="true">
+    {{ "Служба запущена" if running else "Служба остановлена" }}
+  </div>
+</div>
+
+{% if load_error %}
+<section class="card alert-card">
+  <h3>Служба ЛВС недоступна</h3>
+  <p class="muted">{{ load_error }}</p>
+</section>
+{% endif %}
+
+<nav class="lan-tabs" role="tablist" aria-label="Разделы серверов">
+  <button id="lan-tab-btn-overview" class="lan-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="lan-tab-overview" data-lan-tab-target="overview">Обзор</button>
+  <button id="lan-tab-btn-settings" class="lan-tab" type="button" role="tab" aria-selected="false" aria-controls="lan-tab-settings" data-lan-tab-target="settings">Настройки</button>
+  <button id="lan-tab-btn-manager" class="lan-tab" type="button" role="tab" aria-selected="false" aria-controls="lan-tab-manager" data-lan-tab-target="manager">Менеджер компьютеров</button>
+  <button id="lan-tab-btn-access" class="lan-tab" type="button" role="tab" aria-selected="false" aria-controls="lan-tab-access" data-lan-tab-target="access">Запросы и правила</button>
+</nav>
+
+<section
+  id="lan-quick-request-alert"
+  class="card alert-card"
+  data-request-id="{{ first_pending.get('request_id', '') if first_pending else '' }}"
+  {% if not can_action or not first_pending %}hidden{% endif %}
+>
+  <div class="card-head-inline">
+    <h3>Новый запрос удалённого доступа</h3>
+    <span class="badge" id="lan-quick-request-count">{{ pending_count }}</span>
+  </div>
+  <p id="lan-quick-request-message" class="muted">
+    {% if first_pending %}
+      Поступил запрос от узла <strong>{{ first_pending.get("controller_name", "") or first_pending.get("controller_node_id", "") }}</strong>. Подтвердите или отклоните доступ.
+    {% else %}
+      Нет ожидающих запросов.
+    {% endif %}
+  </p>
+  <p class="muted">
+    Узел: <strong id="lan-quick-request-controller">{{ first_pending.get("controller_name", "") or first_pending.get("controller_node_id", "") if first_pending else "-" }}</strong>
+    | IP: <span id="lan-quick-request-ip">{{ first_pending.get("controller_ip", "") if first_pending else "-" }}</span>
+    | Пользователь: <span id="lan-quick-request-user">{{ first_pending.get("requester_user", "") if first_pending else "-" }}</span>
+    | Роли: <span id="lan-quick-request-roles">{{ first_pending.get("requested_roles", "") if first_pending else "-" }}</span>
+    | Создан: <span id="lan-quick-request-created">{{ first_pending.get("created_at", "") if first_pending else "-" }}</span>
+  </p>
+  <div class="request-action-wrap">
+    <label class="autocraft-checkbox compact"><input type="checkbox" data-request-remember checked><span>Запомнить</span></label>
+    <input type="text" data-request-note placeholder="Комментарий">
+    <button class="btn-primary" type="button" data-quick-request-approve="1">Разрешить</button>
+    <button class="btn danger" type="button" data-quick-request-approve="0">Отклонить</button>
+    <button class="btn" type="button" data-lan-open-access-tab>Открыть все запросы</button>
+  </div>
+</section>
+
+<div class="lan-tab-panels">
+  <section id="lan-tab-overview" class="lan-tab-panel is-active" role="tabpanel" aria-labelledby="lan-tab-btn-overview" data-lan-tab-panel="overview">
+    <section class="card lan-overview-card">
+      <h3>Сводка статусов</h3>
+      <div class="lan-overview-grid">
+        <div class="lan-overview-item">
+          <span class="lan-overview-label">Служба</span>
+          <span id="lan-summary-service-chip" class="status-chip {{ 'ok' if running else 'warn' }}">{{ "работает" if running else "остановлена" }}</span>
+        </div>
+        <div class="lan-overview-item">
+          <span class="lan-overview-label">Режим</span>
+          <span id="lan-summary-mode" class="lan-overview-value">{{ mode_label }}</span>
+        </div>
+        <div class="lan-overview-item">
+          <span class="lan-overview-label">Компьютеры</span>
+          <span id="lan-summary-peers-chip" class="status-chip {{ 'ok' if peers_count else 'warn' }}">{{ peers_count }}</span>
+          <span id="lan-summary-peers" class="lan-overview-sub">{{ "узлы обнаружены" if peers_count else "узлы не обнаружены" }}</span>
+        </div>
+        <div class="lan-overview-item">
+          <span class="lan-overview-label">Мультикаст</span>
+          <span id="lan-summary-multicast" class="lan-overview-value {{ 'lan-status-ok' if multicast_enabled and multicast_joined else 'lan-status-warn' }}">
+            {% if multicast_enabled %}{{ "включён, канал активен" if multicast_joined else "включён, нет подтверждения" }}{% else %}выключен{% endif %}
+          </span>
+        </div>
+        <div class="lan-overview-item">
+          <span class="lan-overview-label">Публикация панели</span>
+          <span id="lan-summary-panel" class="lan-overview-value {{ 'lan-status-ok' if advertise_panel else 'lan-status-warn' }}">{{ "включена" if advertise_panel else "выключена" }}</span>
+        </div>
+        <div class="lan-overview-item">
+          <span class="lan-overview-label">Удалённый доступ</span>
+          <span id="lan-summary-remote" class="lan-overview-sub">контроллер={{ "вкл" if controller_enabled else "выкл" }}, цель={{ "вкл" if target_enabled else "выкл" }}, подтверждение={{ "обязательно" if require_approval else "авто" }}</span>
+        </div>
+        <div class="lan-overview-item">
+          <span class="lan-overview-label">Входящие запросы</span>
+          <span id="lan-summary-requests" class="lan-overview-value">{{ pending_count }}</span>
+        </div>
+        <div class="lan-overview-item lan-overview-item-wide">
+          <span class="lan-overview-label">Ошибки</span>
+          <span id="lan-summary-error-chip" class="status-chip {{ 'bad' if status_error else 'ok' }}">{{ "есть ошибки" if status_error else "ошибок нет" }}</span>
+          <span id="lan-summary-error" class="lan-overview-sub {{ 'lan-status-bad' if status_error else 'lan-status-ok' }}">{{ status_error or "Системных ошибок не обнаружено." }}</span>
+        </div>
+      </div>
+    </section>
+
+    {% if remote_target and remote_target.active %}
+    <section class="card">
+      <h3>Удалённый режим активен</h3>
+      <p class="muted">
+        Узел: <strong>{{ remote_target.display_name }}</strong>, IP: {{ remote_target.ip or '-' }}, версия: {{ remote_target.app_version or '-' }}.
+      </p>
+      <p class="muted" id="lan-grant-line">
+        Статус доступа: <strong>{{ grant_status_labels.get(grant_state.get("status", "idle"), grant_state.get("status", "idle")) }}</strong>
+        {% if grant_state.get("message") %}| {{ grant_state.get("message") }}{% endif %}
+      </p>
+      <form method="post" action="{{ url_for('ServerView.clear_target') }}" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ request.path }}">
+        <button class="btn" type="submit">Переключиться на локальный узел</button>
+      </form>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <details class="details-block">
+        <summary>Краткая инструкция</summary>
+        <ol>
+          <li>Во вкладке «Настройки» задайте параметры службы.</li>
+          <li>Во вкладке «Менеджер компьютеров» работайте с подключёнными узлами.</li>
+          <li>Во вкладке «Запросы и правила» подтверждайте входящие запросы и управляйте политиками.</li>
+        </ol>
+      </details>
+    </section>
+
+    <section class="card">
+      <h3>Состояние и журнал</h3>
+      <p id="lan-status-line" class="muted" role="status" aria-live="polite" aria-atomic="true">{{ status_text }}</p>
+      <p id="lan-selected-line" class="muted">Выбранный узел: нет.</p>
+      <p id="lan-selected-grant" class="muted">
+        Разрешение: {{ grant_status_labels.get(grant_state.get("status", "idle"), grant_state.get("status", "idle")) }}
+        {% if grant_state.get("message") %}| {{ grant_state.get("message") }}{% endif %}
+      </p>
+      <p><a id="lan-open-selected" class="btn" href="#" target="_blank" rel="noopener" aria-disabled="true">Открыть панель выбранного узла</a></p>
+      <details class="details-block">
+        <summary>Журнал ЛВС</summary>
+        <pre id="lan-log" class="lan-log">{% for line in logs %}{{ line }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</pre>
+      </details>
+      <p id="lan-live-region" class="sr-only" aria-live="polite" aria-atomic="true"></p>
+    </section>
+  </section>
+
+  <section id="lan-tab-settings" class="lan-tab-panel" role="tabpanel" aria-labelledby="lan-tab-btn-settings" data-lan-tab-panel="settings" hidden>
+    <section class="card">
+      <h3>Настройки сервера</h3>
+      <form method="post" class="form lan-settings-form" id="lan-settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <fieldset class="lan-fieldset" {% if not can_action %}disabled{% endif %}>
+          <section class="lan-settings-group">
+            <div class="lan-group-head"><h4>Управление службой</h4></div>
+            <div class="lan-settings-grid">
+              <label>Режим
+                <select name="mode">
+                  <option value="server" {% if mode == "server" %}selected{% endif %}>Сервер</option>
+                  <option value="client" {% if mode == "client" %}selected{% endif %}>Клиент</option>
+                  <option value="multi" {% if mode == "multi" %}selected{% endif %}>Комбинированный</option>
+                </select>
+              </label>
+              <label class="autocraft-checkbox">
+                <input type="hidden" name="enabled_on_start" value="0">
+                <input type="checkbox" name="enabled_on_start" value="1" {% if settings.get("enabled_on_start") %}checked{% endif %}>
+                <span>Запускать службу вместе с AutoCraft</span>
+              </label>
+            </div>
+            <div class="lan-action-grid">
+              <button id="lan-service-toggle-btn" class="{{ 'btn danger lan-service-toggle' if running else 'btn-primary lan-service-toggle' }}" type="submit" name="form_action" value="{{ 'stop' if running else 'start' }}" data-start-value="start" data-stop-value="stop" data-start-label="Запустить службу" data-stop-label="Остановить службу" {% if not can_action or load_error %}disabled{% endif %}>{{ "Остановить службу" if running else "Запустить службу" }}</button>
+              <button class="btn" type="submit" name="form_action" value="restart" {% if not can_action or load_error %}disabled{% endif %}>Применить и перезапустить</button>
+              <button class="btn" type="submit" name="form_action" value="save" {% if not can_action or load_error %}disabled{% endif %}>Сохранить</button>
+            </div>
+          </section>
+
+          <section class="lan-settings-group">
+            <div class="lan-group-head"><h4>Сеть и обнаружение</h4></div>
+            <div class="lan-settings-grid">
+              <label>Имя узла<input type="text" name="instance_name" value="{{ settings.get('instance_name', '') }}"></label>
+              <label>Имя приложения<input type="text" name="service_name" value="{{ settings.get('service_name', 'AutoCraft-Bot') }}"></label>
+              <label>Версия<input type="text" name="app_version" value="{{ settings.get('app_version', '') }}"></label>
+              <label>UDP-порт<input type="number" name="udp_port" min="1" max="65535" value="{{ settings.get('udp_port', 37555) }}"></label>
+              <label>Группа мультикаст<input type="text" name="multicast_group" value="{{ settings.get('multicast_group', '239.255.67.67') }}"></label>
+              <label class="autocraft-checkbox"><input type="hidden" name="multicast_enabled" value="0"><input type="checkbox" name="multicast_enabled" value="1" {% if settings.get("multicast_enabled", True) %}checked{% endif %}><span>Включить мультикаст</span></label>
+              <label class="autocraft-checkbox"><input type="hidden" name="broadcast_enabled" value="0"><input type="checkbox" name="broadcast_enabled" value="1" {% if settings.get("broadcast_enabled", True) %}checked{% endif %}><span>Включить широковещание</span></label>
+              <label>Интервал DISCOVER, сек<input type="number" name="discover_interval_sec" min="1" max="300" step="0.1" value="{{ settings.get('discover_interval_sec', 5.0) }}"></label>
+              <label>Интервал HELLO, сек<input type="number" name="announce_interval_sec" min="1" max="300" step="0.1" value="{{ settings.get('announce_interval_sec', 10.0) }}"></label>
+              <label>Тайм-аут узла, сек<input type="number" name="peer_timeout_sec" min="3" max="3600" step="0.1" value="{{ settings.get('peer_timeout_sec', 30.0) }}"></label>
+            </div>
+            <div class="lan-action-grid">
+              <button class="btn" type="submit" name="form_action" value="refresh_now" {% if not can_action or load_error %}disabled{% endif %}>Отправить DISCOVER</button>
+              <button class="btn" type="submit" name="form_action" value="cleanup_stale" {% if not can_action or load_error %}disabled{% endif %}>Очистить устаревшие</button>
+              <button class="btn danger" type="submit" name="form_action" value="clear_peers" {% if not can_action or load_error %}disabled{% endif %}>Очистить список узлов</button>
+            </div>
+          </section>
+
+          <section class="lan-settings-group">
+            <div class="lan-group-head"><h4>Панель и удалённый доступ</h4></div>
+            <div class="lan-settings-grid">
+              <label class="autocraft-checkbox"><input type="hidden" name="advertise_panel" value="0"><input type="checkbox" name="advertise_panel" value="1" {% if settings.get("advertise_panel", True) %}checked{% endif %}><span>Публиковать адрес панели</span></label>
+              <label>Схема панели
+                <select name="panel_scheme">
+                  <option value="http" {% if settings.get("panel_scheme", "http") == "http" %}selected{% endif %}>HTTP</option>
+                  <option value="https" {% if settings.get("panel_scheme", "http") == "https" %}selected{% endif %}>HTTPS</option>
+                </select>
+              </label>
+              <label>Порт панели<input type="number" name="panel_port" min="1" max="65535" value="{{ settings.get('panel_port', 5212) }}"></label>
+              <label>Путь панели<input type="text" name="panel_path" value="{{ settings.get('panel_path', '/') }}"></label>
+              <label>Хост панели<input type="text" name="panel_host_override" value="{{ settings.get('panel_host_override', '') }}"></label>
+              <fieldset class="lan-role-mode-group">
+                <legend id="lan-role-mode-label">Роль узла в удалённом доступе (выберите один вариант)</legend>
+                <label class="autocraft-checkbox lan-role-mode-option">
+                  <input type="radio" name="remote_role_mode" value="controller" data-remote-role-mode {% if remote_role_mode == "controller" %}checked{% endif %}>
+                  <span>Этот узел работает как управляющий (может управлять другими узлами)</span>
+                </label>
+                <label class="autocraft-checkbox lan-role-mode-option">
+                  <input type="radio" name="remote_role_mode" value="target" data-remote-role-mode {% if remote_role_mode == "target" %}checked{% endif %}>
+                  <span>Этот узел работает как целевой (принимает удалённое управление)</span>
+                </label>
+                <label class="autocraft-checkbox lan-role-mode-option">
+                  <input type="radio" name="remote_role_mode" value="dual" data-remote-role-mode {% if remote_role_mode == "dual" %}checked{% endif %}>
+                  <span>Этот узел работает как целевой и как управляющий</span>
+                </label>
+                <p class="muted lan-role-mode-hint">Рекомендуется использовать одну роль (управляющий или целевой). Комбинированный режим включайте только при реальной необходимости.</p>
+              </fieldset>
+              <label class="autocraft-checkbox" data-remote-target-only><input type="hidden" name="remote_control_require_approval" value="0"><input type="checkbox" name="remote_control_require_approval" value="1" {% if settings.get("remote_control_require_approval", True) %}checked{% endif %}><span>Требовать подтверждение на целевом узле</span></label>
+              <label class="autocraft-checkbox" data-remote-controller-only><input type="hidden" name="remote_control_auto_request_on_select" value="0"><input type="checkbox" name="remote_control_auto_request_on_select" value="1" {% if settings.get("remote_control_auto_request_on_select", True) %}checked{% endif %}><span>Автозапрос доступа при выборе узла</span></label>
+              <label data-remote-target-only>Тайм-аут запроса, сек<input type="number" name="remote_control_request_timeout_sec" min="30" max="3600" value="{{ settings.get('remote_control_request_timeout_sec', 180) }}"></label>
+              <label data-remote-target-only>TTL разрешения, сек<input type="number" name="remote_control_grant_ttl_sec" min="60" max="86400" value="{{ settings.get('remote_control_grant_ttl_sec', 1800) }}"></label>
+            </div>
+            <div class="lan-action-grid">
+              <button class="btn" type="submit" name="form_action" value="refresh_panel" {% if not can_action or load_error %}disabled{% endif %}>Синхронизировать панель</button>
+              <button class="btn" type="submit" name="form_action" value="save" {% if not can_action or load_error %}disabled{% endif %}>Сохранить параметры доступа</button>
+            </div>
+          </section>
+
+          <section class="lan-settings-group">
+            <div class="lan-group-head">
+              <h4>Debug и логирование</h4>
+            </div>
+            <div class="lan-settings-grid">
+              <label class="autocraft-checkbox">
+                <input type="hidden" name="debug_enabled" value="0">
+                <input type="checkbox" name="debug_enabled" value="1" {% if debug_enabled %}checked{% endif %}>
+                <span>Включить debug-лог</span>
+              </label>
+              <label>Уровень логирования
+                <select name="debug_log_level" id="lan-debug-level">
+                  {% for level in debug_cfg.get("levels", ["MAX", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]) %}
+                  <option value="{{ level }}" {% if debug_level == level %}selected{% endif %}>{{ level }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Размер файла, МБ
+                <input type="number" name="debug_log_max_mb" id="lan-debug-max-mb" min="1" max="512" step="1" value="{{ debug_max_mb }}">
+              </label>
+              <label>Файлов ротации
+                <input type="number" name="debug_log_backup_count" id="lan-debug-backup-count" min="1" max="30" step="1" value="{{ debug_backup_count }}">
+              </label>
+            </div>
+            <div class="lan-action-grid">
+              <button
+                id="lan-debug-toggle-btn"
+                class="{{ 'btn danger' if debug_enabled else 'btn-primary' }}"
+                type="submit"
+                name="form_action"
+                value="debug_toggle"
+                data-debug-enable-label="Включить debug"
+                data-debug-disable-label="Выключить debug"
+                {% if not can_action %}disabled{% endif %}
+              >
+                {{ "Выключить debug" if debug_enabled else "Включить debug" }}
+              </button>
+              <button class="btn" type="submit" name="form_action" value="debug_save" {% if not can_action %}disabled{% endif %}>Сохранить параметры логирования</button>
+            </div>
+            <p class="muted" id="lan-debug-status-line">
+              Статус debug: <strong id="lan-debug-status-value">{{ "включен" if debug_enabled else "выключен" }}</strong>
+            </p>
+            <p class="muted" id="lan-debug-path-line">
+              Путь к логу: <code id="lan-debug-path-value">{{ debug_log_path }}</code>
+            </p>
+          </section>
+        </fieldset>
+      </form>
+    </section>
+  </section>
+
+  <section id="lan-tab-manager" class="lan-tab-panel" role="tabpanel" aria-labelledby="lan-tab-btn-manager" data-lan-tab-panel="manager" hidden>
+    <section class="card">
+      <div class="card-head-inline"><h3>Менеджер подключённых компьютеров</h3><span class="badge" id="lan-manager-count" aria-live="polite">{{ peers_count }}</span></div>
+      <p id="lan-manager-meta" class="muted">Фильтруйте узлы и управляйте доступом: запрос, запуск управления, запрет/разрешение входящих запросов и удаление узла.</p>
+      <div class="lan-manager-toolbar">
+        <label>Показать
+          <select id="lan-manager-filter">
+            <option value="all">Все узлы</option><option value="controller">Управляющие</option><option value="target">Целевые</option>
+            <option value="controller_only">Только управляющие</option><option value="target_only">Только целевые</option>
+            <option value="dual">Универсальные</option><option value="panel_ready">Готовые к управлению</option><option value="blocked">Заблокированные контроллеры</option>
+          </select>
+        </label>
+        <label>Сортировать
+          <select id="lan-manager-sort">
+            <option value="name">По имени</option><option value="ip">По IP</option><option value="role">По роли</option><option value="seen">По активности</option><option value="panel">По панели</option>
+          </select>
+        </label>
+        <label>Порядок
+          <select id="lan-manager-order"><option value="asc">По возрастанию</option><option value="desc">По убыванию</option></select>
+        </label>
+        <label class="lan-manager-search-wrap">Поиск<input id="lan-manager-search" type="search" placeholder="Имя, IP, хост, node_id"></label>
+      </div>
+
+      <div class="table-scroll">
+        <table class="table table-compact lan-peers-table lan-manager-table" id="lan-peers-table">
+          <caption class="sr-only">Список обнаруженных компьютеров с действиями управления и фильтрации.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Действия</th><th scope="col">Узел</th><th scope="col">Статус доступа</th><th scope="col">IP / хост</th><th scope="col">Роль ЛВС</th><th scope="col">Роль удалённого доступа</th><th scope="col">Панель</th><th scope="col">Последняя активность</th>
+            </tr>
+          </thead>
+          <tbody id="lan-peers-body">
+            {% for peer in peers %}
+            {% set policy_state = namespace(decision='') %}
+            {% for policy in remote_access_state.get("saved_policies", []) %}
+              {% if policy.get("controller_node_id", "") == peer.get("node_id", "") %}
+                {% set policy_state.decision = policy.get("decision", "") %}
+              {% endif %}
+            {% endfor %}
+            {% set peer_node_id = peer.get('node_id', '') %}
+            {% set peer_control = remote_access_state.get("peer_control_states", {}).get(peer_node_id, {}) %}
+            {% set peer_control_status = (peer_control.get("status", "idle") | string | lower) %}
+            {% if not peer_control_status %}
+              {% set peer_control_status = "idle" %}
+            {% endif %}
+            {% set peer_control_message = peer_control.get("message", "") %}
+            {% set peer_is_approved = peer_control_status == "approved" %}
+            {% set peer_is_pending = peer_control_status == "pending" %}
+            {% set peer_is_selected = selected_node_id and selected_node_id == peer_node_id %}
+            <tr tabindex="0" data-node-id="{{ peer_node_id }}" data-panel-url="{{ peer.get('panel_url', '') }}" data-panel-api-token="{{ peer.get('panel_api_token', '') }}" data-panel-capabilities="{{ (peer.get('panel_capabilities') or []) | join(',') }}" data-remote-target-enabled="{{ 1 if peer.get('remote_control_target_enabled', True) else 0 }}" aria-selected="{{ 'true' if selected_node_id and selected_node_id == peer_node_id else 'false' }}" class="{{ 'is-selected' if selected_node_id and selected_node_id == peer_node_id else '' }}">
+              <td>
+                <div class="lan-manage-actions">
+                  {% if can_action and peer.get("panel_url") and peer.get("panel_api_token") %}
+                  <form method="post" action="{{ url_for('ServerView.select_target', node_id=peer_node_id) }}" class="inline-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ url_for('WacIndexView.index') }}">
+                    <button class="btn" type="submit" {% if not peer_is_approved or peer_is_selected %}disabled{% endif %}>{% if peer_is_selected %}Текущий{% else %}Управлять{% endif %}</button>
+                  </form>
+                  {% if peer.get("remote_control_target_enabled", True) %}<button class="btn" type="button" data-request-node-id="{{ peer_node_id }}" {% if peer_is_approved or peer_is_pending %}disabled{% endif %}>Запросить доступ</button>{% endif %}
+                  {% endif %}
+                  {% if peer.get("panel_url") %}<a class="btn" href="{{ peer.get('panel_url') }}" target="_blank" rel="noopener">Панель</a>{% endif %}
+                  {% if can_action and peer.get("remote_control_controller_enabled", True) %}
+                    {% if policy_state.decision == "deny" %}<button class="btn" type="button" data-manager-policy-decision="prompt" data-manager-policy-node-id="{{ peer.get('node_id', '') }}">Снять запрет доступа</button>
+                    {% else %}<button class="btn danger" type="button" data-manager-policy-decision="deny" data-manager-policy-node-id="{{ peer.get('node_id', '') }}">Запретить доступ</button>{% endif %}
+                  {% endif %}
+                  {% if can_action %}<button class="btn danger" type="button" data-peer-remove-node-id="{{ peer.get('node_id', '') }}">Удалить</button>{% endif %}
+                  {% if not can_action %}<span class="muted">Требуется <code>can_action</code></span>{% endif %}
+                </div>
+              </td>
+              <td>{{ peer.get("instance_name", "") }}{% if peer.get("app", "") %} ({{ peer.get("app", "") }}){% endif %}</td>
+              <td>
+                <span class="status-chip {{ 'ok' if peer_control_status == 'approved' else ('warn' if peer_control_status == 'pending' else ('bad' if peer_control_status in ['denied', 'expired', 'cancelled', 'error'] else 'warn')) }}">
+                  {{ peer_control_status_labels.get(peer_control_status, peer_control_status or 'не запрошен') }}
+                </span>
+                {% if peer_control_message %}<div class="muted">{{ peer_control_message }}</div>{% endif %}
+              </td>
+              <td>{{ peer.get("ip", "") }}{% if peer.get("hostname", "") %} / {{ peer.get("hostname", "") }}{% endif %}</td>
+              <td>{{ peer.get("role", "") }}</td>
+              <td>контроллер={{ "вкл" if peer.get("remote_control_controller_enabled", True) else "выкл" }}, цель={{ "вкл" if peer.get("remote_control_target_enabled", True) else "выкл" }}, подтверждение={{ "обязательно" if peer.get("remote_control_require_approval", True) else "авто" }}</td>
+              <td>{% if peer.get("panel_url") %}<a href="{{ peer.get('panel_url') }}" target="_blank" rel="noopener">{{ peer.get("panel_url") }}</a>{% else %}-{% endif %}</td>
+              <td>{{ peer.get("last_seen_text", "") }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8">Узлы не обнаружены.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
+  <section id="lan-tab-access" class="lan-tab-panel" role="tabpanel" aria-labelledby="lan-tab-btn-access" data-lan-tab-panel="access" hidden>
+    <section class="card">
+      <div class="card-head-inline"><h3>Входящие удалённые запросы</h3><span class="badge" id="lan-request-count" aria-live="polite">{{ pending_count }}</span></div>
+      <div class="table-scroll">
+        <table class="table table-compact" id="lan-requests-table">
+          <caption class="sr-only">Очередь входящих запросов удалённого доступа.</caption>
+          <thead><tr><th>Управляющий узел</th><th>IP</th><th>Пользователь</th><th>Запрошенные роли</th><th>Создан</th><th>Действия</th></tr></thead>
+          <tbody id="lan-requests-body">
+            {% for req in remote_access_state.get("pending_requests", []) %}
+            <tr data-request-id="{{ req.get('request_id', '') }}">
+              <td>{{ req.get("controller_name", "") or req.get("controller_node_id", "") }}</td><td>{{ req.get("controller_ip", "") }}</td><td>{{ req.get("requester_user", "") }}</td><td>{{ req.get("requested_roles", "") }}</td><td>{{ req.get("created_at", "") }}</td>
+              <td>
+                {% if can_action %}
+                <div class="request-action-wrap">
+                  <label class="autocraft-checkbox compact"><input type="checkbox" data-request-remember checked><span>Запомнить</span></label>
+                  <input type="text" data-request-note placeholder="Комментарий">
+                  <button class="btn-primary" type="button" data-request-approve="1">Разрешить</button>
+                  <button class="btn danger" type="button" data-request-approve="0">Отклонить</button>
+                </div>
+                {% else %}<span class="muted">Требуется <code>can_action</code></span>{% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">Нет ожидающих запросов.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Сохранённые правила</h3>
+      <div class="table-scroll">
+        <table class="table table-compact" id="lan-policies-table">
+          <caption class="sr-only">Сохранённые политики доступа для управляющих узлов.</caption>
+          <thead><tr><th>Управляющий узел</th><th>IP</th><th>Решение</th><th>Кем изменено</th><th>Дата изменения</th><th>Быстрые действия</th></tr></thead>
+          <tbody id="lan-policies-body">
+            {% for p in remote_access_state.get("saved_policies", []) %}
+            <tr data-controller-node-id="{{ p.get('controller_node_id', '') }}">
+              <td>{{ p.get("controller_name", "") or p.get("controller_node_id", "") }}</td><td>{{ p.get("controller_ip", "") }}</td><td>{{ decision_labels.get(p.get("decision", ""), p.get("decision", "")) }}</td><td>{{ p.get("updated_by", "") }}</td><td>{{ p.get("updated_at", "") }}</td>
+              <td>
+                {% if can_action %}
+                <div class="policy-action-wrap">
+                  <button class="btn-primary" type="button" data-policy-decision="allow" {% if p.get("decision", "") == "allow" %}disabled{% endif %}>Разрешить</button>
+                  <button class="btn danger" type="button" data-policy-decision="deny" {% if p.get("decision", "") == "deny" %}disabled{% endif %}>Отклонить</button>
+                  <button class="btn" type="button" data-policy-decision="prompt" {% if p.get("decision", "") == "prompt" %}disabled{% endif %}>Спрашивать каждый раз</button>
+                </div>
+                {% else %}<span class="muted">Требуется <code>can_action</code></span>{% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">Нет сохранённых правил.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+</div>
 {% endblock %}
+
+{% block add_tail_js %}
+  {{ super() }}
+  <script src="{{ url_for('static', filename='js/servers.js', v='20260303b') }}"></script>
+{% endblock %}
+

@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from flask import request
+from flask import g
 from flask_login import current_user
 
 from ..db import db
@@ -46,6 +47,12 @@ def _safe_params(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return safe
 
 def _user_roles() -> list[str]:
+    try:
+        proxy_roles = getattr(g, "autocraft_proxy_roles", None)
+        if proxy_roles:
+            return [str(role) for role in proxy_roles if str(role).strip()]
+    except Exception:
+        pass
     roles = []
     try:
         roles = [r.name for r in current_user.roles]  # type: ignore[attr-defined]

@@ -262,7 +262,7 @@ def _collect_autorun_status(base_dir: str) -> Dict[str, Any]:
         "error": "",
     }
     try:
-        from windows_startup import _is_windows, load_startup_full, detect_autorun
+        from sys_core.windows_startup import _is_windows, load_startup_full, detect_autorun
     except Exception as exc:
         result["error"] = str(exc)
         return result
@@ -1284,7 +1284,7 @@ def autocraft_autorun_configure(
     method: str = "startup",
 ) -> Dict[str, Any]:
     try:
-        from windows_startup import (
+        from sys_core.windows_startup import (
             _is_windows,
             save_startup_method,
             save_startup_settings,
@@ -1329,7 +1329,7 @@ def autocraft_autorun_configure(
 
 def autocraft_autorun_enable(base_dir: str) -> Dict[str, Any]:
     try:
-        from windows_startup import load_startup_full, _is_windows
+        from sys_core.windows_startup import load_startup_full, _is_windows
     except Exception as exc:
         return {"ok": False, "stdout": "", "stderr": str(exc)}
     if not _is_windows():
@@ -1345,7 +1345,7 @@ def autocraft_autorun_enable(base_dir: str) -> Dict[str, Any]:
 
 def autocraft_autorun_disable(base_dir: str) -> Dict[str, Any]:
     try:
-        from windows_startup import load_startup_full, _is_windows
+        from sys_core.windows_startup import load_startup_full, _is_windows
     except Exception as exc:
         return {"ok": False, "stdout": "", "stderr": str(exc)}
     if not _is_windows():

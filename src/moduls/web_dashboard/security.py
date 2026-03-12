@@ -1440,6 +1440,19 @@ class PanelSecurityManager(SecurityManager):
         _rename("Views/Menus", "Представления/меню")
         _rename("Permission on Views/Menus", "Права на представления/меню")
 
+    def load_user(self, pk):
+        try:
+            return super().load_user(pk)
+        except (TypeError, ValueError):
+            try:
+                current_app.logger.warning(
+                    "Пропущен некорректный user_id в сессии: %r",
+                    pk,
+                )
+            except Exception:
+                pass
+            return None
+
     def auth_user_db(self, username, password):
         ip = _get_client_ip()
         limited, retry_after = _is_rate_limited(ip, username)

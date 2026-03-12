@@ -88,9 +88,7 @@
     <button class="btn" type="submit">Заблокировать управление</button>
   </form>
   {% else %}
-  <p class="muted">
-    Для входа в раздел питания подтвердите пароль текущего пользователя панели.
-  </p>
+  <p class="muted">{{ unlock_help_text }}</p>
   {% if unlock_retry_after > 0 %}
   <div class="alert alert-warning" role="alert">
     Слишком много неверных попыток. Повторите через {{ unlock_retry_after }} сек.
@@ -99,7 +97,7 @@
   <form class="form power-unlock-form" method="post" action="{{ url_for('PowerView.unlock') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>
-      Текущий пароль пользователя панели
+      {{ unlock_input_label }}
       <input type="password" name="password" autocomplete="current-password" required>
     </label>
     <button class="btn-primary" type="submit">Подтвердить вход</button>

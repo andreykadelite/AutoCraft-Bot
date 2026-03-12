@@ -1,4 +1,4 @@
-VERSION = "1.1.8"
+VERSION = "1.1.9.beta1"
 HELP_TEXT = f"""AutoCraft Bot v{VERSION} ** “AutoCraft Bot — автоматизация без границ”** — твой персональный ассистент в Telegram и на десктопе. Возможно, тут и там попадутся баги — welcome to beta life! 😉
 
 ---
@@ -266,11 +266,11 @@ Python.zip лежит в папке с проектом.
 - © 2025
 - Разрешено использование, изменение и распространение **только с указанием авторства**, **без коммерческого использования** и **при условии сохранения той же лицензии для производных работ**.
 - Полный текст лицензии на английском: [https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode)
-
-
-CONTACT_TEXT = """
+"""
 
 CONTACT_TEXT = """Телеграм: @zotovsmol
+Канал AutoCraft Dev Lab: https://t.me/ac_dev_lab
+Чат обсуждения: https://t.me/ac_dev_lab_chat
 Электронная почта: andreykadelite@ya.ru
-https://github.com/andreykadelite/AutoCraft-Bot
-По багам, улучшениям и предложениям пишите в Telegram или на электронную почту."""
+GitHub: https://github.com/andreykadelite/AutoCraft-Bot
+По багам, улучшениям и предложениям пишите в Telegram, в чат обсуждения или на электронную почту."""

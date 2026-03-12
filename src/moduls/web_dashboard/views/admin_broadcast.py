@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import datetime as dt
 
-from flask import flash, jsonify, redirect, request, url_for
+from flask import flash, g, jsonify, redirect, request, url_for
 from flask_appbuilder import BaseView, expose
 from flask_appbuilder.security.decorators import permission_name
 from flask_appbuilder.security.sqla.models import User
@@ -31,6 +31,9 @@ _DEFAULT_PULL_LIMIT = 5
 
 
 def _is_csrf_valid() -> bool:
+    # Proxy requests are already validated in remote_control.py.
+    if getattr(g, "autocraft_proxy_request", False):
+        return True
     token = (
         request.form.get("csrf_token")
         or request.headers.get("X-CSRFToken")

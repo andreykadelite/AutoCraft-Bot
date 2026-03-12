@@ -9,8 +9,23 @@
 <body class="setup-page">
   <div class="setup-card">
     <h1>Первый запуск</h1>
-    <p>Задайте пароль администратора для входа в панель.</p>
-    <form method="post" aria-label="Установка пароля администратора">
+    <p>Создайте первого пользователя с ролью Super Admin.</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="setup-messages" aria-live="polite">
+          {% for category, message in messages %}
+            <div class="setup-message setup-message-{{ category|e }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    <form method="post" aria-label="Создание первого суперадминистратора">
+      <label>Логин
+        <input type="text" name="login" minlength="3" value="{{ default_login or 'admin' }}" required>
+      </label>
+      <label>Роль
+        <input type="text" value="{{ fixed_role or 'Super Admin' }}" readonly aria-readonly="true">
+      </label>
       <label>Новый пароль
         <input type="password" name="password" minlength="6" required>
       </label>

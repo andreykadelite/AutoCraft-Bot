@@ -1,63 +1,24 @@
 {% extends "panel_base.html" %}
 
-{% block panel_content %}
-{% set summary = summary or {} %}
-{% set runtime = runtime or {} %}
-<div class="page-header">
-  <div>
-    <h1>Менеджер расширений</h1>
-    <p class="muted">Диагностика загрузки расширений и целостности файлов в <code>web_plugins</code>.</p>
-    <p class="muted">
-      Режим запуска:
-      <strong>{% if runtime.compiled %}EXE/compiled{% else %}Python{% endif %}</strong>
-    </p>
+{% macro render_plugin_table(group_key, group, active_tab) %}
+{% set is_external = group_key == "external" %}
+{% set items = group.get("items") or [] %}
+<section class="card">
+  <div class="card-head-inline">
+    <div>
+      <h3>{{ group.label }}</h3>
+      <p class="muted">
+        {% if is_external %}
+          Внешние расширения загружаются из <code>data/web_plugins</code> и используют отдельный <code>venv</code> в папке расширения.
+        {% else %}
+          Интегрированные расширения встроены в приложение и доступны без отдельной установки.
+        {% endif %}
+      </p>
+    </div>
+    <span class="status-chip {{ 'ok' if ((group.get('summary') or {}).get('loaded') or 0) > 0 else 'warn' }}">
+      Найдено: {{ (group.get('summary') or {}).get('total') or 0 }}
+    </span>
   </div>
-</div>
-
-<section class="tiles" aria-label="Сводка по расширениям">
-  <article class="tile">
-    <div class="tile-title">Всего</div>
-    <div class="tile-value">{{ summary.total or 0 }}</div>
-    <div class="tile-sub">Найдено каталогов расширений</div>
-  </article>
-  <article class="tile">
-    <div class="tile-title">Загружено</div>
-    <div class="tile-value">{{ summary.loaded or 0 }}</div>
-    <div class="tile-sub">View зарегистрированы в меню</div>
-  </article>
-  <article class="tile">
-    <div class="tile-title">Ошибки</div>
-    <div class="tile-value">{{ summary.error or 0 }}</div>
-    <div class="tile-sub">Требуют исправления</div>
-  </article>
-  <article class="tile">
-    <div class="tile-title">Предупреждения</div>
-    <div class="tile-value">{{ summary.warning or 0 }}</div>
-    <div class="tile-sub">Возможны частичные проблемы</div>
-  </article>
-  <article class="tile">
-    <div class="tile-title">Доступно к запуску</div>
-    <div class="tile-value">{{ summary.launchable or 0 }}</div>
-    <div class="tile-sub">Без критических ошибок</div>
-  </article>
-</section>
-
-<div class="card">
-  <p>
-    Для каждого расширения показаны проверки <code>plugin.json</code>, <code>entrypoint</code>, шаблона, статики и состояние
-    регистрации в панели. Если скрипт не подхватился, модуль упал при импорте или не найдены файлы, это появится в диагностике.
-  </p>
-
-  {% if roots %}
-  <details class="details-block">
-    <summary>Пути поиска расширений ({{ roots | length }})</summary>
-    <ul>
-      {% for root in roots %}
-      <li><code>{{ root }}</code></li>
-      {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
 
   <div class="table-scroll">
     <table class="table table-compact">
@@ -66,28 +27,39 @@
           <th scope="col">ID</th>
           <th scope="col">Название</th>
           <th scope="col">Версия</th>
-          <th scope="col">Категория</th>
+          {% if is_external %}
+          <th scope="col">Среда</th>
+          {% endif %}
           <th scope="col">Загрузка</th>
           <th scope="col">Статус</th>
-          <th scope="col">Запуск</th>
+          <th scope="col">Действия</th>
         </tr>
       </thead>
       <tbody>
-        {% for plugin in plugins %}
+        {% for plugin in items %}
         <tr>
           <td><code>{{ plugin.plugin_id }}</code></td>
-          <td>{{ plugin.name }}</td>
+          <td>
+            <strong>{{ plugin.name }}</strong>
+            {% if plugin.description %}
+            <div class="muted">{{ plugin.description }}</div>
+            {% endif %}
+          </td>
           <td>{{ plugin.version }}</td>
-          <td>{{ plugin.category }}</td>
+          {% if is_external %}
+          <td>
+            <span class="status-chip {{ plugin.install_state_chip }}">{{ plugin.install_state_label }}</span>
+          </td>
+          {% endif %}
           <td>
             {% if plugin.load_state == "loaded" %}
               Загружено
             {% elif plugin.load_state == "warning" %}
               Загружено с предупреждениями
-            {% elif plugin.load_state == "loading" %}
-              В процессе
             {% elif plugin.load_state == "error" %}
               Ошибка загрузки
+            {% elif plugin.load_state == "loading" %}
+              В процессе
             {% else %}
               Не загружено
             {% endif %}
@@ -96,41 +68,145 @@
             <span class="status-chip {{ plugin.status_chip }}">{{ plugin.status_label }}</span>
           </td>
           <td>
-            {% if plugin.can_launch %}
-              <a class="btn" href="{{ plugin.url }}">Открыть</a>
-            {% else %}
+            <div class="extensions-actions">
+              {% if is_external and plugin.can_install %}
+              <form method="post" action="{{ url_for('ExtensionsView.install', plugin_id=plugin.plugin_id) }}" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="tab" value="{{ active_tab }}">
+                <input type="hidden" name="mode" value="{{ 'reinstall' if plugin.installed else 'install' }}">
+                <button class="btn" type="submit">{{ plugin.install_action_label }}</button>
+              </form>
+              <form method="post" action="{{ url_for('ExtensionsView.download_zip', plugin_id=plugin.plugin_id) }}" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="tab" value="{{ active_tab }}">
+                <input type="hidden" name="include_venv" value="0">
+                <button class="btn" type="submit">Скачать ZIP</button>
+              </form>
+              <form method="post" action="{{ url_for('ExtensionsView.download_zip', plugin_id=plugin.plugin_id) }}" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="tab" value="{{ active_tab }}">
+                <input type="hidden" name="include_venv" value="1">
+                <button class="btn" type="submit">ZIP + venv</button>
+              </form>
+              <form method="post" action="{{ url_for('ExtensionsView.uninstall', plugin_id=plugin.plugin_id) }}" class="inline-form" onsubmit="return confirm('Удалить внешнее расширение «' + {{ plugin.name | tojson }} + '»?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="tab" value="{{ active_tab }}">
+                <button class="btn danger" type="submit">Удалить</button>
+              </form>
+              {% endif %}
+              {% if plugin.can_launch %}
+              <a class="btn-primary" href="{{ plugin.url }}">Открыть</a>
+              {% else %}
               <span class="muted">Недоступно</span>
-            {% endif %}
+              {% endif %}
+            </div>
           </td>
         </tr>
         <tr>
-          <td colspan="7">
-            <details class="details-block" {% if plugin.status != "ok" %}open{% endif %}>
+          <td colspan="{{ 7 if is_external else 6 }}">
+            <details class="details-block" {% if plugin.status != "ok" or (is_external and not plugin.installed) %}open{% endif %}>
               <summary>
-                Диагностика:
-                ошибок {{ plugin.errors | length }},
+                Диагностика: ошибок {{ plugin.errors | length }},
                 предупреждений {{ plugin.warnings | length }},
                 проверок {{ plugin.checks | length }}
               </summary>
 
               <dl class="info-list">
-                <dt>Каталог</dt>
-                <dd><code>{{ plugin.root }}</code></dd>
-                <dt>Источник</dt>
-                <dd><code>{{ plugin.source_root or "-" }}</code></dd>
-                <dt>Манифест</dt>
-                <dd><code>{{ plugin.manifest_path }}</code>{% if plugin.manifest_encoding %} ({{ plugin.manifest_encoding }}){% endif %}</dd>
-                <dt>Entrypoint</dt>
-                <dd><code>{{ plugin.entrypoint_path or plugin.entrypoint_hint or "-" }}</code></dd>
-                <dt>Шаблон</dt>
-                <dd><code>{{ plugin.template_path or plugin.template_hint or "-" }}</code></dd>
-                <dt>Роли</dt>
-                <dd>{{ ", ".join(plugin.roles or []) or "-" }}</dd>
-                <dt>View</dt>
-                <dd>{{ ", ".join(plugin.registered_views or []) or "-" }}</dd>
-                <dt>Файлов в каталоге</dt>
-                <dd>{{ plugin.files_total or 0 }}</dd>
+                <div>
+                  <dt>Тип</dt>
+                  <dd>{{ plugin.source_label }}</dd>
+                </div>
+                <div>
+                  <dt>Каталог</dt>
+                  <dd><code>{{ plugin.root }}</code></dd>
+                </div>
+                <div>
+                  <dt>Источник</dt>
+                  <dd><code>{{ plugin.source_root or "-" }}</code></dd>
+                </div>
+                <div>
+                  <dt>Маршрут</dt>
+                  <dd><code>{{ plugin.route_base or "-" }}</code></dd>
+                </div>
+                <div>
+                  <dt>Манифест</dt>
+                  <dd><code>{{ plugin.manifest_path }}</code></dd>
+                </div>
+                <div>
+                  <dt>Entrypoint</dt>
+                  <dd><code>{{ plugin.entrypoint_path or plugin.entrypoint_hint or "-" }}</code></dd>
+                </div>
+                <div>
+                  <dt>Шаблон</dt>
+                  <dd><code>{{ plugin.template_path or plugin.template_hint or "-" }}</code></dd>
+                </div>
+                <div>
+                  <dt>Роли</dt>
+                  <dd>{{ ", ".join(plugin.roles or []) or "-" }}</dd>
+                </div>
+                <div>
+                  <dt>View</dt>
+                  <dd>{{ ", ".join(plugin.registered_views or []) or "-" }}</dd>
+                </div>
+                <div>
+                  <dt>Файлов</dt>
+                  <dd>{{ plugin.files_total or 0 }}</dd>
+                </div>
               </dl>
+
+              {% if is_external %}
+              <div class="extensions-runtime-grid">
+                <div class="extensions-runtime-card">
+                  <h4>Среда расширения</h4>
+                  <p class="muted">{{ plugin.install_message or "Состояние среды не определено." }}</p>
+                  <dl class="info-list">
+                    <div>
+                      <dt>Базовый Python</dt>
+                      <dd><code>{{ plugin.base_python or "-" }}</code></dd>
+                    </div>
+                    <div>
+                      <dt>Источник Python</dt>
+                      <dd>{{ plugin.base_python_source_label or "-" }}</dd>
+                    </div>
+                    <div>
+                      <dt>Venv</dt>
+                      <dd><code>{{ plugin.venv_dir or "-" }}</code></dd>
+                    </div>
+                    <div>
+                      <dt>Python venv</dt>
+                      <dd><code>{{ plugin.venv_python or "-" }}</code></dd>
+                    </div>
+                    <div>
+                      <dt>Pip venv</dt>
+                      <dd><code>{{ plugin.venv_pip or "-" }}</code></dd>
+                    </div>
+                    <div>
+                      <dt>site-packages</dt>
+                      <dd><code>{{ plugin.venv_site_packages or "-" }}</code></dd>
+                    </div>
+                  </dl>
+                </div>
+                <div class="extensions-runtime-card">
+                  <h4>Зависимости</h4>
+                  {% if plugin.dependencies %}
+                  <ul>
+                    {% for dep in plugin.dependencies %}
+                    <li><code>{{ dep }}</code></li>
+                    {% endfor %}
+                  </ul>
+                  {% else %}
+                  <p class="muted">Дополнительные pip-зависимости не указаны.</p>
+                  {% endif %}
+                  <p class="muted">
+                    {% if plugin.requirements_path %}
+                      requirements: <code>{{ plugin.requirements_path }}</code>
+                    {% else %}
+                      requirements.txt не используется.
+                    {% endif %}
+                  </p>
+                </div>
+              </div>
+              {% endif %}
 
               {% if plugin.errors %}
               <h4>Ошибки</h4>
@@ -156,7 +232,7 @@
                   <thead>
                     <tr>
                       <th scope="col">Проверка</th>
-                      <th scope="col">Файл/путь</th>
+                      <th scope="col">Файл / путь</th>
                       <th scope="col">Статус</th>
                       <th scope="col">Сообщение</th>
                     </tr>
@@ -166,17 +242,7 @@
                     <tr>
                       <td>{{ check.label }}</td>
                       <td><code>{{ check.path }}</code></td>
-                      <td>
-                        <span class="status-chip {{ check.chip }}">
-                          {% if check.level == "error" %}
-                            Ошибка
-                          {% elif check.level == "warning" %}
-                            Предупреждение
-                          {% else %}
-                            OK
-                          {% endif %}
-                        </span>
-                      </td>
+                      <td><span class="status-chip {{ check.chip }}">{{ "OK" if check.level == "ok" else ("Предупреждение" if check.level == "warning" else "Ошибка") }}</span></td>
                       <td>{{ check.message }}</td>
                     </tr>
                     {% endfor %}
@@ -212,11 +278,147 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="7">Расширения не найдены.</td>
+          <td colspan="{{ 7 if is_external else 6 }}">Расширения не найдены.</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+</section>
+{% endmacro %}
+
+{% block panel_content %}
+{% set summary = summary or {} %}
+{% set runtime = runtime or {} %}
+{% set groups = groups or {} %}
+{% set integrated = groups.get("integrated") or {"label": "Интегрированные расширения", "items": [], "summary": {}} %}
+{% set external = groups.get("external") or {"label": "Внешние расширения", "items": [], "summary": {}} %}
+
+<div class="page-header">
+  <div>
+    <h1>Менеджер расширений</h1>
+    <p class="muted">Диагностика и управление web-расширениями панели.</p>
+    <p class="muted">
+      Режим запуска:
+      <strong>{% if runtime.compiled %}EXE / compiled{% else %}Python{% endif %}</strong>
+    </p>
+  </div>
 </div>
+
+<section class="tiles" aria-label="Сводка по расширениям">
+  <article class="tile">
+    <div class="tile-title">Всего</div>
+    <div class="tile-value">{{ summary.total or 0 }}</div>
+    <div class="tile-sub">Найдено каталогов расширений</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Загружено</div>
+    <div class="tile-value">{{ summary.loaded or 0 }}</div>
+    <div class="tile-sub">Разделы активированы и доступны в меню</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Ошибки</div>
+    <div class="tile-value">{{ summary.error or 0 }}</div>
+    <div class="tile-sub">Требуют исправления</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Предупреждения</div>
+    <div class="tile-value">{{ summary.warning or 0 }}</div>
+    <div class="tile-sub">Есть неполные настройки</div>
+  </article>
+  <article class="tile">
+    <div class="tile-title">Готовы к запуску</div>
+    <div class="tile-value">{{ summary.launchable or 0 }}</div>
+    <div class="tile-sub">Можно открыть без критических ошибок</div>
+  </article>
+</section>
+
+<section class="card">
+  <p>
+    Интегрированные расширения входят в приложение и доступны сразу.
+    Внешние расширения располагаются в <code>data/web_plugins</code>.
+    Для каждого внешнего расширения создаётся собственное виртуальное окружение в его папке.
+    Внешнее расширение можно загрузить из ZIP, удалить и скачать обратно как ZIP (среда отдельно или вместе с <code>venv</code>).
+  </p>
+
+  <div class="extensions-tabs" role="tablist" aria-label="Категории расширений">
+    <a class="extensions-tab {% if active_tab == 'integrated' %}is-active{% endif %}" href="{{ url_for('ExtensionsView.list', tab='integrated') }}" role="tab" aria-selected="{{ 'true' if active_tab == 'integrated' else 'false' }}">
+      Интегрированные
+      <span class="badge">{{ integrated.summary.total or 0 }}</span>
+    </a>
+    <a class="extensions-tab {% if active_tab == 'external' %}is-active{% endif %}" href="{{ url_for('ExtensionsView.list', tab='external') }}" role="tab" aria-selected="{{ 'true' if active_tab == 'external' else 'false' }}">
+      Внешние
+      <span class="badge">{{ external.summary.total or 0 }}</span>
+    </a>
+  </div>
+
+  {% if roots_by_source %}
+  <div class="extensions-roots-grid">
+    <details class="details-block">
+      <summary>Пути интегрированных расширений ({{ (roots_by_source.get('integrated') or []) | length }})</summary>
+      <ul>
+        {% for root in roots_by_source.get('integrated') or [] %}
+        <li><code>{{ root }}</code></li>
+        {% else %}
+        <li class="muted">Пути не найдены.</li>
+        {% endfor %}
+      </ul>
+    </details>
+    <details class="details-block">
+      <summary>Пути внешних расширений ({{ (roots_by_source.get('external') or []) | length }})</summary>
+      <ul>
+        {% for root in roots_by_source.get('external') or [] %}
+        <li><code>{{ root }}</code></li>
+        {% else %}
+        <li class="muted">Пути не найдены.</li>
+        {% endfor %}
+      </ul>
+    </details>
+  </div>
+  {% endif %}
+
+  {% if active_tab == "external" %}
+  <div class="extensions-runtime-grid">
+    <article class="extensions-runtime-card">
+      <h4>Установка внешнего расширения из ZIP</h4>
+      <form method="post" action="{{ url_for('ExtensionsView.upload_zip') }}" enctype="multipart/form-data" class="extensions-upload-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="tab" value="{{ active_tab }}">
+        <label>
+          ZIP-файл расширения
+          <input type="file" name="plugin_zip" accept=".zip" required>
+        </label>
+        <label class="extensions-checkbox">
+          <input type="checkbox" name="replace_existing" value="1">
+          Заменить существующую версию, если ID уже установлен
+        </label>
+        <label class="extensions-checkbox">
+          <input type="checkbox" name="setup_environment" value="1" checked>
+          Сразу подготовить виртуальную среду и зависимости
+        </label>
+        <label class="extensions-checkbox">
+          <input type="checkbox" name="recreate_environment" value="1">
+          Пересоздать виртуальную среду (если уже была)
+        </label>
+        <button class="btn-primary" type="submit">Установить из ZIP</button>
+      </form>
+    </article>
+    <article class="extensions-runtime-card">
+      <h4>Как работает управление</h4>
+      <ul>
+        <li>Установка из ZIP проверяет структуру архива и устанавливает только одно расширение.</li>
+        <li>Кнопка «Установить расширение» подготавливает или переустанавливает среду существующего расширения.</li>
+        <li>Скачивание доступно в двух вариантах: только файлы расширения или вместе с <code>venv</code>.</li>
+        <li>Удаление очищает папку внешнего расширения и отключает его в текущей сессии панели.</li>
+      </ul>
+    </article>
+  </div>
+  {% endif %}
+</section>
+
+{% if active_tab == "external" %}
+  {{ render_plugin_table("external", external, active_tab) }}
+{% else %}
+  {{ render_plugin_table("integrated", integrated, active_tab) }}
+{% endif %}
 {% endblock %}

@@ -24,6 +24,7 @@ from .communications import CommunicationCenterView
 from .internal_messenger import InternalMessengerView
 from .admin_broadcast import AdminBroadcastView
 from .notify_center import SystemNotifyCenterView
+from .external_plugin_host import ExternalPluginHostView
 from ..security import move_security_menu_to_admin
 
 
@@ -70,5 +71,6 @@ def register_views(appbuilder):
     appbuilder.add_view_no_menu(InternalMessengerView)
     appbuilder.add_view_no_menu(CommunicationCenterView)
     appbuilder.add_view_no_menu(SystemNotifyCenterView)
+    appbuilder.add_view_no_menu(ExternalPluginHostView)
 
     move_security_menu_to_admin(appbuilder, category_admin)

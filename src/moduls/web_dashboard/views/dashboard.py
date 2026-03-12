@@ -47,9 +47,16 @@ class WacIndexView(IndexView):
                 progress_token = ""
 
         use_cached_snapshot = bool(progress_token and progress)
-        snapshot = (
-            get_cached_system_snapshot() if use_cached_snapshot else get_system_snapshot()
-        )
+        try:
+            snapshot = (
+                get_cached_system_snapshot() if use_cached_snapshot else get_system_snapshot()
+            )
+        except Exception as exc:
+            current_app.logger.exception("Dashboard snapshot collection failed")
+            snapshot = get_cached_system_snapshot() or {}
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+            snapshot["error"] = snapshot.get("error") or f"Не удалось обновить данные системы: {exc}"
         cpu = snapshot.get("cpu_percent")
         memory = snapshot.get("memory", {})
         disks = snapshot.get("disks", [])
@@ -67,6 +74,7 @@ class WacIndexView(IndexView):
         swap = snapshot.get("swap", {})
         disk_totals = snapshot.get("disk_totals", {})
         power = snapshot.get("power", {})
+        hardware = snapshot.get("hardware", {})
         ps_error = snapshot.get("error")
 
         latest_metrics = (
@@ -107,6 +115,7 @@ class WacIndexView(IndexView):
             swap=swap,
             disk_totals=disk_totals,
             power=power,
+            hardware=hardware,
             ps_error=ps_error,
             metrics=latest_metrics,
             jobs=latest_jobs,
@@ -124,9 +133,14 @@ class WacIndexView(IndexView):
     @expose("/overview/retry")
     @has_access
     def overview_retry(self):
-        snapshot = get_system_snapshot(force=True)
-        # Keep lightweight overview cache in sync after manual retry.
-        get_overview_snapshot(force=True)
+        try:
+            snapshot = get_system_snapshot(force=True)
+            # Keep lightweight overview cache in sync after manual retry.
+            get_overview_snapshot(force=True)
+        except Exception as exc:
+            current_app.logger.exception("Manual overview retry failed")
+            flash(f"Ошибка повторной загрузки данных: {exc}", "danger")
+            return redirect(url_for("WacIndexView.index"))
         if snapshot.get("error"):
             flash(
                 "Повторная попытка выполнена, но часть данных системы по-прежнему не получена.",
@@ -154,5 +168,6 @@ class WacIndexView(IndexView):
                 "net_io": net_io,
                 "disk_totals": snapshot.get("disk_totals", {}),
                 "power": snapshot.get("power", {}),
+                "hardware": snapshot.get("hardware", {}),
             }
         )

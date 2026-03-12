@@ -1419,6 +1419,54 @@ def run_bot():
     # Запускаем автозапуск плагинов
     asyncio.get_event_loop().create_task(auto_start_plugins(dp))
 
+    async def on_startup(dispatcher: Dispatcher):
+        """
+        Стартовая логика вынесена в sys_core/startup_telegram.py:
+        - бот первым отправляет короткий статус запуска;
+        - при отсутствии PIN выполняется автоавторизация и показ главного меню;
+        - при наличии PIN запрашивается PIN-код.
+        """
+        try:
+            from sys_core.startup_telegram import run_startup_sequence
+        except Exception as e:
+            write_bot_log(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось подключить startup_telegram: {e}")
+            return
+
+        try:
+            class _StartupReportMessageProxy:
+                def __init__(self, tg_bot, chat_id):
+                    self._tg_bot = tg_bot
+                    self._chat_id = chat_id
+
+                async def answer(self, text, **kwargs):
+                    await self._tg_bot.send_message(self._chat_id, text, **kwargs)
+
+            async def _send_startup_post_auth_report(chat_id: int):
+                proxy = _StartupReportMessageProxy(dispatcher.bot, chat_id)
+                await send_post_auth_report(proxy, debug_enabled=debug_enabled)
+
+            stats = await run_startup_sequence(
+                bot=dispatcher.bot,
+                base_dir=base_dir,
+                pin_code=PIN_CODE,
+                allowed_accounts=allowed_accounts,
+                authorized_users=authorized_users,
+                activated_users_store_module=_activated_users_store_module,
+                get_main_keyboard=get_main_keyboard,
+                post_auth_report_sender=_send_startup_post_auth_report,
+                write_log=write_bot_log,
+            )
+            write_bot_log(
+                "[STARTUP] Выполнено стартовое оповещение: "
+                f"targets={stats.get('targets', 0)}, "
+                f"status_sent={stats.get('status_sent', 0)}, "
+                f"pin_prompted={stats.get('pin_prompted', 0)}, "
+                f"auto_authorized={stats.get('auto_authorized', 0)}, "
+                f"post_auth_reported={stats.get('post_auth_reported', 0)}."
+            )
+        except Exception as e:
+            write_bot_log(f"[ОШИБКА] Стартовая последовательность завершилась с ошибкой: {e}")
+
     # Добавляем on_shutdown для корректного завершения работы бота
     async def on_shutdown(dispatcher: Dispatcher):
         write_bot_log("Выполняется shutdown бота.")
@@ -1426,7 +1474,12 @@ def run_bot():
 
     # Собственно блокирующий запуск поллинга (в отдельном потоке)
     try:
-        executor.start_polling(dp, skip_updates=True, on_shutdown=on_shutdown)
+        executor.start_polling(
+            dp,
+            skip_updates=True,
+            on_startup=on_startup,
+            on_shutdown=on_shutdown,
+        )
     except exceptions.TerminatedByOtherGetUpdates:
         write_bot_log("TerminatedByOtherGetUpdates: бот остановлен принудительно.")
     except Exception as e:
@@ -1624,6 +1677,74 @@ if __name__ == "__main__":
             except Exception as e:
                 log(f"[watchdog] Ошибка при поиске процессов Telegram API: {e}")
 
+        def _kill_lhm_processes():
+            """
+            Ensure LibreHardwareMonitor is not left running when the child app
+            process is dead/restarting. We only target the app-managed binary.
+            """
+            try:
+                lhm_dir = os.path.normcase(
+                    os.path.abspath(os.path.join(base_dir, "data", "LibreHardwareMonitor.NET.10"))
+                )
+                target_exe = os.path.normcase(os.path.abspath(os.path.join(lhm_dir, "LibreHardwareMonitor.exe")))
+            except Exception:
+                lhm_dir = ""
+                target_exe = ""
+
+            stopped = 0
+            try:
+                for p in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
+                    try:
+                        name = (p.info.get("name") or "").strip().lower()
+                        if name != "librehardwaremonitor.exe":
+                            continue
+
+                        exe = p.info.get("exe")
+                        cmdline = " ".join(p.info.get("cmdline") or [])
+
+                        match_target = False
+                        if exe:
+                            try:
+                                exe_norm = os.path.normcase(os.path.abspath(exe))
+                                if target_exe and exe_norm == target_exe:
+                                    match_target = True
+                            except Exception:
+                                pass
+                        if not match_target and cmdline:
+                            try:
+                                cmdline_norm = os.path.normcase(cmdline)
+                                if (target_exe and target_exe in cmdline_norm) or (lhm_dir and lhm_dir in cmdline_norm):
+                                    match_target = True
+                            except Exception:
+                                pass
+
+                        # Fallback: if we cannot read process path/cmdline reliably,
+                        # still stop by process name to avoid orphan LHM instances
+                        # after app crash/restart.
+                        if not match_target and not exe and not cmdline:
+                            match_target = True
+
+                        if not match_target:
+                            continue
+
+                        log(f"[watchdog] Found LibreHardwareMonitor pid={p.pid}, stopping...")
+                        try:
+                            p.terminate()
+                            p.wait(timeout=6)
+                        except psutil.TimeoutExpired:
+                            p.kill()
+                            p.wait(timeout=6)
+                        stopped += 1
+                    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                        continue
+                    except Exception as e:
+                        log(f"[watchdog] Failed to stop LibreHardwareMonitor pid={getattr(p, 'pid', '?')}: {e}")
+            except Exception as e:
+                log(f"[watchdog] Error while searching LibreHardwareMonitor processes: {e}")
+
+            if stopped:
+                log(f"[watchdog] LibreHardwareMonitor processes stopped: {stopped}")
+
         def spawn_child_passthrough():
             """
             Запуск дочернего процесса с прокидыванием исходных аргументов (например, --tray, --config),
@@ -1720,6 +1841,7 @@ if __name__ == "__main__":
                     log(f"⚠️ [watchdog] Дочерний процесс не подаёт признаков жизни {int(no_heartbeat_time)} сек. Считаем, что GUI завис.")
                     # Пытаемся сначала остановить локальный Telegram API сервер
                     _kill_telegram_api_processes()
+                    _kill_lhm_processes()
                     # Затем убиваем зависший процесс бота
                     try:
                         proc.kill()
@@ -1750,16 +1872,19 @@ if __name__ == "__main__":
 
             if code == 0:
                 log("🛑 [watchdog] Код 0 — считаем, что пользователь закрыл приложение. Завершаемся.")
+                _kill_lhm_processes()
                 sys.exit(0)
             elif code == 42:
                 log("♻️ [watchdog] Получен код 42 — полный рестарт. Останавливаем локальный API (если есть) и сразу запускаем новый процесс.")
                 _kill_telegram_api_processes()
+                _kill_lhm_processes()
                 # сразу продолжаем цикл без увеличения счётчика рестартов
                 continue
             else:
                 restart_count += 1
                 log(f"♻️ [watchdog] Bot crashed/hanged (code={code}). Restart #{restart_count}/{MAX_RESTARTS} через 3 сек...")
                 _kill_telegram_api_processes()
+                _kill_lhm_processes()
                 if restart_count >= MAX_RESTARTS:
                     log(f"♻️ [watchdog] Достигнут лимит рестартов ({MAX_RESTARTS}). Останавливаемся.")
                     sys.exit(code if isinstance(code, int) else 1)

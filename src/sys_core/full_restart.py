@@ -16,6 +16,7 @@ sys_core/full_restart.py
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import subprocess
@@ -140,6 +141,141 @@ def _get_browser_ctrl():
 # Отправка логов (в несколько сообщений)
 # ----------------------------
 
+
+def _get_webpanel_backend_module():
+    """
+    Return webpanel backend module instance if available.
+    Priority:
+    1) already-loaded module from sys.modules
+    2) import by known names after project path normalization
+    """
+    for name in ("startrunmodulwebpanel", "moduls.startrunmodulwebpanel"):
+        try:
+            m = sys.modules.get(name)
+            if m is not None:
+                return m
+        except Exception:
+            pass
+
+    _ensure_project_paths()
+    for name in ("startrunmodulwebpanel", "moduls.startrunmodulwebpanel"):
+        try:
+            return importlib.import_module(name)
+        except Exception:
+            continue
+    return None
+
+
+def _stop_lhm_processes_for_restart(base_dir: str, buf: list[str]) -> None:
+    """
+    Best-effort stop of app-managed LibreHardwareMonitor process.
+    Used as fallback when backend stop is unavailable or incomplete.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception as e:
+        _append_line(buf, f"LHM cleanup skipped: psutil unavailable: {e!r}")
+        return
+
+    try:
+        lhm_dir = os.path.normcase(
+            os.path.abspath(os.path.join(base_dir, "data", "LibreHardwareMonitor.NET.10"))
+        )
+        target_exe = os.path.normcase(os.path.abspath(os.path.join(lhm_dir, "LibreHardwareMonitor.exe")))
+    except Exception:
+        lhm_dir = ""
+        target_exe = ""
+
+    scanned = 0
+    stopped = 0
+    for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
+        try:
+            scanned += 1
+            name = str(proc.info.get("name") or "").strip().lower()
+            if name != "librehardwaremonitor.exe":
+                continue
+
+            exe = proc.info.get("exe")
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            match_target = False
+
+            if exe:
+                try:
+                    exe_norm = os.path.normcase(os.path.abspath(exe))
+                    if target_exe and exe_norm == target_exe:
+                        match_target = True
+                except Exception:
+                    pass
+            if not match_target and cmdline:
+                try:
+                    cmdline_norm = os.path.normcase(cmdline)
+                    if (target_exe and target_exe in cmdline_norm) or (lhm_dir and lhm_dir in cmdline_norm):
+                        match_target = True
+                except Exception:
+                    pass
+            if not match_target and not exe and not cmdline:
+                # Fallback when process metadata is restricted.
+                match_target = True
+            if not match_target:
+                continue
+
+            _append_line(buf, f"LHM process detected pid={proc.pid}, stopping...")
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except psutil.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            stopped += 1
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+        except Exception as e:
+            _append_line(buf, f"LHM stop error pid={getattr(proc, 'pid', '?')}: {e!r}")
+
+    _append_line(buf, f"LHM cleanup completed: stopped={stopped}, scanned={scanned}")
+
+
+def _stop_webpanel_and_lhm_for_restart(base_dir: str, buf: list[str]) -> None:
+    """
+    Stop webpanel backend server (if loaded/available). This should also stop LHM.
+    Then run explicit LHM cleanup fallback to prevent orphan process.
+    """
+    backend = _get_webpanel_backend_module()
+    if backend is None:
+        _append_line(buf, "Webpanel backend not found; fallback to direct LHM cleanup.")
+        _stop_lhm_processes_for_restart(base_dir, buf)
+        return
+
+    try:
+        srv = getattr(backend, "_server", None)
+        if srv is None:
+            _append_line(buf, "Webpanel backend loaded, but _server is None.")
+        else:
+            was_running = None
+            try:
+                is_running = getattr(srv, "is_running", None)
+                was_running = bool(is_running()) if callable(is_running) else None
+            except Exception:
+                was_running = None
+
+            lock = getattr(backend, "_server_lock", None)
+            if lock is not None:
+                with lock:
+                    srv.stop()
+            else:
+                srv.stop()
+            _append_line(
+                buf,
+                f"Webpanel server stop invoked via backend ({getattr(backend, '__name__', 'unknown')}); "
+                f"was_running={was_running}.",
+            )
+    except Exception as e:
+        _append_line(buf, f"Webpanel stop via backend failed: {e!r}")
+
+    # Even after backend stop, enforce cleanup to avoid stale process on crashy states.
+    _stop_lhm_processes_for_restart(base_dir, buf)
+
+
 SendFunc = Callable[[str], Awaitable[None]]
 
 
@@ -177,6 +313,7 @@ async def full_restart(
     *,
     exit_code: int = 42,
     close_managed_browser: bool = True,
+    stop_webpanel_monitoring: bool = True,
     stop_local_bot_api: bool = True,
 ) -> None:
     """
@@ -239,6 +376,14 @@ async def full_restart(
         _append_line(buf, f"Не удалось получить список потоков: {e!r}")
 
     # 3) СНАЧАЛА ОТПРАВЛЯЕМ ЛОГИ
+    # Stop webpanel server and sensor monitor process before os._exit.
+    if stop_webpanel_monitoring:
+        try:
+            base_dir = _ensure_project_paths()
+            _stop_webpanel_and_lhm_for_restart(base_dir, buf)
+        except Exception as e:
+            _append_line(buf, f"Webpanel/LHM stop step failed: {e!r}")
+
     await _send_log_chunks(send, buf)
     try:
         await send("Отчёт отправлен. Отключаю локальный API-сервер…")

@@ -2,7 +2,7 @@
 
 {% block head_css %}
   {{ super() }}
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/panel.css', v='20260222d') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/panel.css', v='20260311_rd_mobile_fix1') }}">
 {% endblock %}
 
 {% block head_js %}
@@ -13,6 +13,16 @@
 
 {% block content %}
   <div class="wac-container">
+    {% if remote_target and remote_target.active %}
+    <section class="card" style="margin-bottom: 12px; border-left: 4px solid #1f77d0;">
+      <strong>Удалённый режим:</strong>
+      {{ remote_target.display_name }}
+      ({% if remote_target.ip %}{{ remote_target.ip }}{% else %}-{% endif %})
+      {% if remote_target.app_version %} | версия: {{ remote_target.app_version }}{% endif %}
+      | <a href="{{ url_for('ServerView.list') }}">Серверы</a>
+      | <a href="{{ url_for('ServerView.clear_target', next=request.path) }}">Переключиться на локальный узел</a>
+    </section>
+    {% endif %}
     {% block panel_content %}{% endblock %}
   </div>
   <div class="confirm-modal" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" tabindex="-1" hidden>

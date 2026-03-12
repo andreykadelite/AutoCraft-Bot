@@ -653,6 +653,38 @@
       }
     }
 
+    function updateCsrfToken(value) {
+      var token = String(value || "").trim();
+      if (!token) {
+        return;
+      }
+      csrfToken = token;
+      if (stack && typeof stack.setAttribute === "function") {
+        stack.setAttribute("data-header-notify-csrf", token);
+      }
+    }
+
+    function resolveCsrfToken() {
+      var token = String(csrfToken || "").trim();
+      if (!token) {
+        token = String(stack.getAttribute("data-header-notify-csrf") || "").trim();
+      }
+      if (!token) {
+        var inputNode = document.querySelector('input[name="csrf_token"]');
+        if (inputNode && typeof inputNode.value === "string") {
+          token = String(inputNode.value).trim();
+        }
+      }
+      if (!token) {
+        var metaNode = document.querySelector('meta[name="csrf-token"], meta[name="csrf_token"]');
+        if (metaNode && typeof metaNode.getAttribute === "function") {
+          token = String(metaNode.getAttribute("content") || "").trim();
+        }
+      }
+      updateCsrfToken(token);
+      return String(token || "");
+    }
+
     function getActionUrl(buttons, attrName) {
       for (var i = 0; i < buttons.length; i += 1) {
         var button = buttons[i];
@@ -998,7 +1030,9 @@
         return;
       }
       var readUrl = getActionUrl(systemMarkReadButtons, "data-system-mark-read-url");
-      if (!readUrl || !csrfToken) {
+      var token = resolveCsrfToken();
+      if (!readUrl || !token) {
+        announce("CSRF token is missing. Refresh the page and try again.");
         return;
       }
 
@@ -1006,7 +1040,7 @@
         method: "POST",
         headers: {
           Accept: "application/json",
-          "X-CSRFToken": csrfToken,
+          "X-CSRFToken": token,
         },
         credentials: "same-origin",
         cache: "no-store",
@@ -1019,7 +1053,8 @@
             return data;
           });
         })
-        .then(function () {
+        .then(function (data) {
+          updateCsrfToken(data && data.csrf_token);
           setBadge(systemBadge, 0, systemLabel, { linkNode: systemLink });
           previous.system = 0;
           updateSystemUnreadText(0);
@@ -1035,7 +1070,7 @@
         return;
       }
       var clearUrl = getActionUrl(systemClearButtons, "data-system-clear-url");
-      if (!clearUrl || !csrfToken) {
+      if (!clearUrl) {
         return;
       }
 
@@ -1048,11 +1083,15 @@
           if (!accepted) {
             return;
           }
+          var token = resolveCsrfToken();
+          if (!token) {
+            throw new Error("CSRF token is missing. Refresh the page and try again.");
+          }
           return fetch(clearUrl, {
             method: "POST",
             headers: {
               Accept: "application/json",
-              "X-CSRFToken": csrfToken,
+              "X-CSRFToken": token,
             },
             credentials: "same-origin",
             cache: "no-store",
@@ -1066,6 +1105,7 @@
               });
             })
             .then(function (data) {
+              updateCsrfToken(data && data.csrf_token);
               renderSystemHistory((data && data.system_recent) || []);
               setBadge(systemBadge, 0, systemLabel, { linkNode: systemLink });
               previous.system = 0;
@@ -1103,6 +1143,7 @@
           if (!data || data.ok === false) {
             return;
           }
+          updateCsrfToken(data.csrf_token);
           applyCounters(data.counters || {});
           renderSystemHistory(data.system_recent || []);
           showBanners(data.banners || []);

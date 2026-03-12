@@ -1,50 +1,158 @@
-Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International Public License (CC BY-NC-SA 4.0)
+AutoCraft-Bot Personal Non-Commercial License v1.0
 
 Copyright (c) 2025
-Author: Zotov Andrey Anatolyevich (Зотов Андрей Анатольевич)
+Zotov Andrey Anatolyevich (Зотов Андрей Анатольевич)
 
----
+Project: AutoCraft-Bot
+Repository: https://github.com/andreykadelite/AutoCraft-Bot
 
-You are free to:
 
-- Share — copy and redistribute the material in any medium or format
-- Adapt — remix, transform, and build upon the material
+1. Scope of this License
 
-Under the following terms:
+This license applies only to the original source code, scripts, configuration templates,
+user interface code, and other original project files created for the AutoCraft-Bot project
+by Zotov Andrey Anatolyevich, unless a specific file or directory states otherwise.
 
-- Attribution — You must give appropriate credit, provide a link to the license, and indicate if changes were made.
-  Credit must be given to: Zotov Andrey Anatolyevich
-- NonCommercial — You may not use the material for commercial purposes.
-- ShareAlike — If you remix, transform, or build upon the material, you must distribute your contributions under the same license.
-- No additional restrictions — You may not apply legal terms or technological measures that legally restrict others from doing anything the license permits.
+This license does not replace, override, or modify the licenses of any third-party software,
+libraries, binaries, tools, fonts, media files, or other components that may be included in,
+bundled with, downloaded by, or used together with this project.
 
-This license does not grant all rights — e.g., image rights, trademarks, or other publicity/privacy rights may still apply.
 
----
+2. Permission Granted
 
-Official English Legal Code:
+You are allowed to:
+
+- use this project for personal, educational, research, testing, and other non-commercial purposes;
+- copy and run the project;
+- study the source code;
+- modify the source code for non-commercial purposes;
+- share the original project and your modified versions for non-commercial purposes only.
+
+
+3. Conditions
+
+You may exercise the permissions above only if all of the following conditions are met:
+
+3.1. Attribution
+
+You must give appropriate credit to the original author:
+
+Zotov Andrey Anatolyevich
+
+If you distribute the original project or a modified version, you must preserve this license text
+and clearly indicate that the original project is AutoCraft-Bot by Zotov Andrey Anatolyevich.
+
+3.2. Change Notice
+
+If you modify the project, you must clearly state that changes were made.
+
+3.3. Non-Commercial Use Only
+
+You may not sell this project.
+You may not use this project or modified versions of it for commercial purposes.
+You may not include this project, in whole or in part, in a paid product, paid service,
+commercial SaaS, commercial support package, or any other revenue-generating activity
+without prior written permission from the author.
+
+3.4. Same-License Distribution
+
+If you distribute a modified version of the original AutoCraft-Bot code covered by this license,
+you must distribute your modifications under this same license.
+
+3.5. Preservation of Notices
+
+You must keep all existing copyright notices, attribution notices,
+license notices, and third-party notices intact.
+
+
+4. Prohibited Actions
+
+You may not:
+
+- remove or falsify authorship information;
+- sublicense the original AutoCraft-Bot code under a more permissive or different license;
+- impose additional legal or technical restrictions that contradict this license;
+- misrepresent modified versions as the official version of AutoCraft-Bot;
+- use the author’s name, project name, or branding in a way that suggests endorsement without permission.
+
+
+5. Third-Party Components
+
+The AutoCraft-Bot project may use, include, or redistribute third-party components.
+Such components remain the property of their respective authors and are governed by their own licenses.
+
+In particular:
+
+5.1. FFmpeg
+
+FFmpeg is not covered by this license.
+FFmpeg is distributed under its own license terms, including LGPL 2.1 or later,
+and in some builds GPL terms may apply depending on enabled components.
+
+Official information:
+https://ffmpeg.org/legal.html
+
+5.2. LibreHardwareMonitor
+
+LibreHardwareMonitor is not covered by this license.
+LibreHardwareMonitor is distributed under the Mozilla Public License 2.0 (MPL-2.0).
+
+Official project:
+https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+
+5.3. NirCmd
+
+NirCmd is not covered by this license.
+NirCmd is distributed by NirSoft as freeware under its own distribution terms.
+If NirCmd is redistributed with this project, it must remain unmodified and distributed
+together with all files required by its original package, and it must not be sold
+as part of a commercial product.
+
+Official page:
+https://www.nirsoft.net/utils/nircmd.html
+
+
+6. Documentation and Media
+
+Unless otherwise stated, documentation, articles, screenshots, textual descriptions,
+and other non-code creative materials created specifically for this project by
+Zotov Andrey Anatolyevich may be additionally released under:
+
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+(CC BY-NC-SA 4.0)
+
+Official license text:
 https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
 
----
 
-Неофициальный перевод на русский язык (справка)
+7. No Warranty
 
-Вы можете:
+This project is provided "as is", without warranty of any kind,
+express or implied, including but not limited to warranties of merchantability,
+fitness for a particular purpose, and non-infringement.
 
-- Делиться — копировать и распространять материал на любом носителе и в любом формате
-- Адаптировать — изменять, трансформировать и создавать на основе материала
+The author shall not be liable for any claim, damages, or other liability,
+whether in an action of contract, tort, or otherwise, arising from, out of,
+or in connection with the project or the use or other dealings in the project.
 
-При соблюдении условий:
 
-- Указание авторства — Вы должны указать имя автора: Зотов Андрей Анатольевич, ссылку на лицензию и отметить изменения, если они были.
-- Некоммерческое использование — Использование материала в коммерческих целях запрещено.
-- Сохранение условий — Производные работы должны распространяться на условиях этой же лицензии.
-- Без дополнительных ограничений — Запрещено накладывать юридические или технические ограничения, препятствующие использованию.
+8. Termination
 
-Полная справка на русском:
-https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ru
+Any rights granted under this license terminate automatically if you fail
+to comply with its terms.
 
----
+If your rights terminate, you must stop using and distributing the covered code
+until you obtain explicit permission from the author.
 
-This license file was created specifically for the AutoCraft-Bot project:
+
+9. Request for Commercial Use
+
+For commercial licensing, written permission, dual licensing, partnership,
+or other exceptions, contact the author directly.
+
+Author:
+Zotov Andrey Anatolyevich
+Project:
+AutoCraft-Bot
+Repository:
 https://github.com/andreykadelite/AutoCraft-Bot

@@ -1,13 +1,13 @@
-﻿{% extends "panel_base.html" %}
+{% extends "panel_base.html" %}
 
 {% block head_css %}
   {{ super() }}
-  <link rel="stylesheet" href="{{ static_url }}/wintts.css">
+  <link rel="stylesheet" href="{{ static_url }}/wintts.css?v=20260312e">
 {% endblock %}
 
 {% block head_js %}
   {{ super() }}
-  <script src="{{ static_url }}/wintts.js"></script>
+  <script src="{{ static_url }}/wintts.js?v=20260312e"></script>
 {% endblock %}
 
 {% block panel_content %}
@@ -16,6 +16,10 @@
     id="wintts-root"
     data-config-url="{{ config_url }}"
     data-synth-url="{{ synth_url }}"
+    data-synth-start-url="{{ synth_start_url }}"
+    data-synth-status-url-template="{{ synth_status_url_template }}"
+    data-import-url="{{ import_url }}"
+    data-normalize-preview-url="{{ normalize_preview_url }}"
     data-install-url="{{ install_url }}"
     data-csrf-token="{{ csrf_token() if csrf_token is defined else '' }}"
   >
@@ -27,16 +31,385 @@
       <div class="wintts-badge">Расширение</div>
     </div>
 
+    <div class="wintts-section wintts-addon-section">
+      <div class="wintts-addon-head">
+        <div class="wintts-addon-title-block">
+          <h4>RHVoice-addon</h4>
+          <p id="wintts-addon-hint" class="wintts-hint">
+            Установка создаёт локальное addon-окружение в <code>data/addon_win_ttts</code>. Ниже доступен подробный лог установки и ошибок сети.
+          </p>
+        </div>
+        <button id="wintts-install" class="btn" type="button" hidden>Установить RHVoice-addon</button>
+      </div>
+      <details class="wintts-install-log" id="wintts-install-log-details">
+        <summary>
+          <span class="wintts-live-log-head">
+            <span class="wintts-live-log-title">Лог установки RHVoice-addon</span>
+            <span class="wintts-live-log-status" id="wintts-install-log-status">Установка еще не запускалась.</span>
+          </span>
+        </summary>
+        <div class="wintts-install-log-body">
+          <pre
+            id="wintts-install-log-output"
+            class="wintts-diagnostics"
+            role="log"
+            aria-live="polite"
+            aria-atomic="false"
+          >Лог установки появится после запуска.</pre>
+        </div>
+      </details>
+    </div>
+
     <div class="wintts-section">
+      <div class="wintts-voice-groups">
+      <section class="wintts-voice-group">
+        <h4>Настройка первого голоса</h4>
       <div class="wintts-grid">
         <div class="wintts-field">
           <label for="wintts-engine">Голосовой движок</label>
-          <select id="wintts-engine" class="wintts-select" aria-describedby="wintts-output wintts-diagnostics"></select>
+          <select id="wintts-engine" class="wintts-select" aria-describedby="wintts-engine-note"></select>
         </div>
         <div class="wintts-field">
           <label for="wintts-voice">Голос</label>
-          <select id="wintts-voice" class="wintts-select" aria-describedby="wintts-output wintts-diagnostics"></select>
+          <select id="wintts-voice" class="wintts-select"></select>
         </div>
+      </div>
+
+      <div class="wintts-field" id="wintts-edge-language-wrap" hidden>
+        <label for="wintts-edge-language">Язык синтеза</label>
+        <select id="wintts-edge-language" class="wintts-select" aria-describedby="wintts-edge-language-hint"></select>
+        <p id="wintts-edge-language-hint" class="wintts-hint">
+          Если язык доступен для выбранного движка, сначала выберите язык, затем голос.
+        </p>
+      </div>
+
+      <div class="wintts-field" id="wintts-edge-parallelism-wrap" hidden>
+        <label for="wintts-edge-parallelism">Параллельность синтеза</label>
+        <select
+          id="wintts-edge-parallelism"
+          class="wintts-select"
+          aria-describedby="wintts-edge-parallelism-hint"
+        ></select>
+        <p id="wintts-edge-parallelism-hint" class="wintts-hint">
+          Для Edge TTS можно выбрать безопасный уровень параллельной обработки частей текста.
+        </p>
+      </div>
+
+      <div class="wintts-field" id="wintts-google-retry-wrap" hidden>
+        <label for="wintts-google-retry-count">Повторы при ошибке (gTTS)</label>
+        <select
+          id="wintts-google-retry-count"
+          class="wintts-select"
+          aria-describedby="wintts-google-retry-hint"
+        ></select>
+        <p id="wintts-google-retry-hint" class="wintts-hint">
+          Сколько раз повторять gTTS-часть при временной ошибке сети или сервиса.
+        </p>
+      </div>
+      <div class="wintts-field" id="wintts-edge-prosody-wrap" hidden>
+        <label>Параметры первого голоса</label>
+        <div class="wintts-prosody-grid">
+          <div class="wintts-field">
+            <label for="wintts-edge-rate">Скорость (%)</label>
+            <input
+              id="wintts-edge-rate"
+              class="wintts-number-input"
+              type="number"
+              value="0"
+              min="-100"
+              max="100"
+              step="1"
+              aria-describedby="wintts-edge-prosody-hint"
+            >
+          </div>
+          <div class="wintts-field">
+            <label for="wintts-edge-pitch">Тон (Hz)</label>
+            <input
+              id="wintts-edge-pitch"
+              class="wintts-number-input"
+              type="number"
+              value="0"
+              min="-100"
+              max="100"
+              step="1"
+              aria-describedby="wintts-edge-prosody-hint"
+            >
+          </div>
+          <div class="wintts-field">
+            <label for="wintts-edge-volume">Громкость (%)</label>
+            <input
+              id="wintts-edge-volume"
+              class="wintts-number-input"
+              type="number"
+              value="0"
+              min="-100"
+              max="100"
+              step="1"
+              aria-describedby="wintts-edge-prosody-hint"
+            >
+          </div>
+        </div>
+        <p id="wintts-edge-prosody-hint" class="wintts-hint">
+          Значения применяются по возможностям выбранного движка. 0 = нейтрально.
+        </p>
+      </div>
+      </section>
+
+        <section class="wintts-voice-group wintts-voice-group-secondary">
+          <h4>Настройка второго голоса</h4>
+          <div class="wintts-field" id="wintts-dual-language-toggle-wrap" hidden>
+            <label class="wintts-checkbox-row">
+              <input id="wintts-dual-language-enabled" type="checkbox">
+              <span>Использовать второй язык для синтеза (автопереключение по кириллице/латинице)</span>
+            </label>
+          </div>
+          <p id="wintts-dual-language-empty-hint" class="wintts-hint">
+            Если настройка второго голоса скрыта, выбранный движок не поддерживает этот режим.
+          </p>
+
+          <div class="wintts-dual-language" id="wintts-dual-language-wrap" hidden>
+            <div class="wintts-grid">
+              <div class="wintts-field">
+                <label for="wintts-secondary-language">Второй язык</label>
+                <select
+                  id="wintts-secondary-language"
+                  class="wintts-select"
+                  aria-describedby="wintts-secondary-language-hint"
+                ></select>
+              </div>
+              <div class="wintts-field">
+                <label for="wintts-secondary-voice">Второй голос</label>
+                <select
+                  id="wintts-secondary-voice"
+                  class="wintts-select"
+                  aria-describedby="wintts-secondary-language-hint"
+                ></select>
+              </div>
+            </div>
+            <p id="wintts-secondary-language-hint" class="wintts-hint">
+              Укажите язык и голос для фрагментов на другом алфавите.
+            </p>
+            <div class="wintts-field" id="wintts-secondary-prosody-wrap">
+              <label>Параметры второго голоса</label>
+              <div class="wintts-prosody-grid">
+                <div class="wintts-field">
+                  <label for="wintts-secondary-edge-rate">Скорость (%)</label>
+                  <input
+                    id="wintts-secondary-edge-rate"
+                    class="wintts-number-input"
+                    type="number"
+                    value="0"
+                    min="-100"
+                    max="100"
+                    step="1"
+                    aria-describedby="wintts-secondary-prosody-hint"
+                  >
+                </div>
+                <div class="wintts-field">
+                  <label for="wintts-secondary-edge-pitch">Тон (Hz)</label>
+                  <input
+                    id="wintts-secondary-edge-pitch"
+                    class="wintts-number-input"
+                    type="number"
+                    value="0"
+                    min="-100"
+                    max="100"
+                    step="1"
+                    aria-describedby="wintts-secondary-prosody-hint"
+                  >
+                </div>
+                <div class="wintts-field">
+                  <label for="wintts-secondary-edge-volume">Громкость (%)</label>
+                  <input
+                    id="wintts-secondary-edge-volume"
+                    class="wintts-number-input"
+                    type="number"
+                    value="0"
+                    min="-100"
+                    max="100"
+                    step="1"
+                    aria-describedby="wintts-secondary-prosody-hint"
+                  >
+                </div>
+              </div>
+              <p id="wintts-secondary-prosody-hint" class="wintts-hint">
+                Настройки применяются только к второму голосу.
+              </p>
+            </div>
+            <div class="wintts-field" id="wintts-dual-pause-wrap">
+              <label for="wintts-dual-pause-mode">Паузы между фрагментами языков</label>
+              <div class="wintts-grid wintts-dual-pause-grid">
+                <div class="wintts-field">
+                  <label for="wintts-dual-pause-mode">Режим</label>
+                  <select
+                    id="wintts-dual-pause-mode"
+                    class="wintts-select"
+                    aria-describedby="wintts-dual-pause-hint"
+                  >
+                    <option value="auto">Авто</option>
+                    <option value="manual">Ручная</option>
+                    <option value="off">Без нормализации</option>
+                  </select>
+                </div>
+                <div class="wintts-field" id="wintts-dual-pause-ms-wrap">
+                  <label for="wintts-dual-pause-ms">Пауза (мс)</label>
+                  <input
+                    id="wintts-dual-pause-ms"
+                    class="wintts-number-input"
+                    type="number"
+                    value="90"
+                    min="0"
+                    max="1500"
+                    step="10"
+                    aria-describedby="wintts-dual-pause-hint"
+                  >
+                </div>
+              </div>
+              <p id="wintts-dual-pause-hint" class="wintts-hint">
+                Авто-режим уменьшает лишние паузы на стыках кириллицы/латиницы. В ручном режиме задается фиксированная пауза.
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="wintts-field" id="wintts-edge-normalizer-wrap" hidden>
+        <label for="wintts-edge-normalizer-preset">Нормализатор текста (все движки)</label>
+        <label class="wintts-checkbox-row">
+          <input id="wintts-edge-normalizer-enabled" type="checkbox" checked>
+          <span>Включить нормализацию текста перед синтезом</span>
+        </label>
+        <div class="wintts-grid wintts-normalizer-grid">
+          <div class="wintts-field">
+            <label for="wintts-edge-normalizer-preset">Профиль очистки</label>
+            <select
+              id="wintts-edge-normalizer-preset"
+              class="wintts-select"
+              aria-describedby="wintts-edge-normalizer-hint wintts-edge-normalizer-summary"
+            ></select>
+          </div>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-auto" type="checkbox" checked>
+            <span>Автонастройка для длинных текстов</span>
+          </label>
+        </div>
+        <div class="wintts-normalizer-options">
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-strip-markdown" type="checkbox" checked>
+            <span>Убирать markdown-разметку (<code>*</code>, <code>_</code>, <code>`</code>, заголовки, списки)</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-unwrap-markdown-links" type="checkbox" checked>
+            <span>Преобразовывать markdown-ссылки и изображения в текст меток</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-strip-urls" type="checkbox" checked>
+            <span>Убирать URL-адреса</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-strip-emails" type="checkbox" checked>
+            <span>Убирать email-адреса</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-collapse-symbols" type="checkbox" checked>
+            <span>Сжимать повторяющиеся служебные символы</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-collapse-punctuation" type="checkbox" checked>
+            <span>Сжимать повторы пунктуации</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-preserve-ellipsis" type="checkbox" checked>
+            <span>Сохранять многоточие (… и ...), не превращать в точку</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-drop-symbol-tokens" type="checkbox" checked>
+            <span>Удалять отдельные шумовые токены из символов</span>
+          </label>
+          <label class="wintts-checkbox-row">
+            <input id="wintts-edge-normalizer-normalize-whitespace" type="checkbox" checked>
+            <span>Нормализовать пробелы и пустые строки</span>
+          </label>
+          <div class="wintts-field wintts-normalizer-custom-input-wrap">
+            <label for="wintts-edge-normalizer-custom-symbols">Пользовательский набор символов для удаления</label>
+            <input
+              id="wintts-edge-normalizer-custom-symbols"
+              class="wintts-text-input"
+              type="text"
+              inputmode="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="#@$%^&*[]{}"
+            >
+            <p class="wintts-hint">
+              Введите любые служебные символы подряд. Например: <code>#@$%^&</code>.
+            </p>
+          </div>
+        </div>
+        <p id="wintts-edge-normalizer-hint" class="wintts-hint">
+          Нормализатор применяется перед синтезом для всех движков и помогает убрать служебные символы, которые могут озвучиваться как «звездочка», «решетка» и т.д.
+        </p>
+        <p id="wintts-edge-normalizer-summary" class="wintts-hint"></p>
+        <div class="wintts-normalizer-analyzer" id="wintts-edge-normalizer-analyzer">
+          <div class="wintts-normalizer-analyzer-head">
+            <strong>Анализатор нормализатора текста</strong>
+            <div class="wintts-actions">
+              <label class="wintts-checkbox-row">
+                <input id="wintts-edge-normalizer-analyzer-auto" type="checkbox" checked>
+                <span>Автоанализ при изменении текста</span>
+              </label>
+              <button id="wintts-edge-normalizer-analyze" class="btn" type="button">Анализировать</button>
+            </div>
+          </div>
+          <p id="wintts-edge-normalizer-analyzer-status" class="wintts-hint">
+            Вставьте текст или импортируйте файл, чтобы посмотреть, как нормализация влияет на озвучку.
+          </p>
+          <div class="wintts-normalizer-analyzer-grid">
+            <div class="wintts-field">
+              <label for="wintts-edge-normalizer-preview-before">До нормализации</label>
+              <textarea id="wintts-edge-normalizer-preview-before" class="wintts-textarea wintts-normalizer-preview" rows="4" readonly></textarea>
+            </div>
+            <div class="wintts-field">
+              <label for="wintts-edge-normalizer-preview-after">После нормализации</label>
+              <textarea id="wintts-edge-normalizer-preview-after" class="wintts-textarea wintts-normalizer-preview" rows="4" readonly></textarea>
+            </div>
+          </div>
+          <div class="wintts-field">
+            <label>Символы для очистки</label>
+            <div id="wintts-edge-normalizer-symbols" class="wintts-normalizer-symbols" role="group" aria-label="Символы для удаления"></div>
+          </div>
+          <div class="wintts-field">
+            <label for="wintts-edge-normalizer-report">Отчет анализа символов</label>
+            <pre
+              id="wintts-edge-normalizer-report"
+              class="wintts-normalizer-report"
+              aria-live="polite"
+            >Отчет появится после анализа.</pre>
+          </div>
+          <div class="wintts-field">
+            <label>Рекомендации анализатора</label>
+            <ul id="wintts-edge-normalizer-recommendations" class="wintts-normalizer-recommendations"></ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="wintts-field">
+        <label for="wintts-file">Файл книги или документа</label>
+        <input
+          id="wintts-file"
+          class="wintts-file-input"
+          type="file"
+          accept=".txt,.fb2,.epub,.docx,.md,.html,.htm"
+          aria-describedby="wintts-file-hint wintts-file-info wintts-output wintts-diagnostics"
+        >
+        <p id="wintts-file-hint" class="wintts-hint">
+          Поддерживаются TXT, FB2, EPUB, DOCX, MD и HTML. Файл можно загрузить в текстовое поле ниже, при необходимости поправить и затем озвучить.
+        </p>
+        <div class="wintts-actions">
+          <button id="wintts-import-file" class="btn" type="button">Загрузить текст из файла</button>
+          <button id="wintts-clear-file" class="btn" type="button">Сбросить файл</button>
+        </div>
+        <div id="wintts-file-info" class="wintts-file-info" role="status" aria-live="polite">Файл не выбран.</div>
       </div>
 
       <div class="wintts-field">
@@ -44,17 +417,45 @@
         <textarea
           id="wintts-text"
           class="wintts-textarea"
-          rows="7"
-          placeholder="Введите текст на русском языке..."
-          aria-describedby="wintts-hint wintts-output wintts-diagnostics"
+          rows="8"
+          placeholder="Введите текст вручную или загрузите файл выше..."
+          aria-describedby="wintts-hint wintts-engine-note wintts-output wintts-diagnostics wintts-file-info"
           spellcheck="false"
         ></textarea>
       </div>
-      <p id="wintts-hint" class="wintts-hint">Горячая клавиша: Ctrl+Enter запускает синтез.</p>
+      <p id="wintts-hint" class="wintts-hint">Горячая клавиша: Ctrl+Enter запускает синтез. Если поле пустое, но выбран файл, плагин сначала автоматически загрузит его содержимое.</p>
+      <p id="wintts-engine-note" class="wintts-hint">Параметры движка будут показаны после загрузки конфигурации.</p>
 
-      <div class="wintts-actions">
-        <button id="wintts-run" class="btn-primary" type="button">Синтезировать</button>
-        <button id="wintts-clear" class="btn" type="button">Очистить текст</button>
+      <div class="wintts-actions-row">
+        <div class="wintts-actions">
+          <button id="wintts-run" class="btn-primary" type="button">Синтезировать</button>
+          <button id="wintts-clear" class="btn" type="button">Очистить текст</button>
+        </div>
+
+        <details class="wintts-live-log" id="wintts-live-log">
+          <summary id="wintts-live-log-summary">
+            <span class="wintts-live-log-head">
+              <span class="wintts-live-log-title">Лог синтеза</span>
+              <span class="wintts-live-log-status" id="wintts-live-log-status">Лог появится после запуска синтеза.</span>
+            </span>
+            <span class="wintts-live-log-percent" id="wintts-live-log-percent">0%</span>
+          </summary>
+          <div class="wintts-live-log-track" aria-hidden="true">
+            <span class="wintts-live-log-fill" id="wintts-live-log-progress-bar"></span>
+          </div>
+          <div class="wintts-live-log-body">
+            <p class="wintts-hint">Лог идет в реальном времени. Здесь видно этапы, проценты, предупреждения и ошибки.</p>
+            <div
+              class="wintts-live-log-list"
+              id="wintts-live-log-list"
+              role="log"
+              aria-live="polite"
+              aria-atomic="false"
+            >
+              <div class="wintts-live-log-empty" id="wintts-live-log-empty">Синтез еще не запускался.</div>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
 
@@ -111,8 +512,12 @@
     <div class="wintts-section wintts-help">
       <h4>Подсказки</h4>
       <ul>
-        <li>Для длинных текстов лучше использовать Edge TTS: плагин автоматически режет текст на части и склеивает результат.</li>
-        <li>Google TTS и Edge TTS формируют MP3, `pyttsx3` формирует WAV.</li>
+        <li>В текущей реализации для длинных текстов и книг оптимален Edge TTS: он наиболее стабильно обрабатывает большие объёмы благодаря автоматической сегментации и склейке аудио.</li>
+        <li>Нормализатор и анализатор доступны для всех движков: они удаляют служебные символы и разметку, чтобы синтез не проговаривал «звездочка», «решетка» и похожие маркеры.</li>
+        <li>Можно загружать TXT, FB2, EPUB, DOCX, MD и HTML прямо из браузера. После импорта текст остаётся доступен для правки.</li>
+        <li>Параметры скорости, тона и громкости отображаются единообразно. Для Google TTS доступен язык и базовая скорость, для <code>pyttsx3</code> — скорость и громкость.</li>
+        <li>Google TTS и Edge TTS формируют MP3, <code>pyttsx3</code> и RHVoice формируют WAV.</li>
+        <li>История хранит только безопасный фрагмент больших текстов, поэтому для повторной озвучки крупных книг лучше повторно импортировать исходный файл.</li>
         <li>Сгенерированные файлы доступны для скачивания напрямую из браузера.</li>
       </ul>
     </div>

@@ -4,7 +4,7 @@ import datetime as dt
 import time
 from typing import Dict, List
 
-from flask import current_app, flash, jsonify, redirect, request, session, url_for
+from flask import current_app, flash, g, jsonify, redirect, request, session, url_for
 from flask_appbuilder import BaseView, expose
 from flask_appbuilder.security.decorators import permission_name
 from flask_login import current_user
@@ -119,7 +119,7 @@ def _set_unlock() -> int:
     now = int(time.time())
     expires = now + _UNLOCK_TTL_SECONDS
     session[_UNLOCK_SESSION_KEY] = {
-        "user_id": int(getattr(current_user, "id", 0) or 0),
+        "user_key": _unlock_user_key(),
         "expires_at": expires,
     }
     return expires
@@ -133,8 +133,9 @@ def _get_unlock_expires() -> int:
 
 def _is_unlocked() -> bool:
     payload = _unlock_payload()
-    user_id = int(getattr(current_user, "id", 0) or 0)
-    if not payload or int(payload.get("user_id") or 0) != user_id:
+    if not payload:
+        return False
+    if str(payload.get("user_key") or "").strip() != _unlock_user_key():
         _clear_unlock()
         return False
     expires_at = int(payload.get("expires_at") or 0)
@@ -170,11 +171,87 @@ def _register_unlock_failure() -> int:
     return _UNLOCK_BLOCK_SECONDS
 
 
+def _effective_actor_username() -> str:
+    actor = str(getattr(g, "autocraft_proxy_actor", "") or "").strip()
+    if actor:
+        return actor
+    actor = str(getattr(current_user, "username", "") or "").strip()
+    return actor or "web"
+
+
+def _unlock_user_key() -> str:
+    user_id = int(getattr(current_user, "id", 0) or 0)
+    if user_id > 0:
+        return f"id:{user_id}"
+    return f"user:{_effective_actor_username().casefold()}"
+
+
+def _password_hash_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            return ""
+    return str(value).strip()
+
+
+def _resolve_password_hash() -> str:
+    password_hash = _password_hash_text(getattr(current_user, "password", "") or "")
+    if password_hash:
+        return password_hash
+
+    sm = getattr(getattr(current_app, "appbuilder", None), "sm", None)
+    if sm is None:
+        return ""
+
+    lookup_candidates = []
+    user_id = int(getattr(current_user, "id", 0) or 0)
+    if user_id > 0:
+        lookup_candidates.append(("id", user_id))
+
+    actor = _effective_actor_username()
+    if actor:
+        lookup_candidates.append(("username", actor))
+        lowered = actor.lower()
+        if lowered != actor:
+            lookup_candidates.append(("username", lowered))
+
+    user_obj = None
+    for mode, value in lookup_candidates:
+        if mode == "id":
+            getter = getattr(sm, "get_user_by_id", None)
+            if not callable(getter):
+                continue
+            try:
+                user_obj = getter(value)
+            except Exception:
+                user_obj = None
+        else:
+            finder = getattr(sm, "find_user", None)
+            if not callable(finder):
+                continue
+            try:
+                user_obj = finder(username=value)
+            except TypeError:
+                try:
+                    user_obj = finder(value)
+                except Exception:
+                    user_obj = None
+            except Exception:
+                user_obj = None
+        if user_obj is not None:
+            break
+
+    return _password_hash_text(getattr(user_obj, "password", "") or "")
+
+
 def _verify_current_password(password: str) -> bool:
     password = (password or "").strip()
     if not password:
         return False
-    password_hash = getattr(current_user, "password", "") or ""
+    password_hash = _resolve_password_hash()
     if not password_hash:
         return False
     try:
@@ -281,6 +358,17 @@ class PowerView(BaseView):
         can_action = self._can_action()
         unlock_retry_after = _is_unlock_blocked()
         min_custom_time = (dt.datetime.now() + dt.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+        unlock_user = _effective_actor_username()
+        is_proxy_request = bool(getattr(g, "autocraft_proxy_request", False))
+        if is_proxy_request:
+            unlock_help_text = (
+                "Для входа в раздел питания подтвердите пароль пользователя "
+                f"«{unlock_user}», который сейчас управляет удаленным узлом."
+            )
+            unlock_input_label = f"Текущий пароль пользователя «{unlock_user}»"
+        else:
+            unlock_help_text = "Для входа в раздел питания подтвердите пароль текущего пользователя панели."
+            unlock_input_label = "Текущий пароль пользователя панели"
         return self.render_template(
             "power.html",
             active_action=active,
@@ -302,6 +390,10 @@ class PowerView(BaseView):
             unlock_retry_after=unlock_retry_after,
             min_custom_time=min_custom_time,
             status_url=url_for("PowerView.status"),
+            unlock_help_text=unlock_help_text,
+            unlock_input_label=unlock_input_label,
+            unlock_user=unlock_user,
+            is_proxy_request=is_proxy_request,
         )
 
     @expose("/")
@@ -347,7 +439,10 @@ class PowerView(BaseView):
             if blocked_for > 0:
                 flash(f"Слишком много неверных попыток. Доступ заблокирован на {blocked_for} сек.", "danger")
             else:
-                flash("Неверный пароль текущего пользователя панели.", "danger")
+                if getattr(g, "autocraft_proxy_request", False):
+                    flash(f"Неверный пароль пользователя «{_effective_actor_username()}».", "danger")
+                else:
+                    flash("Неверный пароль текущего пользователя панели.", "danger")
             _audit(
                 action="power.unlock",
                 target="menu",

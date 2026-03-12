@@ -1,10 +1,14 @@
 ﻿import configparser
 import os
+import re
 import secrets
 import shutil
+import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from .utils import ensure_dir, parse_bool, parse_int, tail_file
 
@@ -12,7 +16,42 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_OVERVIEW_REFRESH_SECONDS = 10
+DEBUG_LOG_SECTION = "panel_debug_logging"
+DEBUG_LOG_LEVELS = ("MAX", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+DEFAULT_DEBUG_LOG_ENABLED = False
+DEFAULT_DEBUG_LOG_LEVEL = "MAX"
+DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024
+DEFAULT_DEBUG_LOG_BACKUP_COUNT = 7
+_DEBUG_LOG_MIN_BYTES = 64 * 1024
+_DEBUG_LOG_MAX_BYTES = 512 * 1024 * 1024
+_DEBUG_LOG_MIN_BACKUP_COUNT = 1
+_DEBUG_LOG_MAX_BACKUP_COUNT = 30
+_DEBUG_LOG_FILENAME = "panel_debug.log"
 _RESOURCE_DIRS = ("scripts", "tests", "migrations")
+_RESOURCE_SYNC_LOCK = threading.Lock()
+_RESOURCE_SYNC_DONE: set[str] = set()
+_DEFAULT_PANEL_ROLES = ("Super Admin", "Admin", "Operator", "Viewer", "Auditor")
+_ROLE_ALIAS_TO_CANONICAL = {
+    "super admin": "Super Admin",
+    "superadmin": "Super Admin",
+    "суперадмин": "Super Admin",
+    "супер админ": "Super Admin",
+    "admin": "Admin",
+    "administrator": "Admin",
+    "админ": "Admin",
+    "администратор": "Admin",
+    "operator": "Operator",
+    "оператор": "Operator",
+    "viewer": "Viewer",
+    "наблюдатель": "Viewer",
+    "auditor": "Auditor",
+    "аудитор": "Auditor",
+}
+_USER_SECRET_TABLE = "panel_user_credentials"
+_MIN_PASSWORD_LEN = 6
+_PASSWORD_STATE_SAVED = "saved"
+_PASSWORD_STATE_HASH_ONLY = "hash_only"
+_PASSWORD_STATE_MISSING = "missing"
 _FALLBACK_FILES: dict[str, str] = {
     "scripts/run_panel.py": (
         "import sys\n"
@@ -277,7 +316,7 @@ class PanelConfig:
     retention_days: int = DEFAULT_RETENTION_DAYS
     overview_refresh_seconds: int = DEFAULT_OVERVIEW_REFRESH_SECONDS
     api_token: str = ""
-    admin_login: str = "admin"
+    admin_login: str = ""
     admin_password: str = ""
 
     def to_ini(self) -> configparser.ConfigParser:
@@ -291,10 +330,48 @@ class PanelConfig:
             "retention_days": str(self.retention_days),
             "overview_refresh_seconds": str(self.overview_refresh_seconds),
             "api_token": self.api_token,
-            "admin_login": self.admin_login,
-            "admin_password": self.admin_password,
         }
         return cfg
+
+
+def _normalize_debug_log_level(value: str | None) -> str:
+    level = str(value or DEFAULT_DEBUG_LOG_LEVEL).strip().upper()
+    if level not in DEBUG_LOG_LEVELS:
+        return DEFAULT_DEBUG_LOG_LEVEL
+    return level
+
+
+def _normalize_debug_log_max_bytes(value: int) -> int:
+    return max(_DEBUG_LOG_MIN_BYTES, min(int(value), _DEBUG_LOG_MAX_BYTES))
+
+
+def _normalize_debug_log_backup_count(value: int) -> int:
+    return max(_DEBUG_LOG_MIN_BACKUP_COUNT, min(int(value), _DEBUG_LOG_MAX_BACKUP_COUNT))
+
+
+@dataclass
+class PanelDebugLogConfig:
+    enabled: bool = DEFAULT_DEBUG_LOG_ENABLED
+    level: str = DEFAULT_DEBUG_LOG_LEVEL
+    max_bytes: int = DEFAULT_DEBUG_LOG_MAX_BYTES
+    backup_count: int = DEFAULT_DEBUG_LOG_BACKUP_COUNT
+
+    def normalized(self) -> "PanelDebugLogConfig":
+        return PanelDebugLogConfig(
+            enabled=bool(self.enabled),
+            level=_normalize_debug_log_level(self.level),
+            max_bytes=_normalize_debug_log_max_bytes(self.max_bytes),
+            backup_count=_normalize_debug_log_backup_count(self.backup_count),
+        )
+
+    def to_ini(self) -> dict[str, str]:
+        normalized = self.normalized()
+        return {
+            "enabled": "1" if normalized.enabled else "0",
+            "level": normalized.level,
+            "max_bytes": str(normalized.max_bytes),
+            "backup_count": str(normalized.backup_count),
+        }
 
 
 def _get_data_dir(base_dir: str) -> Path:
@@ -311,6 +388,13 @@ def get_db_path(base_dir: str) -> Path:
 
 def get_config_path(base_dir: str) -> Path:
     return _get_data_dir(base_dir) / "config.ini"
+
+
+def _normalize_base_dir_key(base_dir: str) -> str:
+    try:
+        return str(Path(base_dir).resolve()).casefold()
+    except Exception:
+        return os.path.abspath(base_dir).casefold()
 
 
 def _find_resource_root(base_dir: Path) -> Optional[Path]:
@@ -380,17 +464,112 @@ def _ensure_limits_lua_scripts(data_dir: Path) -> None:
         _write_file_if_missing(dest, content)
 
 
-def ensure_data_resources(base_dir: str) -> None:
-    data_dir = _get_data_dir(base_dir)
-    source_root = _find_resource_root(Path(base_dir))
+def _find_limits_package_root() -> Optional[Path]:
+    try:
+        import importlib.util
+    except Exception:
+        return None
 
+    try:
+        spec = importlib.util.find_spec("limits")
+    except Exception:
+        return None
+    if not spec:
+        return None
+
+    locations = getattr(spec, "submodule_search_locations", None)
+    if locations:
+        for loc in locations:
+            try:
+                return Path(loc)
+            except Exception:
+                continue
+
+    origin = getattr(spec, "origin", None)
+    if origin:
+        try:
+            return Path(origin).resolve().parent
+        except Exception:
+            return Path(origin).parent
+    return None
+
+
+def ensure_limits_runtime_ready(base_dir: str) -> None:
+    """
+    Prepare fallback Lua scripts for the ``limits`` package before importing
+    Flask-AppBuilder internals. This is critical for frozen/Nuitka builds where
+    package data files can be missing.
+    """
+    data_dir = _get_data_dir(base_dir)
+    try:
+        ensure_dir(data_dir)
+    except Exception:
+        return
+
+    _ensure_limits_lua_scripts(data_dir)
+    fallback_root = data_dir / "limits_resources"
+    fallback_probe = fallback_root / "resources" / "redis" / "lua_scripts" / "moving_window.lua"
+    if not fallback_probe.is_file():
+        return
+
+    pkg_root = _find_limits_package_root()
+    if pkg_root is not None:
+        target_dir = pkg_root / "resources" / "redis" / "lua_scripts"
+        if not (target_dir / "moving_window.lua").is_file():
+            try:
+                ensure_dir(target_dir)
+                source_dir = fallback_root / "resources" / "redis" / "lua_scripts"
+                for script in source_dir.glob("*.lua"):
+                    dest = target_dir / script.name
+                    if not dest.exists():
+                        dest.write_bytes(script.read_bytes())
+            except Exception:
+                pass
+
+    try:
+        from limits import util as limits_util
+    except Exception:
+        return
+
+    roots = getattr(limits_util, "_autocraft_fallback_roots", None)
+    if not isinstance(roots, list):
+        roots = []
+    fallback_key = str(fallback_root)
+    if fallback_key not in roots:
+        roots.append(fallback_key)
+    limits_util._autocraft_fallback_roots = roots
+
+    if getattr(limits_util, "_autocraft_data_patched", False):
+        return
+
+    original = limits_util.get_package_data
+
+    def _get_package_data(path: str) -> bytes:
+        try:
+            return original(path)
+        except Exception:
+            for root_text in getattr(limits_util, "_autocraft_fallback_roots", []) or []:
+                try:
+                    candidate = Path(root_text) / path
+                except Exception:
+                    continue
+                if candidate.is_file():
+                    return candidate.read_bytes()
+
+            package_root = _find_limits_package_root()
+            if package_root is not None:
+                candidate = package_root / path
+                if candidate.is_file():
+                    return candidate.read_bytes()
+            raise
+
+    limits_util.get_package_data = _get_package_data
+    limits_util._autocraft_data_patched = True
+
+
+def _ensure_resource_minimum(data_dir: Path) -> None:
     for name in _RESOURCE_DIRS:
-        dest_dir = data_dir / name
-        ensure_dir(dest_dir)
-        if source_root:
-            src_dir = source_root / name
-            if src_dir.is_dir():
-                _copy_tree(src_dir, dest_dir)
+        ensure_dir(data_dir / name)
         _ensure_fallback_files(data_dir, name)
 
     alembic_path = data_dir / "alembic.ini"
@@ -404,13 +583,85 @@ def ensure_data_resources(base_dir: str) -> None:
     else:
         _write_file_if_missing(alembic_path, _ALEMBIC_DATA_TEMPLATE)
 
-
     _ensure_limits_lua_scripts(data_dir)
+
+
+def ensure_data_resources(base_dir: str) -> None:
+    data_dir = _get_data_dir(base_dir)
+    cache_key = _normalize_base_dir_key(base_dir)
+    with _RESOURCE_SYNC_LOCK:
+        already_synced = cache_key in _RESOURCE_SYNC_DONE
+        if not already_synced:
+            source_root = _find_resource_root(Path(base_dir))
+            for name in _RESOURCE_DIRS:
+                dest_dir = data_dir / name
+                ensure_dir(dest_dir)
+                if source_root:
+                    src_dir = source_root / name
+                    if src_dir.is_dir():
+                        _copy_tree(src_dir, dest_dir)
+        _ensure_resource_minimum(data_dir)
+        _RESOURCE_SYNC_DONE.add(cache_key)
 
 def ensure_data_dirs(base_dir: str) -> None:
     ensure_dir(_get_data_dir(base_dir))
     ensure_dir(_get_log_dir(base_dir))
     ensure_data_resources(base_dir)
+
+
+def load_debug_log_config(base_dir: str) -> PanelDebugLogConfig:
+    ensure_data_dirs(base_dir)
+    config_path = get_config_path(base_dir)
+    parser = configparser.ConfigParser()
+    if config_path.exists():
+        try:
+            parser.read(config_path, encoding="utf-8")
+        except Exception:
+            parser = configparser.ConfigParser()
+
+    section = parser[DEBUG_LOG_SECTION] if parser.has_section(DEBUG_LOG_SECTION) else {}
+    cfg = PanelDebugLogConfig(
+        enabled=parse_bool(section.get("enabled"), DEFAULT_DEBUG_LOG_ENABLED),
+        level=_normalize_debug_log_level(section.get("level")),
+        max_bytes=_normalize_debug_log_max_bytes(
+            parse_int(section.get("max_bytes"), DEFAULT_DEBUG_LOG_MAX_BYTES)
+        ),
+        backup_count=_normalize_debug_log_backup_count(
+            parse_int(section.get("backup_count"), DEFAULT_DEBUG_LOG_BACKUP_COUNT)
+        ),
+    ).normalized()
+
+    need_write = not parser.has_section(DEBUG_LOG_SECTION)
+    if not need_write:
+        desired = cfg.to_ini()
+        for key, value in desired.items():
+            if section.get(key) != value:
+                need_write = True
+                break
+    if need_write:
+        save_debug_log_config(base_dir, cfg)
+    return cfg
+
+
+def save_debug_log_config(base_dir: str, cfg: PanelDebugLogConfig) -> None:
+    ensure_data_dirs(base_dir)
+    config_path = get_config_path(base_dir)
+    parser = configparser.ConfigParser()
+    if config_path.exists():
+        try:
+            parser.read(config_path, encoding="utf-8")
+        except Exception:
+            parser = configparser.ConfigParser()
+
+    if not parser.has_section(DEBUG_LOG_SECTION):
+        parser.add_section(DEBUG_LOG_SECTION)
+
+    desired = cfg.normalized().to_ini()
+    for key, value in desired.items():
+        parser.set(DEBUG_LOG_SECTION, key, value)
+
+    with config_path.open("w", encoding="utf-8") as f:
+        parser.write(f)
 
 
 def load_config(base_dir: str) -> PanelConfig:
@@ -438,9 +689,6 @@ def load_config(base_dir: str) -> PanelConfig:
     # (при этом НЕ стираем другие секции в config.ini)
     secret_key = panel.get("secret_key") or secrets.token_urlsafe(32)
     api_token = panel.get("api_token") or secrets.token_urlsafe(32)
-    admin_login = panel.get("admin_login") or "admin"
-    admin_password = panel.get("admin_password", "")
-
     cfg = PanelConfig(
         host=panel.get("host", DEFAULT_HOST),
         port=parse_int(panel.get("port"), DEFAULT_PORT),
@@ -453,8 +701,8 @@ def load_config(base_dir: str) -> PanelConfig:
             DEFAULT_OVERVIEW_REFRESH_SECONDS,
         ),
         api_token=api_token,
-        admin_login=admin_login,
-        admin_password=admin_password,
+        admin_login="",
+        admin_password="",
     )
 
     # Сохраняем ТОЛЬКО если реально нужно дописать новые ключи/токены.
@@ -471,13 +719,13 @@ def load_config(base_dir: str) -> PanelConfig:
             "retention_days": str(cfg.retention_days),
             "overview_refresh_seconds": str(cfg.overview_refresh_seconds),
             "api_token": cfg.api_token,
-            "admin_login": cfg.admin_login,
-            "admin_password": cfg.admin_password,
         }
         for k, v in desired_min.items():
             if panel.get(k) != v:
                 need_write = True
                 break
+        if "admin_login" in panel or "admin_password" in panel:
+            need_write = True
 
     if need_write:
         save_config(base_dir, cfg)
@@ -519,12 +767,12 @@ def save_config(base_dir: str, cfg: PanelConfig) -> None:
         "retention_days": str(cfg.retention_days),
         "overview_refresh_seconds": str(cfg.overview_refresh_seconds),
         "api_token": cfg.api_token,
-        "admin_login": cfg.admin_login,
-        "admin_password": cfg.admin_password,
     }
 
     for k, v in desired.items():
         parser.set("panel", k, v)
+    parser.remove_option("panel", "admin_login")
+    parser.remove_option("panel", "admin_password")
 
     with config_path.open("w", encoding="utf-8") as f:
         parser.write(f)
@@ -532,7 +780,7 @@ def save_config(base_dir: str, cfg: PanelConfig) -> None:
 
 
 def get_panel_log_path(base_dir: str) -> Path:
-    return _get_log_dir(base_dir) / "panel.log"
+    return _get_log_dir(base_dir) / _DEBUG_LOG_FILENAME
 
 
 def tail_panel_log(base_dir: str, lines: int = 100) -> str:
@@ -559,6 +807,634 @@ def _commit_sm_session(sm) -> None:
         session.commit()
 
 
+def _persist_panel_setup_state(
+    cfg: PanelConfig,
+    base_dir: str,
+    *,
+    setup_complete: Optional[bool] = None,
+) -> None:
+    if setup_complete is not None:
+        cfg.setup_complete = bool(setup_complete)
+    cfg.admin_login = ""
+    cfg.admin_password = ""
+    save_config(base_dir, cfg)
+
+
+def _is_sqlite_locked_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "database is locked" in text
+        or "database table is locked" in text
+        or "database schema is locked" in text
+    )
+
+
+def _normalize_role_key(role_name: str) -> str:
+    value = (role_name or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"[_\-]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value.casefold()
+
+
+def _canonicalize_role_name(role_name: str) -> str:
+    value = (role_name or "").strip()
+    if not value:
+        return ""
+    return _ROLE_ALIAS_TO_CANONICAL.get(_normalize_role_key(value), value)
+
+
+def _is_super_admin_role_name(role_name: str) -> bool:
+    return _canonicalize_role_name(role_name) == "Super Admin"
+
+
+def _password_state(plain_password: str, password_hash: str) -> str:
+    if (plain_password or "").strip():
+        return _PASSWORD_STATE_SAVED
+    if (password_hash or "").strip():
+        return _PASSWORD_STATE_HASH_ONLY
+    return _PASSWORD_STATE_MISSING
+
+
+def _normalize_username(username: str) -> str:
+    value = (username or "").strip()
+    if not value:
+        raise ValueError("Логин пользователя не указан.")
+    if len(value) < 3:
+        raise ValueError("Логин должен содержать минимум 3 символа.")
+    if len(value) > 64:
+        raise ValueError("Логин слишком длинный (максимум 64 символа).")
+    if any(ch.isspace() for ch in value):
+        raise ValueError("Логин не должен содержать пробелы.")
+    return value
+
+
+def _normalize_display_name(name: str, username: str) -> str:
+    value = (name or "").strip()
+    if value:
+        return value[:120]
+    return username
+
+
+def _validate_password_value(password: str) -> str:
+    value = (password or "").strip()
+    if len(value) < _MIN_PASSWORD_LEN:
+        raise ValueError(f"Пароль должен быть минимум {_MIN_PASSWORD_LEN} символов.")
+    return value
+
+
+def _ensure_user_secret_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_USER_SECRET_TABLE} (
+            username TEXT PRIMARY KEY,
+            plain_password TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+def _with_secret_db(
+    base_dir: str,
+    worker: Callable[[sqlite3.Connection], Any],
+    *,
+    max_attempts: int = 3,
+) -> Any:
+    db_path = get_db_path(base_dir)
+    ensure_data_dirs(base_dir)
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, max_attempts) + 1):
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=15)
+            conn.row_factory = sqlite3.Row
+            _ensure_user_secret_table(conn)
+            result = worker(conn)
+            conn.commit()
+            return result
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            if _is_sqlite_locked_error(exc) and attempt < max_attempts:
+                time.sleep(0.2 * attempt)
+                continue
+            raise
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Не удалось выполнить операцию с хранилищем паролей панели.")
+
+
+def remember_user_password(base_dir: str, username: str, password: str) -> None:
+    login = _normalize_username(username)
+    pwd = _validate_password_value(password)
+
+    def _worker(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            f"""
+            INSERT INTO {_USER_SECRET_TABLE} (username, plain_password, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(username) DO UPDATE SET
+                plain_password=excluded.plain_password,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (login, pwd),
+        )
+
+    _with_secret_db(base_dir, _worker)
+
+
+def forget_user_password(base_dir: str, username: str) -> None:
+    login = _normalize_username(username)
+
+    def _worker(conn: sqlite3.Connection) -> None:
+        conn.execute(f"DELETE FROM {_USER_SECRET_TABLE} WHERE username = ?", (login,))
+
+    _with_secret_db(base_dir, _worker)
+
+
+def get_stored_user_password(base_dir: str, username: str) -> str:
+    login = _normalize_username(username)
+
+    def _worker(conn: sqlite3.Connection) -> str:
+        cur = conn.execute(
+            f"SELECT plain_password FROM {_USER_SECRET_TABLE} WHERE username = ?",
+            (login,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return ""
+        return str(row["plain_password"] or "")
+
+    return _with_secret_db(base_dir, _worker)
+
+
+def _load_password_map(base_dir: str) -> dict[str, str]:
+    def _worker(conn: sqlite3.Connection) -> dict[str, str]:
+        cur = conn.execute(f"SELECT username, plain_password FROM {_USER_SECRET_TABLE}")
+        result: dict[str, str] = {}
+        for row in cur.fetchall():
+            key = str(row["username"] or "").strip()
+            if key:
+                result[key] = str(row["plain_password"] or "")
+        return result
+
+    return _with_secret_db(base_dir, _worker)
+
+
+def _ensure_default_roles_in_session(session) -> None:
+    from flask_appbuilder.security.sqla.models import Role
+
+    existing = {
+        str(item.name or "").strip()
+        for item in session.query(Role).all()
+        if str(item.name or "").strip()
+    }
+    for role_name in _DEFAULT_PANEL_ROLES:
+        if role_name not in existing:
+            session.add(Role(name=role_name))
+
+
+def _get_or_create_role_in_session(session, role_name: str):
+    from flask_appbuilder.security.sqla.models import Role
+
+    canonical = _canonicalize_role_name(role_name) or "Viewer"
+    role_obj = session.query(Role).filter_by(name=canonical).first()
+    if role_obj is None:
+        role_obj = Role(name=canonical)
+        session.add(role_obj)
+        session.flush()
+    return role_obj
+
+
+def _ensure_user_has_role_in_session(session, user, role_name: str) -> None:
+    role_obj = _get_or_create_role_in_session(session, role_name)
+    if role_obj not in (getattr(user, "roles", None) or []):
+        user.roles.append(role_obj)
+
+
+def _sync_super_admin_permissions_in_session(session) -> None:
+    from flask_appbuilder.security.sqla.models import PermissionView
+
+    super_role = _get_or_create_role_in_session(session, "Super Admin")
+    existing_ids = {
+        int(getattr(item, "id", 0) or 0)
+        for item in (getattr(super_role, "permissions", None) or [])
+        if int(getattr(item, "id", 0) or 0) > 0
+    }
+    for perm_view in session.query(PermissionView).all():
+        perm_id = int(getattr(perm_view, "id", 0) or 0)
+        if perm_id > 0 and perm_id in existing_ids:
+            continue
+        if perm_view not in (getattr(super_role, "permissions", None) or []):
+            super_role.permissions.append(perm_view)
+            if perm_id > 0:
+                existing_ids.add(perm_id)
+
+
+def _with_security_session(
+    base_dir: str,
+    worker: Callable[[Any], Any],
+    *,
+    max_attempts: int = 3,
+) -> Any:
+    ensure_data_dirs(base_dir)
+    ensure_limits_runtime_ready(base_dir)
+
+    from flask_appbuilder.security.sqla.models import User
+    from sqlalchemy import create_engine
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.orm import sessionmaker
+
+    db_path = get_db_path(base_dir)
+
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, max_attempts) + 1):
+        engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"timeout": 15},
+        )
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        try:
+            try:
+                User.metadata.create_all(engine)
+            except Exception:
+                pass
+            result = worker(session)
+            session.commit()
+            return result
+        except OperationalError as exc:
+            session.rollback()
+            last_error = exc
+            if _is_sqlite_locked_error(exc) and attempt < max_attempts:
+                time.sleep(0.2 * attempt)
+                continue
+            raise
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Не удалось выполнить операцию с пользователями панели.")
+
+
+def list_panel_roles(base_dir: str) -> list[str]:
+    def _worker(session):
+        from flask_appbuilder.security.sqla.models import Role
+
+        _ensure_default_roles_in_session(session)
+        roles: set[str] = set()
+        for item in session.query(Role).all():
+            raw_name = str(item.name or "").strip()
+            if not raw_name:
+                continue
+            canonical = _canonicalize_role_name(raw_name) or raw_name
+            roles.add(canonical)
+        for item in _DEFAULT_PANEL_ROLES:
+            roles.add(item)
+        return sorted(roles)
+
+    return _with_security_session(base_dir, _worker)
+
+
+def list_panel_users(base_dir: str) -> list[dict[str, Any]]:
+    password_map = _load_password_map(base_dir)
+
+    def _worker(session):
+        from flask_appbuilder.security.sqla.models import User
+
+        _ensure_default_roles_in_session(session)
+        rows = session.query(User).order_by(User.username.asc()).all()
+        result: list[dict[str, Any]] = []
+        super_admin_sync_done = False
+        for user in rows:
+            username = str(getattr(user, "username", "") or "").strip()
+            if not username:
+                continue
+            first_name = str(getattr(user, "first_name", "") or "").strip()
+            last_name = str(getattr(user, "last_name", "") or "").strip()
+            full_name = f"{first_name} {last_name}".strip() or username
+            roles = sorted(
+                {
+                    _canonicalize_role_name(str(getattr(role, "name", "") or "").strip())
+                    for role in (getattr(user, "roles", None) or [])
+                    if _canonicalize_role_name(str(getattr(role, "name", "") or "").strip())
+                }
+            )
+            if "Super Admin" in roles:
+                _ensure_user_has_role_in_session(session, user, "Super Admin")
+                if not super_admin_sync_done:
+                    _sync_super_admin_permissions_in_session(session)
+                    super_admin_sync_done = True
+            plain_password = str(password_map.get(username) or "")
+            password_hash = str(getattr(user, "password", "") or "")
+            result.append(
+                {
+                    "id": int(getattr(user, "id", 0) or 0),
+                    "username": username,
+                    "name": full_name,
+                    "roles": roles,
+                    "active": bool(getattr(user, "active", True)),
+                    "password_saved": bool(plain_password),
+                    "password_state": _password_state(plain_password, password_hash),
+                }
+            )
+        return result
+
+    return _with_security_session(base_dir, _worker)
+
+
+def get_panel_bootstrap_state(base_dir: str) -> dict[str, Any]:
+    users = list_panel_users(base_dir)
+    has_users = bool(users)
+    super_admin_users = []
+    for item in users:
+        roles = [str(role).strip() for role in (item.get("roles") or []) if str(role).strip()]
+        if "Super Admin" in roles:
+            super_admin_users.append(str(item.get("username") or "").strip())
+    return {
+        "has_users": has_users,
+        "has_super_admin": bool(super_admin_users),
+        "super_admin_users": super_admin_users,
+        "user_count": len(users),
+    }
+
+
+def get_panel_start_block_reason(base_dir: str) -> str:
+    state = get_panel_bootstrap_state(base_dir)
+    if not bool(state.get("has_users")):
+        return (
+            "Панель не может быть запущена: не найдено ни одного пользователя. "
+            "Создайте первого пользователя с ролью Super Admin."
+        )
+    if not bool(state.get("has_super_admin")):
+        return (
+            "Панель не может быть запущена: отсутствует пользователь с ролью Super Admin. "
+            "Создайте первого Super Admin или назначьте роль существующему пользователю."
+        )
+    return ""
+
+
+def can_start_panel(base_dir: str) -> bool:
+    return not bool(get_panel_start_block_reason(base_dir))
+
+
+def sync_panel_setup_state(base_dir: str) -> None:
+    cfg = load_config(base_dir)
+    state = get_panel_bootstrap_state(base_dir)
+    _persist_panel_setup_state(cfg, base_dir, setup_complete=bool(state.get("has_super_admin")))
+
+
+def _create_user_in_session(
+    session,
+    username: str,
+    display_name: str,
+    password: str,
+    role_name: str,
+) -> None:
+    from flask_appbuilder.security.sqla.models import User
+    from werkzeug.security import generate_password_hash
+
+    _ensure_default_roles_in_session(session)
+    existing = session.query(User).filter_by(username=username).first()
+    if existing is not None:
+        raise ValueError(f"Пользователь '{username}' уже существует.")
+
+    canonical_role_name = _canonicalize_role_name(role_name) or "Viewer"
+    role_obj = _get_or_create_role_in_session(session, canonical_role_name)
+
+    user = User(
+        first_name=display_name,
+        last_name="",
+        username=username,
+        email=f"{username}@localhost",
+        active=True,
+    )
+    user.roles.append(role_obj)
+    user.password = generate_password_hash(password)
+    session.add(user)
+    if _is_super_admin_role_name(canonical_role_name):
+        _sync_super_admin_permissions_in_session(session)
+
+
+def create_panel_user(
+    base_dir: str,
+    username: str,
+    display_name: str,
+    password: str,
+    role: str = "Viewer",
+) -> None:
+    login = _normalize_username(username)
+    name = _normalize_display_name(display_name, login)
+    pwd = _validate_password_value(password)
+    role_name = _canonicalize_role_name((role or "Viewer").strip() or "Viewer")
+    state = get_panel_bootstrap_state(base_dir)
+    if not bool(state.get("has_super_admin")) and role_name != "Super Admin":
+        raise ValueError(
+            "Пока в панели нет Super Admin, нового пользователя можно создать только с ролью Super Admin."
+        )
+
+    _with_security_session(
+        base_dir,
+        lambda session: _create_user_in_session(session, login, name, pwd, role_name),
+    )
+    remember_user_password(base_dir, login, pwd)
+    sync_panel_setup_state(base_dir)
+
+
+def _is_last_super_admin(session, user) -> bool:
+    from flask_appbuilder.security.sqla.models import User
+
+    role_names = {
+        _canonicalize_role_name(str(getattr(role, "name", "") or "").strip())
+        for role in (getattr(user, "roles", None) or [])
+        if _canonicalize_role_name(str(getattr(role, "name", "") or "").strip())
+    }
+    if "Super Admin" not in role_names:
+        return False
+    other_super_admins = 0
+    others = session.query(User).filter(User.id != user.id).all()
+    for other in others:
+        other_roles = {
+            _canonicalize_role_name(str(getattr(role, "name", "") or "").strip())
+            for role in (getattr(other, "roles", None) or [])
+            if _canonicalize_role_name(str(getattr(role, "name", "") or "").strip())
+        }
+        if "Super Admin" in other_roles:
+            other_super_admins += 1
+    return other_super_admins <= 0
+
+
+def delete_panel_user(base_dir: str, username: str) -> None:
+    login = _normalize_username(username)
+    if login.lower() == "public":
+        raise ValueError("Системного пользователя 'public' удалять нельзя.")
+
+    def _worker(session):
+        from flask_appbuilder.security.sqla.models import User
+
+        user = session.query(User).filter_by(username=login).first()
+        if user is None:
+            raise ValueError(f"Пользователь '{login}' не найден.")
+        if _is_last_super_admin(session, user):
+            raise ValueError("Нельзя удалить последнего пользователя с ролью Super Admin.")
+        session.delete(user)
+
+    _with_security_session(base_dir, _worker)
+    forget_user_password(base_dir, login)
+    sync_panel_setup_state(base_dir)
+
+
+def set_panel_user_password(
+    base_dir: str,
+    username: str,
+    new_password: str,
+    role: Optional[str] = None,
+) -> None:
+    login = _normalize_username(username)
+    pwd = _validate_password_value(new_password)
+    role_name = _canonicalize_role_name((role or "").strip())
+
+    def _worker(session):
+        from flask_appbuilder.security.sqla.models import User
+        from werkzeug.security import generate_password_hash
+
+        _ensure_default_roles_in_session(session)
+        user = session.query(User).filter_by(username=login).first()
+        if user is None:
+            raise ValueError(f"Пользователь '{login}' не найден.")
+        if role_name:
+            _ensure_user_has_role_in_session(session, user, role_name)
+            if _is_super_admin_role_name(role_name):
+                _sync_super_admin_permissions_in_session(session)
+        user.password = generate_password_hash(pwd)
+
+    _with_security_session(base_dir, _worker)
+    remember_user_password(base_dir, login, pwd)
+
+
+def set_panel_user_role(
+    base_dir: str,
+    username: str,
+    role: str,
+    *,
+    replace_existing: bool = True,
+) -> None:
+    login = _normalize_username(username)
+    role_name = _canonicalize_role_name((role or "").strip())
+    if not role_name:
+        raise ValueError("Роль пользователя не выбрана.")
+
+    def _worker(session):
+        from flask_appbuilder.security.sqla.models import User
+
+        _ensure_default_roles_in_session(session)
+        user = session.query(User).filter_by(username=login).first()
+        if user is None:
+            raise ValueError(f"Пользователь '{login}' не найден.")
+
+        current_roles = {
+            _canonicalize_role_name(str(getattr(item, "name", "") or "").strip())
+            for item in (getattr(user, "roles", None) or [])
+            if _canonicalize_role_name(str(getattr(item, "name", "") or "").strip())
+        }
+        if (
+            bool(replace_existing)
+            and "Super Admin" in current_roles
+            and role_name != "Super Admin"
+            and _is_last_super_admin(session, user)
+        ):
+            raise ValueError("Нельзя снять роль Super Admin у последнего пользователя с этой ролью.")
+
+        role_obj = _get_or_create_role_in_session(session, role_name)
+        if bool(replace_existing):
+            user.roles = [role_obj]
+        elif role_obj not in (getattr(user, "roles", None) or []):
+            user.roles.append(role_obj)
+
+        if _is_super_admin_role_name(role_name):
+            _sync_super_admin_permissions_in_session(session)
+
+    _with_security_session(base_dir, _worker)
+    sync_panel_setup_state(base_dir)
+
+
+def get_panel_user_credentials(base_dir: str, username: str) -> dict[str, Any]:
+    login = _normalize_username(username)
+    password = get_stored_user_password(base_dir, login)
+    users = list_panel_users(base_dir)
+    for item in users:
+        if str(item.get("username") or "") == login:
+            return {
+                "username": login,
+                "password": password,
+                "name": item.get("name", login),
+                "roles": list(item.get("roles") or []),
+                "active": bool(item.get("active", True)),
+                "password_state": str(item.get("password_state") or ""),
+            }
+    raise ValueError(f"Пользователь '{login}' не найден.")
+
+
+def _upsert_user_password_direct(
+    username: str,
+    new_password: str,
+    role: str,
+    base_dir: str,
+    *,
+    display_name: str = "Admin",
+    max_attempts: int = 3,
+) -> None:
+    login = _normalize_username(username)
+    pwd = _validate_password_value(new_password)
+    role_name = _canonicalize_role_name((role or "Admin").strip() or "Admin")
+    name = _normalize_display_name(display_name, login)
+
+    def _worker(session):
+        from flask_appbuilder.security.sqla.models import User
+        from werkzeug.security import generate_password_hash
+
+        _ensure_default_roles_in_session(session)
+        role_obj = _get_or_create_role_in_session(session, role_name)
+
+        user = session.query(User).filter_by(username=login).first()
+        if user is None:
+            user = User(
+                first_name=name,
+                last_name="",
+                username=login,
+                email=f"{login}@localhost",
+                active=True,
+            )
+            user.roles.append(role_obj)
+            session.add(user)
+        elif role_obj not in user.roles:
+            user.roles.append(role_obj)
+        if _is_super_admin_role_name(role_name):
+            _sync_super_admin_permissions_in_session(session)
+
+        user.password = generate_password_hash(pwd)
+
+    _with_security_session(base_dir, _worker, max_attempts=max_attempts)
+    remember_user_password(base_dir, login, pwd)
+
+
 def update_user_password(
     cfg: PanelConfig,
     username: str,
@@ -570,33 +1446,63 @@ def update_user_password(
     Обновляет (или создаёт) пользователя в FAB БД, задаёт пароль и роль.
     Используется Telegram-модулем для смены пароля.
     """
-    from werkzeug.security import generate_password_hash
-
     if base_dir is None:
         # Если base_dir не передали, пробуем оттуда, где лежит конфиг
         base_dir = os.path.abspath(os.getcwd())
+    login = _normalize_username(username)
+    pwd = _validate_password_value(new_password)
+    role_name = _canonicalize_role_name((role or "Admin").strip() or "Admin")
+    state = get_panel_bootstrap_state(base_dir)
+    if not bool(state.get("has_super_admin")) and role_name != "Super Admin":
+        raise ValueError(
+            "Пока в панели нет Super Admin, пароль/роль можно задать только для Super Admin."
+        )
 
-    # Создаём приложение, чтобы гарантировать наличие таблиц и ролей
+    # Быстрый путь: обновляем напрямую в SQLite (минимум зависимостей и I/O).
+    try:
+        _upsert_user_password_direct(login, pwd, role_name, base_dir, display_name="Admin")
+        sync_panel_setup_state(base_dir)
+        return
+    except Exception as direct_exc:
+        last_error: Exception | None = direct_exc
+
+    # Фолбек: через create_app (сохраняем обратную совместимость для нестандартных окружений).
     try:
         from .app_factory import create_app
-    except Exception:
-        # Фолбек: обновим напрямую через SQLAlchemy
+    except Exception as app_import_exc:
         create_app = None
+        last_error = app_import_exc
 
     if create_app is not None:
         try:
             app, appbuilder, _runtime = create_app(base_dir, start_scheduler=False)
-        except Exception:
+        except Exception as app_exc:
+            last_error = app_exc
             app = None
         if app is not None:
+            from werkzeug.security import generate_password_hash
+
             with app.app_context():
                 sm = appbuilder.sm
-                role_obj = sm.find_role(role) or sm.add_role(role)
-                user = sm.find_user(username=username)
-                hashed = generate_password_hash(new_password)
+                role_obj = sm.find_role(role_name) or sm.add_role(role_name)
+                if _is_super_admin_role_name(role_name):
+                    try:
+                        from flask_appbuilder.security.sqla.models import PermissionView
+
+                        session = sm.get_session() if callable(getattr(sm, "get_session", None)) else sm.get_session
+                        all_permissions = session.query(PermissionView).all()
+                        for perm_view in all_permissions:
+                            try:
+                                sm.add_permission_role(role_obj, perm_view)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                user = sm.find_user(username=login)
+                hashed = generate_password_hash(pwd)
                 if hasattr(sm, "get_password_hash"):
                     try:
-                        hashed = sm.get_password_hash(new_password)  # type: ignore[call-arg]
+                        hashed = sm.get_password_hash(pwd)  # type: ignore[call-arg]
                     except Exception:
                         pass
                 if user:
@@ -605,57 +1511,18 @@ def update_user_password(
                         user.roles.append(role_obj)
                 else:
                     sm.add_user(
-                        username=username,
+                        username=login,
                         first_name="Admin",
                         last_name="User",
-                        email="admin@localhost",
+                        email=f"{login}@localhost",
                         role=role_obj,
-                        password=new_password,
+                        password=pwd,
                     )
                 _commit_sm_session(sm)
-            cfg.setup_complete = True
-            cfg.admin_login = username
-            cfg.admin_password = new_password
-            save_config(base_dir, cfg)
+            remember_user_password(base_dir, login, pwd)
+            sync_panel_setup_state(base_dir)
             return
 
-    # Прямое обновление через SQLAlchemy (если фабрика не импортировалась)
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from flask_appbuilder.security.sqla.models import User, Role
-
-    db_path = get_db_path(base_dir)
-    engine = create_engine(f"sqlite:///{db_path}")
-    try:
-        User.metadata.create_all(engine)
-    except Exception:
-        pass
-    Session = sessionmaker(bind=engine)
-    session = Session()
-
-    role_obj = session.query(Role).filter_by(name=role).first()
-    if not role_obj:
-        role_obj = Role(name=role)
-        session.add(role_obj)
-        session.commit()
-
-    user = session.query(User).filter_by(username=username).first()
-    if not user:
-        user = User(
-            first_name="Admin",
-            last_name="User",
-            username=username,
-            email="admin@localhost",
-            active=True,
-        )
-        user.roles.append(role_obj)
-        session.add(user)
-
-    user.password = generate_password_hash(new_password)
-    session.commit()
-    session.close()
-
-    cfg.setup_complete = True
-    cfg.admin_login = username
-    cfg.admin_password = new_password
-    save_config(base_dir, cfg)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Не удалось обновить пароль пользователя панели.")

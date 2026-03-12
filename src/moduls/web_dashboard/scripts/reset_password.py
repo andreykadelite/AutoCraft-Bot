@@ -20,8 +20,15 @@ def guess_base_dir() -> str:
 def main() -> None:
     base_dir = guess_base_dir()
     cfg = load_config(base_dir)
+    default_login = "admin"
 
     while True:
+        raw_login = input(f"Введите логин пользователя [{default_login}]: ").strip()
+        login = raw_login or default_login
+        if len(login) < 3 or (" " in login):
+            print("Логин должен быть минимум 3 символа и без пробелов.")
+            continue
+
         pwd1 = getpass("Введите новый пароль: ")
         pwd2 = getpass("Повторите пароль: ")
         if len(pwd1) < 6:
@@ -30,8 +37,8 @@ def main() -> None:
         if pwd1 != pwd2:
             print("Пароли не совпадают.")
             continue
-        update_user_password(cfg, "admin", pwd1, role="Super Admin", base_dir=base_dir)
-        print("Пароль обновлён.")
+        update_user_password(cfg, login, pwd1, role="Super Admin", base_dir=base_dir)
+        print(f"Пароль пользователя {login} обновлён.")
         return
 
 

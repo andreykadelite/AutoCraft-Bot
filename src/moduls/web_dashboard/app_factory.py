@@ -14,7 +14,18 @@ from typing import Any, Dict, Tuple
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for, flash, g, session
 
-from .config import PanelConfig, get_db_path, get_panel_log_path, load_config, save_config
+from .config import (
+    PanelConfig,
+    PanelDebugLogConfig,
+    create_panel_user,
+    get_panel_bootstrap_state,
+    get_db_path,
+    get_panel_log_path,
+    load_config,
+    load_debug_log_config,
+    save_config,
+    save_debug_log_config,
+)
 from .db import db
 from .utils import ensure_dir
 
@@ -35,6 +46,8 @@ _SESSION_BOOT_KEY = "panel_boot_id"
 
 _PANEL_HANDLER: RotatingFileHandler | None = None
 _PANEL_HANDLER_BASE: str | None = None
+_PANEL_HANDLER_SIGNATURE: tuple[str, str, int, int] | None = None
+_LOGGING_LOCK = threading.Lock()
 
 
 def _build_flask_config(base_dir: str, cfg: PanelConfig) -> Dict[str, Any]:
@@ -59,31 +72,6 @@ def _build_flask_config(base_dir: str, cfg: PanelConfig) -> Dict[str, Any]:
 def _ensure_db_tables(app: Flask) -> None:
     with app.app_context():
         db.create_all()
-
-
-def _setup_admin(appbuilder: AppBuilder, cfg: PanelConfig) -> str | None:
-    sm = appbuilder.sm
-    admin = sm.find_user(username="admin")
-    generated_password = None
-
-    if admin is None:
-        import secrets
-
-        generated_password = secrets.token_urlsafe(8)
-        super_role = sm.find_role("Super Admin") or sm.add_role("Super Admin")
-        sm.add_user(
-            username="admin",
-            first_name="Admin",
-            last_name="User",
-            email="admin@localhost",
-            role=super_role,
-            password=generated_password,
-        )
-        cfg.setup_complete = False
-        cfg.admin_login = "admin"
-        cfg.admin_password = generated_password
-
-    return generated_password
 
 
 def _grant_view_permissions(
@@ -211,7 +199,7 @@ def _setup_roles(appbuilder: AppBuilder) -> None:
     role_map = {
         "Admin": {
             "WacIndexView": ["can_index"],
-            "ServerView": ["can_list", "can_show", "can_add", "can_edit", "can_delete"],
+            "ServerView": ["can_list", "can_action"],
             "FileManagerView": ["can_list", "can_action"],
             "RemoteDesktopView": ["can_list", "can_action"],
             "LiveStreamView": ["can_list", "can_action"],
@@ -230,7 +218,7 @@ def _setup_roles(appbuilder: AppBuilder) -> None:
             "TasksView": ["can_list", "can_action"],
             "JobView": ["can_list", "can_show"],
             "AuditView": ["can_list", "can_show"],
-            "ExtensionsView": ["can_list"],
+            "ExtensionsView": ["can_list", "can_action"],
             "SettingsView": ["can_edit", "can_action"],
             "AdminBroadcastView": ["can_list", "can_action"],
             "AutoCraftStatusView": ["can_list"],
@@ -239,6 +227,7 @@ def _setup_roles(appbuilder: AppBuilder) -> None:
         },
         "Operator": {
             "WacIndexView": ["can_index"],
+            "ServerView": ["can_list", "can_action"],
             "EventLogsView": ["can_list"],
             "ServicesView": ["can_list", "can_action"],
             "ProcessesView": ["can_list", "can_action"],
@@ -254,14 +243,14 @@ def _setup_roles(appbuilder: AppBuilder) -> None:
             "MetricsView": ["can_list"],
             "TasksView": ["can_list", "can_action"],
             "JobView": ["can_list", "can_show"],
-            "ExtensionsView": ["can_list"],
+            "ExtensionsView": ["can_list", "can_action"],
             "AutoCraftStatusView": ["can_list"],
             "AutoCraftOpsView": ["can_list", "can_action"],
             "RegistryEditorView": ["can_list"],
         },
         "Viewer": {
             "WacIndexView": ["can_index"],
-            "ServerView": ["can_list", "can_show"],
+            "ServerView": ["can_list"],
             "EventLogsView": ["can_list"],
             "ServicesView": ["can_list"],
             "ProcessesView": ["can_list"],
@@ -360,26 +349,48 @@ def _setup_routes(app: Flask, cfg: PanelConfig) -> None:
 
     @app.route("/setup", methods=["GET", "POST"])
     def setup_admin():
-        if cfg.setup_complete:
+        base_dir = app.config["BASE_DIR"]
+        state = get_panel_bootstrap_state(base_dir)
+        if bool(state.get("has_super_admin")):
             return redirect(url_for("AppBuilder.index"))
 
+        default_login = "admin"
         if request.method == "POST":
+            login = (request.form.get("login") or "").strip() or "admin"
+            default_login = login
             pwd1 = (request.form.get("password") or "").strip()
             pwd2 = (request.form.get("password2") or "").strip()
-            if len(pwd1) < 6:
+
+            if len(login) < 3 or (" " in login):
+                flash("Логин должен быть не короче 3 символов и без пробелов.", "warning")
+            elif len(pwd1) < 6:
                 flash("Пароль должен быть минимум 6 символов", "warning")
             elif pwd1 != pwd2:
                 flash("Пароли не совпадают", "danger")
             else:
-                from .config import update_user_password
+                try:
+                    create_panel_user(base_dir, login, login, pwd1, role="Super Admin")
+                except Exception as exc:
+                    flash(f"Не удалось создать Super Admin: {exc}", "danger")
+                    return render_template(
+                        "setup.html",
+                        default_login=default_login,
+                        fixed_role="Super Admin",
+                    )
 
-                update_user_password(cfg, "admin", pwd1, role="Super Admin", base_dir=app.config["BASE_DIR"])
-                cfg.setup_complete = True
-                save_config(app.config["BASE_DIR"], cfg)
-                flash("Пароль администратора установлен.", "success")
+                try:
+                    cfg.setup_complete = True
+                    save_config(base_dir, cfg)
+                except Exception:
+                    pass
+                flash(f"Пользователь {login} (Super Admin) создан.", "success")
                 return redirect(url_for("AppBuilder.index"))
 
-        return render_template("setup.html")
+        return render_template(
+            "setup.html",
+            default_login=default_login,
+            fixed_role="Super Admin",
+        )
 
 
 def _ensure_log_file(log_path: Path) -> None:
@@ -458,6 +469,7 @@ class _MojibakeSafeFormatter(logging.Formatter):
 def _attach_logger(logger: logging.Logger, handler: logging.Handler, level: int) -> None:
     for existing in logger.handlers:
         if getattr(existing, _PANEL_HANDLER_TAG, False):
+            existing.setLevel(level)
             logger.setLevel(level)
             logger.propagate = False
             return
@@ -466,24 +478,80 @@ def _attach_logger(logger: logging.Logger, handler: logging.Handler, level: int)
     logger.propagate = False
 
 
-def _get_panel_handler(base_dir: str, level: int) -> RotatingFileHandler:
-    global _PANEL_HANDLER, _PANEL_HANDLER_BASE
-    if _PANEL_HANDLER is not None and _PANEL_HANDLER_BASE == base_dir:
-        _PANEL_HANDLER.setLevel(level)
-        return _PANEL_HANDLER
-
-    if _PANEL_HANDLER is not None and _PANEL_HANDLER_BASE != base_dir:
+def _remove_panel_handlers(logger: logging.Logger) -> None:
+    for existing in list(logger.handlers):
+        if not getattr(existing, _PANEL_HANDLER_TAG, False):
+            continue
         try:
-            _PANEL_HANDLER.close()
+            logger.removeHandler(existing)
         except Exception:
             pass
 
+
+def _resolve_runtime_log_level(level_name: str) -> int:
+    text = str(level_name or "").strip().upper()
+    if text == "MAX":
+        return logging.NOTSET
+    if text == "DEBUG":
+        return logging.DEBUG
+    if text == "INFO":
+        return logging.INFO
+    if text == "WARNING":
+        return logging.WARNING
+    if text == "ERROR":
+        return logging.ERROR
+    if text == "CRITICAL":
+        return logging.CRITICAL
+    return logging.NOTSET
+
+
+def _is_verbose_level(level: int) -> bool:
+    return level <= logging.DEBUG
+
+
+def _external_logger_level(level: int) -> int:
+    if level <= logging.NOTSET:
+        return logging.DEBUG
+    if level <= logging.DEBUG:
+        return logging.INFO
+    if level <= logging.INFO:
+        return logging.WARNING
+    return level
+
+
+def _close_panel_handler() -> None:
+    global _PANEL_HANDLER, _PANEL_HANDLER_BASE, _PANEL_HANDLER_SIGNATURE
+    if _PANEL_HANDLER is None:
+        return
+    try:
+        _PANEL_HANDLER.close()
+    except Exception:
+        pass
+    _PANEL_HANDLER = None
+    _PANEL_HANDLER_BASE = None
+    _PANEL_HANDLER_SIGNATURE = None
+
+
+def _get_panel_handler(base_dir: str, log_cfg: PanelDebugLogConfig, level: int) -> RotatingFileHandler:
+    global _PANEL_HANDLER, _PANEL_HANDLER_BASE, _PANEL_HANDLER_SIGNATURE
+    normalized = log_cfg.normalized()
     log_path = get_panel_log_path(base_dir)
+    signature = (
+        base_dir,
+        str(log_path),
+        int(normalized.max_bytes),
+        int(normalized.backup_count),
+    )
+    if _PANEL_HANDLER is not None and _PANEL_HANDLER_SIGNATURE == signature and _PANEL_HANDLER_BASE == base_dir:
+        _PANEL_HANDLER.setLevel(level)
+        return _PANEL_HANDLER
+
+    _close_panel_handler()
     _ensure_log_file(log_path)
     handler = RotatingFileHandler(
         log_path,
-        maxBytes=2 * 1024 * 1024,
-        backupCount=5,
+        maxBytes=normalized.max_bytes,
+        backupCount=normalized.backup_count,
         encoding="utf-8",
     )
     handler.setLevel(level)
@@ -493,13 +561,28 @@ def _get_panel_handler(base_dir: str, level: int) -> RotatingFileHandler:
     setattr(handler, _PANEL_HANDLER_TAG, True)
     _PANEL_HANDLER = handler
     _PANEL_HANDLER_BASE = base_dir
+    _PANEL_HANDLER_SIGNATURE = signature
     return handler
 
 
-def _ensure_panel_logger(base_dir: str, debug: bool) -> logging.Logger:
-    level = logging.DEBUG if debug else logging.INFO
-    handler = _get_panel_handler(base_dir, level)
+def _is_debug_logging_enabled(base_dir: str | None) -> bool:
+    if not base_dir:
+        return False
+    try:
+        cfg = load_debug_log_config(base_dir)
+        return bool(cfg.enabled)
+    except Exception:
+        return False
+
+
+def _ensure_panel_logger(base_dir: str, log_cfg: PanelDebugLogConfig) -> logging.Logger:
+    normalized = log_cfg.normalized()
     logger = logging.getLogger(_PANEL_LOGGER_NAME)
+    if not normalized.enabled:
+        _remove_panel_handlers(logger)
+        return logger
+    level = _resolve_runtime_log_level(normalized.level)
+    handler = _get_panel_handler(base_dir, normalized, level)
     _attach_logger(logger, handler, level)
     return logger
 
@@ -515,7 +598,7 @@ def _append_panel_log(base_dir: str | None, message: str) -> None:
         except Exception:
             pass
 
-    if not base_dir:
+    if not base_dir or not _is_debug_logging_enabled(base_dir):
         return
 
     try:
@@ -633,7 +716,7 @@ def _pick_request_log_level(status_code: int, duration_ms: float | None) -> int:
     return logging.INFO
 
 
-def _setup_request_logging(app: Flask, debug: bool) -> None:
+def _setup_request_logging(app: Flask) -> None:
     @app.before_request
     def _log_request_start():
         g.request_id = uuid.uuid4().hex[:8]
@@ -643,6 +726,7 @@ def _setup_request_logging(app: Flask, debug: bool) -> None:
     def _log_request_end(response):
         request_logger = logging.getLogger(_REQUEST_LOGGER_NAME)
         path = request.path or ""
+        verbose = bool(app.config.get("PANEL_DEBUG_LOG_VERBOSE", False))
         try:
             size = response.calculate_content_length()
         except Exception:
@@ -657,14 +741,14 @@ def _setup_request_logging(app: Flask, debug: bool) -> None:
 
         level = _pick_request_log_level(response.status_code, duration_ms)
         if _is_noisy_path(path) and response.status_code < 400:
-            if not debug or not request_logger.isEnabledFor(logging.DEBUG):
+            if not verbose or not request_logger.isEnabledFor(logging.DEBUG):
                 return response
             level = logging.DEBUG
 
         req_id = getattr(g, "request_id", "-")
         ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
-        if level >= logging.WARNING:
-            line = _format_request_line(debug=True)
+        if level >= logging.WARNING or verbose:
+            line = _format_request_line(debug=verbose)
             request_logger.log(
                 level,
                 "request req_id=%s %s status=%s duration_ms=%.1f size=%s ip=%s",
@@ -695,9 +779,22 @@ def _setup_session_restart_guard(app: Flask) -> None:
 
     @app.before_request
     def _enforce_session_boot():
+        if getattr(g, "autocraft_proxy_request", False):
+            return None
         from flask_login import current_user, logout_user
 
-        if not current_user.is_authenticated:
+        try:
+            is_authenticated = bool(current_user.is_authenticated)
+        except Exception:
+            # Защита от некорректных cookie (_user_id), например старых proxy-сессий.
+            for key in ("_user_id", "_fresh", "_id"):
+                try:
+                    session.pop(key, None)
+                except Exception:
+                    pass
+            return None
+
+        if not is_authenticated:
             return None
 
         expected = app.config.get("SESSION_BOOT_ID")
@@ -739,6 +836,8 @@ def _setup_message_notifications(app: Flask) -> None:
     from sqlalchemy import func
 
     from .models.audit import AuditLog
+    from .models.internal_messenger import InternalChatMessage, InternalChatState
+    from .models.messages import UserMessage
     from .models.user_notification_state import (
         UserNotificationState,
         ensure_user_notification_state_schema,
@@ -747,10 +846,21 @@ def _setup_message_notifications(app: Flask) -> None:
 
     @app.before_request
     def _load_message_notifications():
+        if getattr(g, "autocraft_proxy_request", False):
+            return None
         path = request.path or ""
         if path.startswith("/static/"):
             return None
-        if not current_user.is_authenticated:
+        try:
+            is_authenticated = bool(current_user.is_authenticated)
+        except Exception:
+            for key in ("_user_id", "_fresh", "_id"):
+                try:
+                    session.pop(key, None)
+                except Exception:
+                    pass
+            return None
+        if not is_authenticated:
             return None
 
         try:
@@ -800,9 +910,35 @@ def _setup_message_notifications(app: Flask) -> None:
                     .first()
                 )
                 if not state:
+                    latest_messenger_id = (
+                        db.session.query(func.max(InternalChatMessage.id))
+                        .join(
+                            InternalChatState,
+                            InternalChatState.thread_id == InternalChatMessage.thread_id,
+                        )
+                        .filter(
+                            InternalChatState.user_id == int(current_user.id),
+                            InternalChatState.is_hidden.is_(False),
+                            InternalChatMessage.sender_id != int(current_user.id),
+                        )
+                        .scalar()
+                    )
+                    latest_messenger_id = int(latest_messenger_id or 0)
+                    latest_communications_id = (
+                        db.session.query(func.max(UserMessage.id))
+                        .filter(
+                            UserMessage.recipient_id == int(current_user.id),
+                            UserMessage.deleted_by_recipient.is_(False),
+                        )
+                        .scalar()
+                    )
+                    latest_communications_id = int(latest_communications_id or 0)
                     state = UserNotificationState(
                         user_id=int(current_user.id),
                         system_last_read_audit_id=latest_system_id,
+                        system_last_shown_audit_id=latest_system_id,
+                        messenger_last_shown_message_id=latest_messenger_id,
+                        communications_last_shown_message_id=latest_communications_id,
                     )
                     db.session.add(state)
                     db.session.commit()
@@ -832,44 +968,102 @@ def _setup_message_notifications(app: Flask) -> None:
         return None
 
 
-def _configure_logging(app: Flask, base_dir: str, debug: bool) -> None:
-    try:
-        level = logging.DEBUG if debug else logging.INFO
-        handler = _get_panel_handler(base_dir, level)
+def _configure_logging(
+    app: Flask,
+    base_dir: str,
+    debug_log_cfg: PanelDebugLogConfig,
+) -> PanelDebugLogConfig:
+    normalized = debug_log_cfg.normalized()
+    panel_level = _resolve_runtime_log_level(normalized.level)
+    request_level = logging.DEBUG if _is_verbose_level(panel_level) else max(logging.INFO, panel_level)
+    ops_level = logging.DEBUG if _is_verbose_level(panel_level) else max(logging.INFO, panel_level)
+    external_level = _external_logger_level(panel_level)
+    log_path = str(get_panel_log_path(base_dir))
 
-        _attach_logger(app.logger, handler, level)
-        _attach_logger(logging.getLogger(_PANEL_LOGGER_NAME), handler, level)
-        _attach_logger(
-            logging.getLogger(_REQUEST_LOGGER_NAME),
-            handler,
-            logging.DEBUG if debug else logging.INFO,
-        )
-        _attach_logger(logging.getLogger("panel.ops"), handler, logging.INFO)
-        _attach_logger(logging.getLogger("panel.remote_desktop"), handler, logging.INFO)
-        _attach_logger(logging.getLogger("panel.plugins"), handler, logging.INFO)
+    managed_loggers = [
+        app.logger,
+        logging.getLogger(_PANEL_LOGGER_NAME),
+        logging.getLogger(_REQUEST_LOGGER_NAME),
+        logging.getLogger("panel.ops"),
+        logging.getLogger("panel.frontend"),
+        logging.getLogger("panel.remote_desktop"),
+        logging.getLogger("panel.plugins"),
+        logging.getLogger("py.warnings"),
+    ]
+    external_logger_names = (
+        "werkzeug",
+        "waitress",
+        "waitress.server",
+        "waitress.queue",
+        "waitress.task",
+        "flask_appbuilder",
+        "sqlalchemy",
+        "sqlalchemy.engine",
+        "sqlalchemy.engine.Engine",
+        "apscheduler",
+    )
 
-        for name in (
-            "werkzeug",
-            "waitress",
-            "waitress.server",
-            "waitress.queue",
-            "waitress.task",
-            "flask_appbuilder",
-            "sqlalchemy",
-            "sqlalchemy.engine",
-            "sqlalchemy.engine.Engine",
-            "apscheduler",
-        ):
-            _attach_logger(logging.getLogger(name), handler, logging.WARNING)
+    with _LOGGING_LOCK:
+        try:
+            if not normalized.enabled:
+                for logger in managed_loggers:
+                    _remove_panel_handlers(logger)
+                for name in external_logger_names:
+                    _remove_panel_handlers(logging.getLogger(name))
+                logging.captureWarnings(False)
+                _close_panel_handler()
+                app.config["PANEL_DEBUG_LOG_ENABLED"] = False
+                app.config["PANEL_DEBUG_LOG_LEVEL"] = normalized.level
+                app.config["PANEL_DEBUG_LOG_VERBOSE"] = False
+                app.config["PANEL_DEBUG_LOG_MAX_BYTES"] = normalized.max_bytes
+                app.config["PANEL_DEBUG_LOG_BACKUP_COUNT"] = normalized.backup_count
+                app.config["PANEL_DEBUG_LOG_PATH"] = log_path
+                return normalized
 
-        if debug:
+            handler = _get_panel_handler(base_dir, normalized, panel_level)
+            _attach_logger(app.logger, handler, panel_level)
+            _attach_logger(logging.getLogger(_PANEL_LOGGER_NAME), handler, panel_level)
+            _attach_logger(logging.getLogger(_REQUEST_LOGGER_NAME), handler, request_level)
+            _attach_logger(logging.getLogger("panel.ops"), handler, ops_level)
+            _attach_logger(logging.getLogger("panel.frontend"), handler, ops_level)
+            _attach_logger(logging.getLogger("panel.remote_desktop"), handler, ops_level)
+            _attach_logger(logging.getLogger("panel.plugins"), handler, ops_level)
+
+            for name in external_logger_names:
+                _attach_logger(logging.getLogger(name), handler, external_level)
+
             logging.captureWarnings(True)
             _attach_logger(logging.getLogger("py.warnings"), handler, logging.WARNING)
-    except Exception:
-        pass
+            app.config["PANEL_DEBUG_LOG_ENABLED"] = True
+            app.config["PANEL_DEBUG_LOG_LEVEL"] = normalized.level
+            app.config["PANEL_DEBUG_LOG_VERBOSE"] = _is_verbose_level(panel_level)
+            app.config["PANEL_DEBUG_LOG_MAX_BYTES"] = normalized.max_bytes
+            app.config["PANEL_DEBUG_LOG_BACKUP_COUNT"] = normalized.backup_count
+            app.config["PANEL_DEBUG_LOG_PATH"] = log_path
+            return normalized
+        except Exception:
+            app.config["PANEL_DEBUG_LOG_ENABLED"] = False
+            app.config["PANEL_DEBUG_LOG_LEVEL"] = normalized.level
+            app.config["PANEL_DEBUG_LOG_VERBOSE"] = False
+            app.config["PANEL_DEBUG_LOG_MAX_BYTES"] = normalized.max_bytes
+            app.config["PANEL_DEBUG_LOG_BACKUP_COUNT"] = normalized.backup_count
+            app.config["PANEL_DEBUG_LOG_PATH"] = log_path
+            return normalized
 
 
-def _setup_error_handlers(app: Flask, debug: bool) -> None:
+def apply_runtime_debug_logging(
+    app: Flask,
+    base_dir: str,
+    debug_log_cfg: PanelDebugLogConfig | None = None,
+    persist: bool = False,
+) -> PanelDebugLogConfig:
+    cfg = (debug_log_cfg or load_debug_log_config(base_dir)).normalized()
+    if persist:
+        save_debug_log_config(base_dir, cfg)
+    return _configure_logging(app, base_dir, cfg)
+
+
+def _setup_error_handlers(app: Flask) -> None:
     from werkzeug.exceptions import HTTPException
     import traceback
 
@@ -883,10 +1077,11 @@ def _setup_error_handlers(app: Flask, debug: bool) -> None:
         except Exception:
             pass
         try:
+            verbose = bool(app.config.get("PANEL_DEBUG_LOG_VERBOSE", False))
             info = [
                 "=== Ошибка панели ===",
                 f"Local: {dt.datetime.now().isoformat()}",
-                f"Request: {_format_request_line(debug)}",
+                f"Request: {_format_request_line(verbose)}",
                 f"Remote: {request.remote_addr}",
                 f"User-Agent: {request.headers.get('User-Agent', '')}" ,
                 f"Exception: {repr(exc)}",
@@ -896,7 +1091,17 @@ def _setup_error_handlers(app: Flask, debug: bool) -> None:
             _append_panel_log(base_dir, "\n".join(info))
         except Exception:
             pass
-        return ("Внутренняя ошибка сервера. Подробности записаны в log/panel.log", 500)
+        log_hint = app.config.get("PANEL_DEBUG_LOG_PATH")
+        if not log_hint and base_dir:
+            try:
+                log_hint = str(get_panel_log_path(base_dir))
+            except Exception:
+                log_hint = ""
+        try:
+            log_hint = str(Path(log_hint)) if log_hint else "log/panel_debug.log"
+        except Exception:
+            log_hint = "log/panel_debug.log"
+        return (f"Внутренняя ошибка сервера. Подробности записаны в {log_hint}", 500)
 
 
 def _pick_onefile_dir(path: Path) -> Path | None:
@@ -1353,6 +1558,9 @@ def create_app(base_dir: str, start_scheduler: bool = True) -> Tuple[Flask, Any,
         cached = _APP_CACHE.get(cache_key)
     if cached:
         app, appbuilder, context = cached
+        debug_log_cfg = load_debug_log_config(base_dir)
+        applied_debug_cfg = apply_runtime_debug_logging(app, base_dir, debug_log_cfg)
+        context["debug_log_config"] = applied_debug_cfg
         if start_scheduler and not context.get("scheduler"):
             cfg = context.get("config") or load_config(base_dir)
             try:
@@ -1366,8 +1574,9 @@ def create_app(base_dir: str, start_scheduler: bool = True) -> Tuple[Flask, Any,
         return app, appbuilder, context
 
     cfg = load_config(base_dir)
+    debug_log_cfg = load_debug_log_config(base_dir)
 
-    _ensure_panel_logger(base_dir, cfg.debug)
+    _ensure_panel_logger(base_dir, debug_log_cfg)
 
     _append_panel_log(base_dir, f"[INIT] base_dir={base_dir}")
     _append_panel_log(base_dir, f"[INIT] db_path={get_db_path(base_dir)}")
@@ -1487,15 +1696,16 @@ def create_app(base_dir: str, start_scheduler: bool = True) -> Tuple[Flask, Any,
         try:
             _ensure_db_tables(app)
             from .models.internal_messenger import ensure_internal_messenger_schema
+            from .models.remote_access import ensure_remote_access_schema
             from .models.user_notification_state import ensure_user_notification_state_schema
 
             ensure_internal_messenger_schema()
             ensure_user_notification_state_schema()
+            ensure_remote_access_schema()
         except Exception as exc:
             _append_panel_log(base_dir, f"[ERROR] Ошибка создания таблиц: {repr(exc)}")
             raise
 
-        generated_password = _setup_admin(appbuilder, cfg)
         save_config(base_dir, cfg)
         _setup_roles(appbuilder)
 
@@ -1505,20 +1715,34 @@ def create_app(base_dir: str, start_scheduler: bool = True) -> Tuple[Flask, Any,
             register_plugins(appbuilder, app, base_dir, resource_root)
         except Exception as exc:
             _append_panel_log(base_dir, f"[WARN] Не удалось загрузить расширения: {repr(exc)}")
-
-    log_path = get_panel_log_path(base_dir)
-    if not log_path.exists():
         try:
-            _ensure_log_file(log_path)
-        except Exception:
-            pass
+            # После регистрации расширений появляются новые PermissionView.
+            # Повторная синхронизация гарантирует полный доступ роли Super Admin.
+            _setup_roles(appbuilder)
+        except Exception as exc:
+            _append_panel_log(base_dir, f"[WARN] Не удалось повторно синхронизировать роли: {repr(exc)}")
 
     _setup_routes(app, cfg)
-    _configure_logging(app, base_dir, cfg.debug)
-    _setup_request_logging(app, cfg.debug)
+    debug_log_cfg = apply_runtime_debug_logging(app, base_dir, debug_log_cfg)
+    _setup_request_logging(app)
+    try:
+        from .remote_control import (
+            register_inbound_proxy_auth,
+        )
+
+        register_inbound_proxy_auth(app)
+    except Exception as exc:
+        _append_panel_log(base_dir, f"[WARN] Failed to initialize inbound remote proxy auth: {repr(exc)}")
     _setup_session_restart_guard(app)
+    try:
+        from .remote_control import register_outbound_proxy, register_template_context
+
+        register_outbound_proxy(app)
+        register_template_context(app)
+    except Exception as exc:
+        _append_panel_log(base_dir, f"[WARN] Failed to initialize remote proxy bridge: {repr(exc)}")
     _setup_message_notifications(app)
-    _setup_error_handlers(app, cfg.debug)
+    _setup_error_handlers(app)
 
     scheduler = None
     last_metrics_at = None
@@ -1529,7 +1753,7 @@ def create_app(base_dir: str, start_scheduler: bool = True) -> Tuple[Flask, Any,
 
     context = {
         "config": cfg,
-        "generated_password": generated_password,
+        "debug_log_config": debug_log_cfg,
         "scheduler": scheduler,
         "last_metrics_at": last_metrics_at,
     }

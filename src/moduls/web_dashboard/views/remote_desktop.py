@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import secrets
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -37,6 +39,13 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     pyautogui = None
 
+try:
+    import ctypes
+    from ctypes import wintypes
+except Exception:  # pragma: no cover - optional dependency
+    ctypes = None
+    wintypes = None
+
 
 _MAX_FPS = 30
 _MIN_FPS = 1
@@ -58,6 +67,117 @@ _STREAM_STATE_LOCK = threading.Lock()
 _STREAM_STATES: dict[str, dict[str, Any]] = {}
 _RD_LOG_FIELD_MAX_LEN = 1200
 _MJPEG_BOUNDARY_PREFIX = "rdframe"
+_WINDOWS_INPUT_KEYBOARD = 1
+_WINDOWS_KEYEVENTF_KEYUP = 0x0002
+_WINDOWS_KEYEVENTF_UNICODE = 0x0004
+_KEYBOARD_RELEASE_KEYS = ("shift", "ctrl", "alt", "winleft", "winright")
+
+_KEY_ALIASES = {
+    "control": "ctrl",
+    "ctl": "ctrl",
+    "escape": "esc",
+    "esc": "esc",
+    "return": "enter",
+    "enter": "enter",
+    "del": "delete",
+    "delete": "delete",
+    "ins": "insert",
+    "pgup": "pageup",
+    "pgdn": "pagedown",
+    "prtsc": "printscreen",
+    "arrowup": "up",
+    "arrowdown": "down",
+    "arrowleft": "left",
+    "arrowright": "right",
+    "cmd": "winleft",
+    "command": "winleft",
+    "meta": "winleft",
+    "win": "winleft",
+    "windows": "winleft",
+    "super": "winleft",
+    "option": "alt",
+}
+
+_WIN_VK_KEYS = {
+    "backspace": 0x08,
+    "tab": 0x09,
+    "enter": 0x0D,
+    "shift": 0x10,
+    "ctrl": 0x11,
+    "alt": 0x12,
+    "pause": 0x13,
+    "capslock": 0x14,
+    "esc": 0x1B,
+    "space": 0x20,
+    "pageup": 0x21,
+    "pagedown": 0x22,
+    "end": 0x23,
+    "home": 0x24,
+    "left": 0x25,
+    "up": 0x26,
+    "right": 0x27,
+    "down": 0x28,
+    "printscreen": 0x2C,
+    "insert": 0x2D,
+    "delete": 0x2E,
+    "winleft": 0x5B,
+    "winright": 0x5C,
+    "apps": 0x5D,
+    "numlock": 0x90,
+    "scrolllock": 0x91,
+}
+
+_WIN_CHAR_KEYMAP: dict[str, tuple[int, tuple[str, ...]]] = {
+    ",": (0xBC, ()),
+    "<": (0xBC, ("shift",)),
+    "-": (0xBD, ()),
+    "_": (0xBD, ("shift",)),
+    ".": (0xBE, ()),
+    ">": (0xBE, ("shift",)),
+    "/": (0xBF, ()),
+    "?": (0xBF, ("shift",)),
+    "`": (0xC0, ()),
+    "~": (0xC0, ("shift",)),
+    ";": (0xBA, ()),
+    ":": (0xBA, ("shift",)),
+    "=": (0xBB, ()),
+    "+": (0xBB, ("shift",)),
+    "[": (0xDB, ()),
+    "{": (0xDB, ("shift",)),
+    "\\": (0xDC, ()),
+    "|": (0xDC, ("shift",)),
+    "]": (0xDD, ()),
+    "}": (0xDD, ("shift",)),
+    "'": (0xDE, ()),
+    '"': (0xDE, ("shift",)),
+    "!": (0x31, ("shift",)),
+    "@": (0x32, ("shift",)),
+    "#": (0x33, ("shift",)),
+    "$": (0x34, ("shift",)),
+    "%": (0x35, ("shift",)),
+    "^": (0x36, ("shift",)),
+    "&": (0x37, ("shift",)),
+    "*": (0x38, ("shift",)),
+    "(": (0x39, ("shift",)),
+    ")": (0x30, ("shift",)),
+}
+
+_WINDOWS_USER32 = None
+_WINDOWS_VK_KEYSCAN = None
+_WINDOWS_SENDINPUT = None
+_WINDOWS_SENDSAS = None
+_WINDOWS_KERNEL32 = None
+_WINDOWS_PROCESSIDTOSESSIONID = None
+_WINDOWS_WTSGETACTIVECONSOLESESSIONID = None
+_WINDOWS_OPENINPUTDESKTOP = None
+_WINDOWS_GETUSEROBJECTINFORMATION = None
+_WINDOWS_CLOSEDESKTOP = None
+_WINDOWS_LOCKWORKSTATION = None
+_WINDOWS_INPUT_STRUCT = None
+_WINDOWS_KEYBDINPUT_STRUCT = None
+_WINDOWS_UOI_NAME = 2
+_WINDOWS_DESKTOP_READOBJECTS = 0x0001
+_SECURE_ATTENTION_CONFIRM_TIMEOUT_SEC = 1.5
 
 _RD_LOGGER = logging.getLogger("panel.remote_desktop")
 _RD_LOGGER.addHandler(logging.NullHandler())
@@ -85,6 +205,131 @@ if pyautogui:
         pyautogui.PAUSE = 0
     except Exception:
         pass
+
+if os.name == "nt" and ctypes and wintypes:
+    try:
+        _WINDOWS_USER32 = ctypes.WinDLL("user32", use_last_error=True)
+        _WINDOWS_VK_KEYSCAN = _WINDOWS_USER32.VkKeyScanW
+        _WINDOWS_VK_KEYSCAN.argtypes = [wintypes.WCHAR]
+        _WINDOWS_VK_KEYSCAN.restype = ctypes.c_short
+
+        _WINDOWS_SENDINPUT = _WINDOWS_USER32.SendInput
+        _WINDOWS_SENDINPUT.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+        _WINDOWS_SENDINPUT.restype = wintypes.UINT
+
+        try:
+            _windows_sas = ctypes.WinDLL("sas", use_last_error=True)
+            _WINDOWS_SENDSAS = _windows_sas.SendSAS
+            _WINDOWS_SENDSAS.argtypes = [wintypes.BOOL]
+            _WINDOWS_SENDSAS.restype = None
+        except Exception:
+            _WINDOWS_SENDSAS = None
+
+        try:
+            _WINDOWS_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            _WINDOWS_PROCESSIDTOSESSIONID = _WINDOWS_KERNEL32.ProcessIdToSessionId
+            _WINDOWS_PROCESSIDTOSESSIONID.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+            _WINDOWS_PROCESSIDTOSESSIONID.restype = wintypes.BOOL
+            _WINDOWS_WTSGETACTIVECONSOLESESSIONID = _WINDOWS_KERNEL32.WTSGetActiveConsoleSessionId
+            _WINDOWS_WTSGETACTIVECONSOLESESSIONID.argtypes = []
+            _WINDOWS_WTSGETACTIVECONSOLESESSIONID.restype = wintypes.DWORD
+        except Exception:
+            _WINDOWS_KERNEL32 = None
+            _WINDOWS_PROCESSIDTOSESSIONID = None
+            _WINDOWS_WTSGETACTIVECONSOLESESSIONID = None
+
+        try:
+            _WINDOWS_OPENINPUTDESKTOP = _WINDOWS_USER32.OpenInputDesktop
+            _WINDOWS_OPENINPUTDESKTOP.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            _WINDOWS_OPENINPUTDESKTOP.restype = wintypes.HANDLE
+
+            _WINDOWS_GETUSEROBJECTINFORMATION = _WINDOWS_USER32.GetUserObjectInformationW
+            _WINDOWS_GETUSEROBJECTINFORMATION.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            _WINDOWS_GETUSEROBJECTINFORMATION.restype = wintypes.BOOL
+
+            _WINDOWS_CLOSEDESKTOP = _WINDOWS_USER32.CloseDesktop
+            _WINDOWS_CLOSEDESKTOP.argtypes = [wintypes.HANDLE]
+            _WINDOWS_CLOSEDESKTOP.restype = wintypes.BOOL
+        except Exception:
+            _WINDOWS_OPENINPUTDESKTOP = None
+            _WINDOWS_GETUSEROBJECTINFORMATION = None
+            _WINDOWS_CLOSEDESKTOP = None
+
+        try:
+            _WINDOWS_LOCKWORKSTATION = _WINDOWS_USER32.LockWorkStation
+            _WINDOWS_LOCKWORKSTATION.argtypes = []
+            _WINDOWS_LOCKWORKSTATION.restype = wintypes.BOOL
+        except Exception:
+            _WINDOWS_LOCKWORKSTATION = None
+
+        _ULONG_PTR = getattr(
+            wintypes,
+            "ULONG_PTR",
+            ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong,
+        )
+
+        class _WinMouseInput(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", _ULONG_PTR),
+            ]
+
+        class _WinKeyboardInput(ctypes.Structure):
+            _fields_ = [
+                ("wVk", wintypes.WORD),
+                ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", _ULONG_PTR),
+            ]
+
+        class _WinHardwareInput(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        class _WinInputUnion(ctypes.Union):
+            _fields_ = [
+                ("mi", _WinMouseInput),
+                ("ki", _WinKeyboardInput),
+                ("hi", _WinHardwareInput),
+            ]
+
+        class _WinInput(ctypes.Structure):
+            _anonymous_ = ("union",)
+            _fields_ = [
+                ("type", wintypes.DWORD),
+                ("union", _WinInputUnion),
+            ]
+
+        _WINDOWS_INPUT_STRUCT = _WinInput
+        _WINDOWS_KEYBDINPUT_STRUCT = _WinKeyboardInput
+    except Exception:
+        _WINDOWS_USER32 = None
+        _WINDOWS_VK_KEYSCAN = None
+        _WINDOWS_SENDINPUT = None
+        _WINDOWS_SENDSAS = None
+        _WINDOWS_KERNEL32 = None
+        _WINDOWS_PROCESSIDTOSESSIONID = None
+        _WINDOWS_WTSGETACTIVECONSOLESESSIONID = None
+        _WINDOWS_OPENINPUTDESKTOP = None
+        _WINDOWS_GETUSEROBJECTINFORMATION = None
+        _WINDOWS_CLOSEDESKTOP = None
+        _WINDOWS_LOCKWORKSTATION = None
+        _WINDOWS_INPUT_STRUCT = None
+        _WINDOWS_KEYBDINPUT_STRUCT = None
 
 
 def _audit(action: str, target: str = "", result: str = "ok", details: str = "") -> None:
@@ -410,29 +655,578 @@ def _normalize_key(value: str | None) -> Optional[str]:
     if not value:
         return None
     key = value.strip().lower()
-    alias_map = {
-        "control": "ctrl",
-        "ctl": "ctrl",
-        "escape": "esc",
-        "esc": "esc",
-        "return": "enter",
-        "enter": "enter",
-        "del": "delete",
-        "delete": "delete",
-        "cmd": "winleft",
-        "command": "winleft",
-        "meta": "winleft",
-        "win": "winleft",
-        "super": "winleft",
-        "option": "alt",
-    }
-    key = alias_map.get(key, key)
-    if pyautogui and hasattr(pyautogui, "KEYBOARD_KEYS"):
-        if key in pyautogui.KEYBOARD_KEYS:
-            return key
+    key = _KEY_ALIASES.get(key, key)
+    if _is_pyautogui_key_supported(key):
+        return key
+    if _resolve_windows_key_token(key):
+        return key
     if len(key) == 1:
         return key
     return None
+
+
+def _is_pyautogui_key_supported(key: str) -> bool:
+    if not pyautogui:
+        return False
+    token = str(key or "").strip().lower()
+    if not token:
+        return False
+
+    platform_module = getattr(pyautogui, "platformModule", None)
+    keyboard_mapping = getattr(platform_module, "keyboardMapping", None)
+    if isinstance(keyboard_mapping, dict):
+        mapped = keyboard_mapping.get(token)
+        if mapped is None or mapped == -1:
+            return False
+        return True
+
+    if hasattr(pyautogui, "KEYBOARD_KEYS"):
+        try:
+            return token in pyautogui.KEYBOARD_KEYS
+        except Exception:
+            return False
+    return False
+
+
+def _windows_keyboard_backend_ready() -> bool:
+    return bool(
+        os.name == "nt"
+        and ctypes
+        and _WINDOWS_SENDINPUT
+        and _WINDOWS_INPUT_STRUCT
+        and _WINDOWS_KEYBDINPUT_STRUCT
+    )
+
+
+def _windows_secure_attention_backend_ready() -> bool:
+    return bool(os.name == "nt" and ctypes and _WINDOWS_SENDSAS)
+
+
+def _windows_session_probe_ready() -> bool:
+    return bool(
+        os.name == "nt"
+        and ctypes
+        and wintypes
+        and _WINDOWS_PROCESSIDTOSESSIONID
+        and _WINDOWS_WTSGETACTIVECONSOLESESSIONID
+    )
+
+
+def _windows_desktop_probe_ready() -> bool:
+    return bool(
+        os.name == "nt"
+        and ctypes
+        and wintypes
+        and _WINDOWS_OPENINPUTDESKTOP
+        and _WINDOWS_GETUSEROBJECTINFORMATION
+        and _WINDOWS_CLOSEDESKTOP
+    )
+
+
+def _get_windows_session_context() -> tuple[Optional[int], Optional[int], str]:
+    if not _windows_session_probe_ready():
+        return None, None, "Session API недоступен."
+    if not ctypes or not wintypes:
+        return None, None, "ctypes/wintypes недоступен."
+    try:
+        process_session = wintypes.DWORD(0)
+        ctypes.set_last_error(0)
+        ok = _WINDOWS_PROCESSIDTOSESSIONID(
+            wintypes.DWORD(int(os.getpid())),
+            ctypes.byref(process_session),
+        )
+        if not ok:
+            return None, None, f"ProcessIdToSessionId WinError={ctypes.get_last_error()}."
+
+        active_session = int(_WINDOWS_WTSGETACTIVECONSOLESESSIONID())
+        if active_session == 0xFFFFFFFF:
+            return int(process_session.value), None, "Активная консольная сессия не определена."
+        return int(process_session.value), active_session, ""
+    except Exception as exc:
+        return None, None, f"Ошибка определения сессии: {exc}"
+
+
+def _get_input_desktop_name() -> tuple[Optional[str], str]:
+    if not _windows_desktop_probe_ready():
+        return None, "Desktop API недоступен."
+    if not ctypes or not wintypes:
+        return None, "ctypes/wintypes недоступен."
+
+    try:
+        ctypes.set_last_error(0)
+        h_desktop = _WINDOWS_OPENINPUTDESKTOP(0, False, _WINDOWS_DESKTOP_READOBJECTS)
+    except Exception as exc:
+        return None, f"OpenInputDesktop exception: {exc}"
+
+    if not h_desktop:
+        return None, f"OpenInputDesktop WinError={ctypes.get_last_error()}."
+
+    try:
+        needed = wintypes.DWORD(0)
+        try:
+            _WINDOWS_GETUSEROBJECTINFORMATION(
+                h_desktop,
+                _WINDOWS_UOI_NAME,
+                None,
+                0,
+                ctypes.byref(needed),
+            )
+        except Exception:
+            pass
+
+        byte_len = int(needed.value)
+        if byte_len <= 0:
+            byte_len = 512
+        char_len = max(2, int(byte_len / ctypes.sizeof(wintypes.WCHAR)))
+        buffer = ctypes.create_unicode_buffer(char_len)
+        needed = wintypes.DWORD(0)
+        ctypes.set_last_error(0)
+        ok = _WINDOWS_GETUSEROBJECTINFORMATION(
+            h_desktop,
+            _WINDOWS_UOI_NAME,
+            buffer,
+            wintypes.DWORD(ctypes.sizeof(buffer)),
+            ctypes.byref(needed),
+        )
+        if not ok:
+            return None, f"GetUserObjectInformation WinError={ctypes.get_last_error()}."
+        return str(buffer.value or "").strip(), ""
+    finally:
+        try:
+            _WINDOWS_CLOSEDESKTOP(h_desktop)
+        except Exception:
+            pass
+
+
+def _confirm_secure_attention_transition(
+    desktop_before: str | None,
+    timeout_sec: float = _SECURE_ATTENTION_CONFIRM_TIMEOUT_SEC,
+) -> tuple[bool, str]:
+    normalized_before = str(desktop_before or "").strip().lower()
+    deadline = time.time() + max(0.3, float(timeout_sec))
+    observed = normalized_before
+    probe_error = ""
+
+    while time.time() <= deadline:
+        current_desktop, current_error = _get_input_desktop_name()
+        normalized_current = str(current_desktop or "").strip().lower()
+        if normalized_current:
+            observed = normalized_current
+            if normalized_current == "winlogon":
+                return True, "desktop=winlogon"
+            if normalized_before and normalized_current != normalized_before:
+                return True, f"desktop_changed:{normalized_before}->{normalized_current}"
+        if current_error:
+            probe_error = current_error
+        time.sleep(0.12)
+
+    details = f"desktop={observed or 'unknown'}"
+    if probe_error:
+        details = f"{details}; probe_error={probe_error}"
+    return False, details
+
+
+def _secure_attention_policy_hint() -> str:
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+    except Exception:
+        return ""
+
+    key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as reg_key:
+            value, _ = winreg.QueryValueEx(reg_key, "SoftwareSASGeneration")
+    except FileNotFoundError:
+        return (
+            "SoftwareSASGeneration не задан: по умолчанию SAS разрешен только "
+            "для Ease of Access на защищенном рабочем столе."
+        )
+    except Exception as exc:
+        return f"Не удалось прочитать SoftwareSASGeneration: {exc}"
+
+    try:
+        number = int(value)
+    except Exception:
+        return f"Некорректное значение SoftwareSASGeneration: {value!r}"
+
+    labels = {
+        0: "None",
+        1: "Services",
+        2: "Ease of Access applications",
+        3: "Services and Ease of Access applications",
+    }
+    return f"SoftwareSASGeneration={number} ({labels.get(number, 'unknown')})."
+
+
+def _send_windows_secure_attention() -> tuple[bool, str]:
+    if not _windows_secure_attention_backend_ready():
+        return False, "Windows SAS API недоступен."
+    if not ctypes:
+        return False, "ctypes недоступен."
+
+    errors: list[str] = []
+    for as_user in (True, False):
+        try:
+            ctypes.set_last_error(0)
+            _WINDOWS_SENDSAS(bool(as_user))
+            win_error = int(ctypes.get_last_error())
+            if win_error == 0:
+                return True, ""
+            errors.append(f"SendSAS(as_user={int(as_user)}) WinError={win_error}")
+        except Exception as exc:
+            errors.append(f"SendSAS(as_user={int(as_user)}): {exc}")
+    return False, "; ".join(errors) if errors else "SendSAS не выполнился."
+
+
+def _send_windows_security_via_shell() -> tuple[bool, str]:
+    if os.name != "nt":
+        return False, "Shell.WindowsSecurity поддерживается только на Windows."
+
+    script = "$ErrorActionPreference='Stop'; $s = New-Object -ComObject Shell.Application; $s.WindowsSecurity()"
+    ps_candidates: list[str] = []
+    system_root = str(os.environ.get("SystemRoot") or r"C:\Windows")
+    ps_path = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if ps_path.exists():
+        ps_candidates.append(str(ps_path))
+    ps_candidates.append("powershell")
+
+    errors: list[str] = []
+    for executable in ps_candidates:
+        try:
+            completed = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            errors.append(f"{executable}: {exc}")
+            continue
+
+        if int(completed.returncode) == 0:
+            return True, ""
+        stderr_text = str(completed.stderr or "").strip().replace("\r", " ").replace("\n", " ")
+        errors.append(
+            f"{executable}: rc={completed.returncode}"
+            + (f" stderr={stderr_text}" if stderr_text else "")
+        )
+
+    return False, "; ".join(errors) if errors else "WindowsSecurity не выполнился."
+
+
+def _send_windows_lock_workstation() -> tuple[bool, str]:
+    if os.name != "nt":
+        return False, "LockWorkStation поддерживается только на Windows."
+    if not ctypes:
+        return False, "ctypes недоступен."
+    if not _WINDOWS_LOCKWORKSTATION:
+        return False, "WinAPI LockWorkStation недоступен."
+    try:
+        ctypes.set_last_error(0)
+        ok = bool(_WINDOWS_LOCKWORKSTATION())
+        if ok:
+            return True, ""
+        return False, f"LockWorkStation WinError={ctypes.get_last_error()}."
+    except Exception as exc:
+        return False, f"LockWorkStation exception: {exc}"
+
+
+def _resolve_windows_key_token(token: str) -> tuple[int, tuple[int, ...]] | None:
+    normalized = str(token or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in _WIN_VK_KEYS:
+        return _WIN_VK_KEYS[normalized], ()
+
+    fn_match = re.fullmatch(r"f([1-9]|1[0-9]|2[0-4])", normalized)
+    if fn_match:
+        return 0x6F + int(fn_match.group(1)), ()
+
+    if len(normalized) == 1:
+        char = normalized
+        if "a" <= char <= "z":
+            return ord(char.upper()), ()
+        if "0" <= char <= "9":
+            return ord(char), ()
+
+        mapped = _WIN_CHAR_KEYMAP.get(char)
+        if mapped:
+            vk_code, implicit_names = mapped
+            implicit_vks = tuple(_WIN_VK_KEYS[name] for name in implicit_names if name in _WIN_VK_KEYS)
+            return vk_code, implicit_vks
+
+        if _WINDOWS_VK_KEYSCAN:
+            try:
+                vk_state = int(_WINDOWS_VK_KEYSCAN(char))
+            except Exception:
+                vk_state = -1
+            if vk_state != -1:
+                vk_code = vk_state & 0xFF
+                modifiers = (vk_state >> 8) & 0xFF
+                implicit_vks: list[int] = []
+                if modifiers & 1:
+                    implicit_vks.append(_WIN_VK_KEYS["shift"])
+                if modifiers & 2:
+                    implicit_vks.append(_WIN_VK_KEYS["ctrl"])
+                if modifiers & 4:
+                    implicit_vks.append(_WIN_VK_KEYS["alt"])
+                if vk_code:
+                    return vk_code, tuple(implicit_vks)
+    return None
+
+
+def _send_windows_key_event(
+    vk_code: int,
+    *,
+    key_up: bool = False,
+    scan_code: int = 0,
+    unicode_mode: bool = False,
+) -> tuple[bool, str]:
+    if not _windows_keyboard_backend_ready():
+        return False, "Windows API для клавиатуры недоступен."
+    if not ctypes:
+        return False, "ctypes недоступен."
+
+    flags = _WINDOWS_KEYEVENTF_KEYUP if key_up else 0
+    if unicode_mode:
+        flags |= _WINDOWS_KEYEVENTF_UNICODE
+        vk_code = 0
+
+    input_obj = _WINDOWS_INPUT_STRUCT()
+    input_obj.type = _WINDOWS_INPUT_KEYBOARD
+    input_obj.ki = _WINDOWS_KEYBDINPUT_STRUCT(
+        wVk=vk_code,
+        wScan=scan_code,
+        dwFlags=flags,
+        time=0,
+        dwExtraInfo=0,
+    )
+
+    ctypes.set_last_error(0)
+    sent = int(_WINDOWS_SENDINPUT(1, ctypes.byref(input_obj), ctypes.sizeof(_WINDOWS_INPUT_STRUCT)))
+    if sent != 1:
+        return False, f"SendInput вернул {sent}, WinError={ctypes.get_last_error()}."
+    return True, ""
+
+
+def _send_windows_key_transition(key: str, key_up: bool) -> tuple[bool, str]:
+    resolved = _resolve_windows_key_token(key)
+    if not resolved:
+        return False, f"Клавиша '{key}' не поддерживается Windows API."
+    vk_code, _implicit_modifiers = resolved
+    return _send_windows_key_event(vk_code, key_up=key_up)
+
+
+def _send_hotkey_windows(keys: list[str]) -> tuple[bool, str]:
+    if not _windows_keyboard_backend_ready():
+        return False, "Windows API для hotkey недоступен."
+    if not keys:
+        return False, "Для hotkey не указаны клавиши."
+
+    pressed: list[int] = []
+    pressed_set: set[int] = set()
+
+    def _press_vk(vk_code: int) -> tuple[bool, str]:
+        if vk_code in pressed_set:
+            return True, ""
+        ok_press, message_press = _send_windows_key_event(vk_code, key_up=False)
+        if not ok_press:
+            return False, message_press
+        pressed.append(vk_code)
+        pressed_set.add(vk_code)
+        return True, ""
+
+    try:
+        for raw_key in keys:
+            resolved = _resolve_windows_key_token(raw_key)
+            if not resolved:
+                return False, f"Клавиша '{raw_key}' не поддерживается Windows API."
+            vk_code, implicit_modifiers = resolved
+            for modifier_vk in implicit_modifiers:
+                ok_modifier, message_modifier = _press_vk(modifier_vk)
+                if not ok_modifier:
+                    return False, f"Не удалось зажать модификатор для '{raw_key}': {message_modifier}"
+            ok_down, message_down = _press_vk(vk_code)
+            if not ok_down:
+                return False, f"Не удалось нажать '{raw_key}': {message_down}"
+    finally:
+        for vk_code in reversed(pressed):
+            _send_windows_key_event(vk_code, key_up=True)
+    return True, ""
+
+
+def _send_key_transition_with_fallback(key: str, key_up: bool) -> str:
+    ok_windows, message_windows = _send_windows_key_transition(key, key_up=key_up)
+    if ok_windows:
+        return "windows_api"
+
+    pyautogui_error = ""
+    if pyautogui:
+        try:
+            if key_up:
+                pyautogui.keyUp(key)
+            else:
+                pyautogui.keyDown(key)
+            return "pyautogui"
+        except Exception as exc:
+            pyautogui_error = str(exc)
+
+    message = message_windows or "Не удалось отправить клавишу."
+    if pyautogui_error:
+        message = f"{message} (ошибка pyautogui: {pyautogui_error})"
+    raise RuntimeError(message)
+
+
+def _send_hotkey_with_fallback(keys: list[str]) -> str:
+    ok_windows, message_windows = _send_hotkey_windows(keys)
+    if ok_windows:
+        return "windows_api"
+
+    if pyautogui:
+        pyautogui.hotkey(*keys)
+        return "pyautogui"
+    raise RuntimeError(message_windows or "Не удалось отправить hotkey.")
+
+
+def _release_keyboard_state() -> tuple[list[str], list[str]]:
+    released: list[str] = []
+    errors: list[str] = []
+    for token in _KEYBOARD_RELEASE_KEYS:
+        released_one = False
+        if pyautogui:
+            try:
+                pyautogui.keyUp(token)
+                released_one = True
+            except Exception:
+                pass
+        if not released_one and _windows_keyboard_backend_ready():
+            ok_release, message_release = _send_windows_key_transition(token, key_up=True)
+            if ok_release:
+                released_one = True
+            elif message_release:
+                errors.append(f"{token}: {message_release}")
+        if released_one:
+            released.append(token)
+    return released, errors
+
+
+def _is_secure_attention_hotkey(keys: list[str]) -> bool:
+    signature = tuple(sorted(str(item).strip().lower() for item in keys if item))
+    return signature == ("alt", "ctrl", "delete")
+
+
+def _send_secure_attention_hotkey(keys: list[str]) -> tuple[str, str]:
+    if os.name != "nt":
+        backend = _send_hotkey_with_fallback(keys)
+        return backend, "Комбинация Ctrl + Alt + Del отправлена."
+
+    session_process, session_active, session_diag = _get_windows_session_context()
+    desktop_before, desktop_diag = _get_input_desktop_name()
+    attempts: list[str] = []
+
+    def _with_confirmation(method_label: str) -> tuple[bool, str]:
+        ok_confirm, confirm_details = _confirm_secure_attention_transition(desktop_before)
+        if ok_confirm:
+            context = [method_label, confirm_details]
+            if session_process is not None and session_active is not None:
+                context.append(f"session={session_process}/{session_active}")
+            return True, f"Ctrl + Alt + Del подтвержден ({'; '.join(context)})."
+        attempts.append(f"{method_label}: {confirm_details}")
+        return False, ""
+
+    ok_sas, sas_error = _send_windows_secure_attention()
+    if ok_sas:
+        ok_confirm, confirm_message = _with_confirmation("SendSAS")
+        if ok_confirm:
+            return "windows_sas", confirm_message
+    else:
+        attempts.append(f"SendSAS error: {sas_error}")
+
+    ok_shell, shell_error = _send_windows_security_via_shell()
+    if ok_shell:
+        ok_confirm, confirm_message = _with_confirmation("Shell.WindowsSecurity")
+        if ok_confirm:
+            return "windows_shell_security", confirm_message
+    else:
+        attempts.append(f"Shell.WindowsSecurity error: {shell_error}")
+
+    try:
+        fallback_backend = _send_hotkey_with_fallback(keys)
+        ok_confirm, confirm_message = _with_confirmation("hotkey_fallback_ctrl_alt_del")
+        if ok_confirm:
+            return fallback_backend, confirm_message
+    except Exception as exc:
+        attempts.append(f"hotkey_fallback_ctrl_alt_del error: {exc}")
+
+    ok_lock_api, lock_api_error = _send_windows_lock_workstation()
+    if ok_lock_api:
+        ok_confirm, confirm_details = _confirm_secure_attention_transition(desktop_before)
+        if ok_confirm:
+            context = ["LockWorkStation fallback", confirm_details]
+            if session_process is not None and session_active is not None:
+                context.append(f"session={session_process}/{session_active}")
+            return (
+                "windows_lock_workstation",
+                "Ctrl + Alt + Del недоступен в текущем контексте, выполнена блокировка компьютера "
+                f"({'; '.join(context)}).",
+            )
+        attempts.append(f"LockWorkStation fallback: {confirm_details}")
+    else:
+        attempts.append(f"LockWorkStation error: {lock_api_error}")
+
+    try:
+        win_l_backend = _send_hotkey_with_fallback(["winleft", "l"])
+        ok_confirm, confirm_details = _confirm_secure_attention_transition(desktop_before)
+        if ok_confirm:
+            context = ["Win+L fallback", confirm_details]
+            if session_process is not None and session_active is not None:
+                context.append(f"session={session_process}/{session_active}")
+            return (
+                win_l_backend,
+                "Ctrl + Alt + Del недоступен в текущем контексте, выполнена блокировка компьютера "
+                f"через Win + L ({'; '.join(context)}).",
+            )
+        attempts.append(f"Win+L fallback: {confirm_details}")
+    except Exception as exc:
+        attempts.append(f"Win+L fallback error: {exc}")
+
+    if (
+        not session_diag
+        and session_process is not None
+        and session_active is not None
+        and session_process != session_active
+    ):
+        session_diag = (
+            f"Процесс работает в сессии {session_process}, "
+            f"активная консольная сессия {session_active}."
+        )
+
+    policy_hint = _secure_attention_policy_hint()
+    details = " | ".join(item for item in attempts if item).strip()
+    if len(details) > 900:
+        details = details[:900] + "...(truncated)"
+
+    parts = [
+        "Ctrl + Alt + Del не подтвержден, и fallback блокировки тоже не сработал: "
+        "защищенный рабочий стол не активировался."
+    ]
+    if desktop_diag:
+        parts.append(f"Desktop API: {desktop_diag}")
+    if session_diag:
+        parts.append(session_diag)
+    if policy_hint:
+        parts.append(policy_hint)
+    if details:
+        parts.append(f"Попытки: {details}")
+    parts.append(
+        "Проверьте политику «Disable or enable software Secure Attention Sequence» "
+        "и запуск панели в подходящем контексте (service/uiAccess)."
+    )
+    raise RuntimeError(" ".join(parts))
 
 
 def _type_text(text: str) -> None:
@@ -945,8 +1739,6 @@ class RemoteDesktopView(BaseView):
     @has_access_api
     @permission_name("action")
     def input(self):
-        if not pyautogui:
-            return _json_error("Модуль управления вводом не доступен.", 503)
         if not _is_csrf_valid():
             return _json_error(_CSRF_FAILURE_MESSAGE, 403)
 
@@ -963,30 +1755,52 @@ class RemoteDesktopView(BaseView):
         x = _coerce_int(payload.get("x"))
         y = _coerce_int(payload.get("y"))
         button = _normalize_button(payload.get("button"))
+        keyboard_ok = bool(pyautogui or _windows_keyboard_backend_ready())
+        hotkey_ok = bool(
+            keyboard_ok
+            or _windows_secure_attention_backend_ready()
+            or _WINDOWS_LOCKWORKSTATION
+        )
+        backend = ""
+        message = ""
+
+        if action in {"mouse_move", "mouse_down", "mouse_up", "click", "double_click", "scroll"} and not pyautogui:
+            return _json_error("Модуль управления мышью не доступен.", 503)
+        if action in {"key_down", "key_up", "release_keys"} and not keyboard_ok:
+            return _json_error("Модуль управления клавиатурой не доступен.", 503)
+        if action == "hotkey" and not hotkey_ok:
+            return _json_error("Модуль hotkey не доступен.", 503)
+        if action == "text" and os.name != "nt" and not pyautogui:
+            return _json_error("Модуль ввода текста не доступен.", 503)
 
         try:
             if action == "mouse_move":
                 if x is None or y is None:
                     return _json_error("Некорректные координаты.", 400)
                 pyautogui.moveTo(x, y)
+                backend = "pyautogui"
             elif action == "mouse_down":
                 if x is not None and y is not None:
                     pyautogui.mouseDown(x=x, y=y, button=button)
                 else:
                     pyautogui.mouseDown(button=button)
+                backend = "pyautogui"
             elif action == "mouse_up":
                 if x is not None and y is not None:
                     pyautogui.mouseUp(x=x, y=y, button=button)
                 else:
                     pyautogui.mouseUp(button=button)
+                backend = "pyautogui"
             elif action == "click":
                 if x is None or y is None:
                     return _json_error("Некорректные координаты.", 400)
                 pyautogui.click(x=x, y=y, button=button)
+                backend = "pyautogui"
             elif action == "double_click":
                 if x is None or y is None:
                     return _json_error("Некорректные координаты.", 400)
                 pyautogui.doubleClick(x=x, y=y, button=button)
+                backend = "pyautogui"
             elif action == "scroll":
                 delta = _coerce_int(payload.get("delta_y"), 0) or 0
                 amount = int(-delta / 100 * 3)
@@ -999,16 +1813,17 @@ class RemoteDesktopView(BaseView):
                     if h_amount == 0:
                         h_amount = -1 if delta_x > 0 else 1
                     pyautogui.hscroll(h_amount, x=x, y=y)
+                backend = "pyautogui"
             elif action == "key_down":
                 key = _normalize_key(payload.get("key"))
                 if not key:
                     return _json_error("Неизвестная клавиша.", 400)
-                pyautogui.keyDown(key)
+                backend = _send_key_transition_with_fallback(key, key_up=False)
             elif action == "key_up":
                 key = _normalize_key(payload.get("key"))
                 if not key:
                     return _json_error("Неизвестная клавиша.", 400)
-                pyautogui.keyUp(key)
+                backend = _send_key_transition_with_fallback(key, key_up=True)
             elif action == "hotkey":
                 keys = payload.get("keys") or []
                 if not isinstance(keys, list):
@@ -1020,13 +1835,42 @@ class RemoteDesktopView(BaseView):
                         normalized.append(key)
                 if not normalized:
                     return _json_error("Некорректные клавиши хоткея.", 400)
-                pyautogui.hotkey(*normalized)
+                # Clean stale modifier state before explicit hotkey injection.
+                _release_keyboard_state()
+                if _is_secure_attention_hotkey(normalized):
+                    backend, message = _send_secure_attention_hotkey(normalized)
+                else:
+                    backend = _send_hotkey_with_fallback(normalized)
+                    message = "Комбинация клавиш отправлена."
             elif action == "text":
                 text = str(payload.get("text") or "")
                 _rd_log(logging.DEBUG, "input_text", length=len(text))
                 _type_text(text)
+                backend = "pyautogui" if pyautogui else "windows_api"
+                message = "Текст отправлен."
+            elif action == "release_keys":
+                released, release_errors = _release_keyboard_state()
+                _rd_log(
+                    logging.DEBUG,
+                    "input_release_keys",
+                    released=",".join(released),
+                    errors=" | ".join(release_errors),
+                )
+                return jsonify(
+                    {
+                        "ok": True,
+                        "action": action,
+                        "backend": "pyautogui" if pyautogui else "windows_api",
+                        "released": released,
+                        "errors": release_errors,
+                        "message": "Состояние клавиш сброшено.",
+                    }
+                )
             else:
                 return _json_error("Неизвестное действие.", 400)
+        except RuntimeError as exc:
+            _rd_log(logging.WARNING, "input_runtime_error", action=action, error=repr(exc))
+            return _json_error(str(exc), 500)
         except Exception as exc:
             _rd_log(logging.ERROR, "input_error", action=action, error=repr(exc))
             return _json_error(f"Ошибка выполнения: {exc}", 500)
@@ -1035,7 +1879,12 @@ class RemoteDesktopView(BaseView):
             _rd_log(logging.DEBUG, "input_action", action=action, x=x, y=y, button=button)
         elif action == "scroll":
             _rd_log(logging.DEBUG, "input_scroll", x=x, y=y, dx=payload.get("delta_x"), dy=payload.get("delta_y"))
-        return jsonify({"ok": True})
+        response = {"ok": True, "action": action}
+        if backend:
+            response["backend"] = backend
+        if message:
+            response["message"] = message
+        return jsonify(response)
 
     @expose("/clipboard", methods=["GET", "POST"])
     @has_access_api

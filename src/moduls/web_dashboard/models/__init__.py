@@ -8,6 +8,7 @@ from .internal_messenger import InternalChatThread, InternalChatState, InternalC
 from .user_notification_state import UserNotificationState
 from .power import PowerAction, PowerRecurringSchedule
 from .admin_broadcast import AdminBroadcast, AdminBroadcastDelivery, AdminLoginBanner
+from .remote_access import RemoteControlPolicy, RemoteControlRequest
 
 __all__ = [
     "Server",
@@ -25,4 +26,6 @@ __all__ = [
     "AdminBroadcast",
     "AdminBroadcastDelivery",
     "AdminLoginBanner",
+    "RemoteControlPolicy",
+    "RemoteControlRequest",
 ]

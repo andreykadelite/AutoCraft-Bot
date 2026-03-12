@@ -1,2 +1,1 @@
-"""Win TTS plugin package."""
-
+"""Пакет плагина Win TTS."""

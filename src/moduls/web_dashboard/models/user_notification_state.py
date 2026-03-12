@@ -15,6 +15,9 @@ class UserNotificationState(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=False, unique=True, index=True)
     system_last_read_audit_id = db.Column(db.Integer, nullable=False, default=0)
+    system_last_shown_audit_id = db.Column(db.Integer, nullable=False, default=0)
+    messenger_last_shown_message_id = db.Column(db.Integer, nullable=False, default=0)
+    communications_last_shown_message_id = db.Column(db.Integer, nullable=False, default=0)
     system_history_cleared_before_audit_id = db.Column(
         db.Integer,
         nullable=False,
@@ -42,6 +45,9 @@ def ensure_user_notification_state_schema() -> None:
         }
         required = {
             "system_last_read_audit_id": "INTEGER NOT NULL DEFAULT 0",
+            "system_last_shown_audit_id": "INTEGER NOT NULL DEFAULT 0",
+            "messenger_last_shown_message_id": "INTEGER NOT NULL DEFAULT 0",
+            "communications_last_shown_message_id": "INTEGER NOT NULL DEFAULT 0",
             "system_history_cleared_before_audit_id": "INTEGER NOT NULL DEFAULT 0",
             "updated_at": "DATETIME",
         }
@@ -71,6 +77,33 @@ def ensure_user_notification_state_schema() -> None:
                     UPDATE {UserNotificationState.__tablename__}
                     SET system_history_cleared_before_audit_id = 0
                     WHERE system_history_cleared_before_audit_id IS NULL
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    f"""
+                    UPDATE {UserNotificationState.__tablename__}
+                    SET system_last_shown_audit_id = 0
+                    WHERE system_last_shown_audit_id IS NULL
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    f"""
+                    UPDATE {UserNotificationState.__tablename__}
+                    SET messenger_last_shown_message_id = 0
+                    WHERE messenger_last_shown_message_id IS NULL
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    f"""
+                    UPDATE {UserNotificationState.__tablename__}
+                    SET communications_last_shown_message_id = 0
+                    WHERE communications_last_shown_message_id IS NULL
                     """
                 )
             )

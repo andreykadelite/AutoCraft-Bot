@@ -24,8 +24,10 @@ import platform
 import subprocess
 import traceback
 import re
+import datetime as dt
+import importlib
 from pathlib import Path
-from typing import Callable, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Optional, Tuple, TYPE_CHECKING
 
 import weakref
 
@@ -49,6 +51,31 @@ FUNCTIONS_ACCESSIBLE_DESCRIPTION = (
 
 # Подтверждение опасных действий: повторное нажатие в течение тайм-аута
 CONFIRM_TTL_SECONDS = 10
+
+_LHM_SYSTEM_INFO_MODULE: Any = None
+_LHM_SYSTEM_INFO_IMPORT_ERROR: Optional[Exception] = None
+
+
+def _get_lhm_system_info_module():
+    """Лениво импортирует backend мониторинга датчиков веб-панели."""
+    global _LHM_SYSTEM_INFO_MODULE, _LHM_SYSTEM_INFO_IMPORT_ERROR
+    if _LHM_SYSTEM_INFO_MODULE is not None:
+        return _LHM_SYSTEM_INFO_MODULE
+
+    last_err: Optional[Exception] = None
+    for name in (
+        "moduls.web_dashboard.ops.operations.system_info",
+        "web_dashboard.ops.operations.system_info",
+    ):
+        try:
+            _LHM_SYSTEM_INFO_MODULE = importlib.import_module(name)
+            _LHM_SYSTEM_INFO_IMPORT_ERROR = None
+            return _LHM_SYSTEM_INFO_MODULE
+        except Exception as exc:
+            last_err = exc
+
+    _LHM_SYSTEM_INFO_IMPORT_ERROR = last_err
+    return None
 
 
 def _safe_text(s: object) -> str:
@@ -653,6 +680,10 @@ def _get_env_diag_class():
             self._confirm_timer.setSingleShot(True)
             self._confirm_timer.timeout.connect(self._clear_confirm_state)
 
+            self._lhm_backend = _get_lhm_system_info_module()
+            self._lhm_action_busy = False
+            self._lhm_last_render: Optional[tuple] = None
+
             root = QVBoxLayout(self)
             root.setContentsMargins(20, 20, 20, 16)
             root.setSpacing(12)
@@ -708,6 +739,43 @@ def _get_env_diag_class():
             self._try_set_icon(self.btn_open_startup, QStyle.SP_DirOpenIcon)
             self.btn_open_startup.clicked.connect(self._on_open_startup)
             left.addWidget(self.btn_open_startup)
+
+            # --- LibreHardwareMonitor (мониторинг датчиков) ---
+            self.lbl_lhm_state = QLabel("Мониторинг датчиков: проверка статуса...")
+            self.lbl_lhm_state.setWordWrap(True)
+            self.lbl_lhm_state.setAccessibleName("Статус мониторинга датчиков")
+            self.lbl_lhm_state.setAccessibleDescription(
+                "Показывает состояние процесса LibreHardwareMonitor, endpoint и путь запуска"
+            )
+            self.lbl_lhm_state.setFocusPolicy(Qt.StrongFocus)
+            left.addWidget(self.lbl_lhm_state)
+
+            self.btn_lhm_toggle = QPushButton("Запустить мониторинг датчиков")
+            self.btn_lhm_toggle.setAccessibleName("Кнопка: запустить или остановить мониторинг датчиков")
+            self.btn_lhm_toggle.setAccessibleDescription(
+                "Запускает или останавливает LibreHardwareMonitor. Текст кнопки меняется по текущему статусу."
+            )
+            self._try_set_icon(self.btn_lhm_toggle, QStyle.SP_MediaPlay)
+            self.btn_lhm_toggle.clicked.connect(self._on_toggle_lhm)
+            left.addWidget(self.btn_lhm_toggle)
+
+            self.btn_lhm_restart = QPushButton("Перезапустить мониторинг датчиков")
+            self.btn_lhm_restart.setAccessibleName("Кнопка: перезапустить мониторинг датчиков")
+            self.btn_lhm_restart.setAccessibleDescription(
+                "Останавливает и снова запускает процесс LibreHardwareMonitor."
+            )
+            self._try_set_icon(self.btn_lhm_restart, QStyle.SP_BrowserReload)
+            self.btn_lhm_restart.clicked.connect(self._on_restart_lhm)
+            left.addWidget(self.btn_lhm_restart)
+
+            self.btn_lhm_diag = QPushButton("Показать диагностику мониторинга")
+            self.btn_lhm_diag.setAccessibleName("Кнопка: показать диагностику мониторинга датчиков")
+            self.btn_lhm_diag.setAccessibleDescription(
+                "Собирает и выводит подробную информацию о процессе LibreHardwareMonitor."
+            )
+            self._try_set_icon(self.btn_lhm_diag, QStyle.SP_FileDialogInfoView)
+            self.btn_lhm_diag.clicked.connect(self._on_show_lhm_diag)
+            left.addWidget(self.btn_lhm_diag)
 
             # --- Debug флаг в config.ini ---
             self._config_path = _locate_config_ini()
@@ -828,7 +896,11 @@ def _get_env_diag_class():
             self.setTabOrder(self.status, self.btn_open_temp)
             self.setTabOrder(self.btn_open_temp, self.btn_open_exe)
             self.setTabOrder(self.btn_open_exe, self.btn_open_startup)
-            self.setTabOrder(self.btn_open_startup, self.lbl_config)
+            self.setTabOrder(self.btn_open_startup, self.lbl_lhm_state)
+            self.setTabOrder(self.lbl_lhm_state, self.btn_lhm_toggle)
+            self.setTabOrder(self.btn_lhm_toggle, self.btn_lhm_restart)
+            self.setTabOrder(self.btn_lhm_restart, self.btn_lhm_diag)
+            self.setTabOrder(self.btn_lhm_diag, self.lbl_config)
             self.setTabOrder(self.lbl_config, self.chk_debug)
             self.setTabOrder(self.chk_debug, self.btn_show_diag)
             self.setTabOrder(self.btn_show_diag, self.btn_copy)
@@ -837,6 +909,11 @@ def _get_env_diag_class():
             self.setTabOrder(self.btn_exit, self.btn_hang)
             self.setTabOrder(self.btn_hang, self.output)
             self.setTabOrder(self.output, close_btn)
+
+            self._lhm_status_timer = QTimer(self)
+            self._lhm_status_timer.timeout.connect(self._refresh_lhm_status_soft)
+            self._lhm_status_timer.start(1600)
+            self._refresh_lhm_status()
             self.status.setFocus(Qt.TabFocusReason)
 
         def _try_set_icon(self, btn: 'QPushButton', icon_id: 'QStyle.StandardPixmap') -> None:
@@ -937,6 +1014,458 @@ def _get_env_diag_class():
             else:
                 prefix = ""
             self.status.setText(prefix + message)
+
+        # ---- LibreHardwareMonitor / датчики ----
+
+        def _get_lhm_backend(self):
+            backend = getattr(self, "_lhm_backend", None)
+            if backend is not None:
+                return backend
+            backend = _get_lhm_system_info_module()
+            self._lhm_backend = backend
+            return backend
+
+        def _get_lhm_backend_error_text(self) -> str:
+            err = _LHM_SYSTEM_INFO_IMPORT_ERROR
+            if err is None:
+                return "Модуль мониторинга датчиков недоступен."
+            return _safe_text(err)
+
+        def _collect_lhm_processes(self, backend: Any) -> Tuple[list[Any], Optional[str]]:
+            getter = getattr(backend, "_get_lhm_processes", None)
+            if callable(getter):
+                try:
+                    processes = getter()
+                    if isinstance(processes, list):
+                        return processes, None
+                    return list(processes or []), None
+                except Exception as exc:
+                    return [], f"Не удалось получить процессы мониторинга: {exc}"
+
+            try:
+                import psutil  # type: ignore
+            except Exception as exc:
+                return [], f"psutil недоступен: {exc}"
+
+            expected_exe = str(getattr(backend, "_LHM_EXE_PATH", "") or "").strip()
+            expected_norm = os.path.normcase(os.path.abspath(expected_exe)) if expected_exe else ""
+            found: list[Any] = []
+            for proc in psutil.process_iter(["pid", "name", "exe"]):
+                try:
+                    name = str(proc.info.get("name") or "").strip().lower()
+                    if name != "librehardwaremonitor.exe":
+                        continue
+                    exe = str(proc.info.get("exe") or "").strip()
+                    if expected_norm and exe:
+                        exe_norm = os.path.normcase(os.path.abspath(exe))
+                        if exe_norm != expected_norm:
+                            continue
+                    found.append(proc)
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                except Exception:
+                    continue
+            return found, None
+
+        def _collect_lhm_process_info(self, proc: Any, managed_pid: Optional[int]) -> dict[str, Any]:
+            data: dict[str, Any] = {
+                "pid": None,
+                "ppid": None,
+                "name": "",
+                "exe": "",
+                "cwd": "",
+                "cmdline": "",
+                "username": "",
+                "status": "",
+                "is_running": None,
+                "create_time": None,
+                "create_time_local": "",
+                "is_managed_pid": False,
+            }
+
+            try:
+                pid = int(getattr(proc, "pid", 0) or 0)
+                data["pid"] = pid
+                data["is_managed_pid"] = (managed_pid is not None and pid == int(managed_pid))
+            except Exception:
+                pass
+
+            try:
+                data["name"] = str(
+                    (getattr(proc, "info", {}) or {}).get("name")
+                    or proc.name()
+                    or ""
+                ).strip()
+            except Exception:
+                pass
+
+            try:
+                data["exe"] = str(
+                    (getattr(proc, "info", {}) or {}).get("exe")
+                    or proc.exe()
+                    or ""
+                ).strip()
+            except Exception:
+                pass
+
+            try:
+                data["ppid"] = int(proc.ppid())
+            except Exception:
+                pass
+
+            try:
+                data["cwd"] = str(proc.cwd() or "").strip()
+            except Exception:
+                pass
+
+            try:
+                cmdline_raw = (getattr(proc, "info", {}) or {}).get("cmdline")
+                if not cmdline_raw:
+                    cmdline_raw = proc.cmdline()
+                if isinstance(cmdline_raw, (list, tuple)):
+                    cmdline = " ".join(str(item) for item in cmdline_raw if item)
+                else:
+                    cmdline = str(cmdline_raw or "")
+                data["cmdline"] = cmdline.strip()
+            except Exception:
+                pass
+
+            try:
+                data["username"] = str(proc.username() or "").strip()
+            except Exception:
+                pass
+
+            try:
+                data["status"] = str(proc.status() or "").strip()
+            except Exception:
+                pass
+
+            try:
+                data["is_running"] = bool(proc.is_running())
+            except Exception:
+                pass
+
+            try:
+                created = float(proc.create_time())
+                data["create_time"] = created
+                data["create_time_local"] = dt.datetime.fromtimestamp(created).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
+            return data
+
+        def _collect_lhm_snapshot(self) -> dict[str, Any]:
+            snapshot: dict[str, Any] = {
+                "available": False,
+                "error": None,
+                "backend_file": "",
+                "root_dir": "",
+                "working_dir": "",
+                "expected_exe": "",
+                "config_path": "",
+                "managed_pid": None,
+                "panel_owns_process": None,
+                "autostart_enabled": None,
+                "listener_host": "",
+                "listener_port": 0,
+                "listener_web_enabled": None,
+                "endpoint_url": "",
+                "endpoint_reachable": None,
+                "process_scan_error": None,
+                "processes": [],
+                "running": False,
+            }
+
+            backend = self._get_lhm_backend()
+            if backend is None:
+                snapshot["error"] = self._get_lhm_backend_error_text()
+                return snapshot
+
+            snapshot["available"] = True
+            snapshot["backend_file"] = _safe_text(getattr(backend, "__file__", ""))
+            snapshot["root_dir"] = _safe_text(getattr(backend, "_LHM_ROOT_DIR", ""))
+            snapshot["working_dir"] = _safe_text(getattr(backend, "_LHM_DIR", ""))
+            snapshot["expected_exe"] = _safe_text(getattr(backend, "_LHM_EXE_PATH", ""))
+            snapshot["config_path"] = _safe_text(getattr(backend, "_LHM_CONFIG_PATH", ""))
+            snapshot["managed_pid"] = getattr(backend, "_LHM_MANAGED_PID", None)
+            snapshot["panel_owns_process"] = bool(getattr(backend, "_LHM_PANEL_OWNS_PROCESS", False))
+            snapshot["autostart_enabled"] = bool(getattr(backend, "_LHM_AUTOSTART_ENABLED", False))
+
+            host = str(getattr(backend, "_LHM_DEFAULT_HOST", "127.0.0.1"))
+            try:
+                port = int(getattr(backend, "_LHM_DEFAULT_PORT", 8085))
+            except Exception:
+                port = 8085
+            web_enabled: Optional[bool] = None
+            load_settings = getattr(backend, "_load_lhm_listener_settings", None)
+            if callable(load_settings):
+                try:
+                    host, port, web_enabled = load_settings()
+                except Exception:
+                    pass
+            host = str(host or "127.0.0.1").strip()
+            try:
+                port = int(port)
+            except Exception:
+                port = 8085
+            snapshot["listener_host"] = host
+            snapshot["listener_port"] = port
+            snapshot["listener_web_enabled"] = web_enabled
+            snapshot["endpoint_url"] = f"http://{host}:{port}/data.json"
+
+            can_connect = getattr(backend, "_can_connect", None)
+            if callable(can_connect):
+                try:
+                    snapshot["endpoint_reachable"] = bool(can_connect(host, port))
+                except Exception:
+                    snapshot["endpoint_reachable"] = None
+
+            processes, proc_error = self._collect_lhm_processes(backend)
+            if proc_error:
+                snapshot["process_scan_error"] = proc_error
+            process_items: list[dict[str, Any]] = []
+            managed_pid = snapshot.get("managed_pid")
+            for proc in processes:
+                process_items.append(self._collect_lhm_process_info(proc, managed_pid if isinstance(managed_pid, int) else None))
+            snapshot["processes"] = process_items
+            snapshot["running"] = bool(process_items)
+            return snapshot
+
+        def _build_lhm_diag_text(self, snapshot: Optional[dict[str, Any]] = None) -> str:
+            data = snapshot if isinstance(snapshot, dict) else self._collect_lhm_snapshot()
+
+            def p(value: object, fallback: str = "-") -> str:
+                text = _safe_text(value).strip()
+                if not text or text == "None":
+                    return fallback
+                return text
+
+            lines = [
+                "Диагностика мониторинга датчиков (LibreHardwareMonitor)",
+                "=======================================================",
+            ]
+
+            if not data.get("available"):
+                lines.append(f"Backend мониторинга недоступен: {p(data.get('error'), 'неизвестная ошибка')}")
+                return "\n".join(lines)
+
+            processes = data.get("processes") or []
+            running = bool(data.get("running"))
+            endpoint_reachable = data.get("endpoint_reachable")
+            endpoint_state = "доступен" if endpoint_reachable is True else ("недоступен" if endpoint_reachable is False else "не проверен")
+
+            lines.extend(
+                [
+                    f"Статус процесса: {'запущен' if running else 'остановлен'}",
+                    f"Количество процессов: {len(processes)}",
+                    f"Managed PID (из backend): {p(data.get('managed_pid'))}",
+                    f"Владение процессом панелью (_LHM_PANEL_OWNS_PROCESS): {p(data.get('panel_owns_process'))}",
+                    f"Автозапуск датчиков для панели (_LHM_AUTOSTART_ENABLED): {p(data.get('autostart_enabled'))}",
+                    f"Listener: host={p(data.get('listener_host'))} port={p(data.get('listener_port'))} web_enabled={p(data.get('listener_web_enabled'))}",
+                    f"Endpoint: {p(data.get('endpoint_url'))} ({endpoint_state})",
+                    f"Ожидаемый EXE: {p(data.get('expected_exe'))}",
+                    f"Рабочая папка процесса: {p(data.get('working_dir'))}",
+                    f"Файл конфигурации: {p(data.get('config_path'))}",
+                    f"Файл backend: {p(data.get('backend_file'))}",
+                    f"Корень backend: {p(data.get('root_dir'))}",
+                ]
+            )
+
+            if data.get("process_scan_error"):
+                lines.append(f"Ошибка сканирования процессов: {p(data.get('process_scan_error'))}")
+
+            if not processes:
+                lines.append("Процесс LibreHardwareMonitor сейчас не обнаружен.")
+                return "\n".join(lines)
+
+            lines.append("")
+            lines.append("Найденные процессы:")
+            for idx, item in enumerate(processes, start=1):
+                info = item if isinstance(item, dict) else {}
+                lines.append(
+                    f"{idx}. PID={p(info.get('pid'))} "
+                    f"({('managed' if info.get('is_managed_pid') else 'external')}) "
+                    f"running={p(info.get('is_running'))}"
+                )
+                lines.append(f"   Имя: {p(info.get('name'))}")
+                lines.append(f"   EXE: {p(info.get('exe'))}")
+                lines.append(f"   Рабочая папка: {p(info.get('cwd'))}")
+                lines.append(f"   Команда запуска: {p(info.get('cmdline'))}")
+                lines.append(f"   Пользователь: {p(info.get('username'))}")
+                lines.append(f"   Статус: {p(info.get('status'))}")
+                lines.append(f"   PPID: {p(info.get('ppid'))}")
+                lines.append(f"   Время старта: {p(info.get('create_time_local'))}")
+
+            return "\n".join(lines)
+
+        def _refresh_lhm_status_soft(self) -> None:
+            try:
+                self._refresh_lhm_status()
+            except Exception:
+                pass
+
+        def _refresh_lhm_status(self) -> None:
+            snapshot = self._collect_lhm_snapshot()
+            available = bool(snapshot.get("available"))
+            running = bool(snapshot.get("running"))
+            busy = bool(getattr(self, "_lhm_action_busy", False))
+
+            if not available:
+                error_text = _safe_text(snapshot.get("error") or "неизвестная ошибка")
+                state_text = f"Мониторинг датчиков недоступен: {error_text}"
+            else:
+                endpoint_reachable = snapshot.get("endpoint_reachable")
+                endpoint_state = (
+                    "endpoint доступен"
+                    if endpoint_reachable is True
+                    else ("endpoint недоступен" if endpoint_reachable is False else "endpoint не проверен")
+                )
+                state_text = (
+                    f"Мониторинг датчиков: {'запущен' if running else 'остановлен'}; "
+                    f"процессов: {len(snapshot.get('processes') or [])}; {endpoint_state}."
+                )
+
+            toggle_text = "Остановить мониторинг датчиков" if running else "Запустить мониторинг датчиков"
+            restart_text = "Перезапуск мониторинга..." if busy else "Перезапустить мониторинг датчиков"
+            rendered = (state_text, toggle_text, restart_text, available, running, busy)
+            if rendered != self._lhm_last_render:
+                self._lhm_last_render = rendered
+                self.lbl_lhm_state.setText(state_text)
+                self.btn_lhm_toggle.setText(toggle_text)
+                self.btn_lhm_restart.setText(restart_text)
+                try:
+                    self.btn_lhm_toggle.setAccessibleName(toggle_text)
+                    self.btn_lhm_restart.setAccessibleName(restart_text)
+                except Exception:
+                    pass
+
+            self.btn_lhm_diag.setEnabled(not busy)
+            self.btn_lhm_toggle.setEnabled(bool(available) and (not busy))
+            self.btn_lhm_restart.setEnabled(bool(available) and (not busy))
+
+        def _start_lhm_monitoring(self) -> Tuple[bool, str]:
+            backend = self._get_lhm_backend()
+            if backend is None:
+                return False, self._get_lhm_backend_error_text()
+
+            starter = getattr(backend, "ensure_lhm_running_for_panel", None)
+            if not callable(starter):
+                return False, "Функция запуска мониторинга недоступна."
+
+            try:
+                started, msg = starter()
+            except Exception as exc:
+                return False, f"Не удалось запустить мониторинг датчиков: {exc}"
+
+            snapshot = self._collect_lhm_snapshot()
+            if snapshot.get("running"):
+                if msg:
+                    return True, _safe_text(msg)
+                return True, "Мониторинг датчиков запущен." if started else "Мониторинг датчиков уже запущен."
+            return False, _safe_text(msg) if msg else "Процесс мониторинга не обнаружен после запуска."
+
+        def _stop_lhm_monitoring(self) -> Tuple[bool, str]:
+            backend = self._get_lhm_backend()
+            if backend is None:
+                return False, self._get_lhm_backend_error_text()
+
+            stopper = getattr(backend, "stop_lhm_for_panel", None)
+            if not callable(stopper):
+                return False, "Функция остановки мониторинга недоступна."
+
+            try:
+                stopped, msg = stopper()
+            except Exception as exc:
+                return False, f"Не удалось остановить мониторинг датчиков: {exc}"
+
+            snapshot = self._collect_lhm_snapshot()
+            if not snapshot.get("running"):
+                if msg:
+                    return True, _safe_text(msg)
+                return True, "Мониторинг датчиков остановлен." if stopped else "Мониторинг датчиков уже остановлен."
+            return False, _safe_text(msg) if msg else "Процесс мониторинга всё ещё работает."
+
+        def _restart_lhm_monitoring(self) -> Tuple[bool, str]:
+            stop_ok, stop_msg = self._stop_lhm_monitoring()
+            start_ok, start_msg = self._start_lhm_monitoring()
+
+            parts = []
+            if stop_msg:
+                parts.append(f"Stop: {_safe_text(stop_msg)}")
+            if start_msg:
+                parts.append(f"Start: {_safe_text(start_msg)}")
+            if not parts:
+                parts.append("Мониторинг датчиков перезапущен.")
+
+            final_snapshot = self._collect_lhm_snapshot()
+            running = bool(final_snapshot.get("running"))
+            final_ok = running and (start_ok or stop_ok)
+            if running and not start_ok:
+                final_ok = True
+            return final_ok, " ".join(parts)
+
+        def _on_toggle_lhm(self) -> None:
+            self._reset_confirm()
+            if self._lhm_action_busy:
+                self._set_status("Операция с мониторингом уже выполняется. Подождите завершения.", ok=False)
+                return
+
+            snap = self._collect_lhm_snapshot()
+            if not snap.get("available"):
+                self._set_status(f"Мониторинг недоступен: {_safe_text(snap.get('error'))}", ok=False)
+                self._refresh_lhm_status()
+                return
+
+            running = bool(snap.get("running"))
+            self._lhm_action_busy = True
+            self._refresh_lhm_status()
+            try:
+                if running:
+                    ok, msg = self._stop_lhm_monitoring()
+                    self._log(f"[ENV-DIAG GUI] lhm stop (ok={ok}) -> {_one_line(msg)}")
+                else:
+                    ok, msg = self._start_lhm_monitoring()
+                    self._log(f"[ENV-DIAG GUI] lhm start (ok={ok}) -> {_one_line(msg)}")
+            finally:
+                self._lhm_action_busy = False
+                self._refresh_lhm_status()
+
+            self._set_status(msg, ok=ok)
+
+        def _on_restart_lhm(self) -> None:
+            self._reset_confirm()
+            if self._lhm_action_busy:
+                self._set_status("Операция с мониторингом уже выполняется. Подождите завершения.", ok=False)
+                return
+
+            self._lhm_action_busy = True
+            self._refresh_lhm_status()
+            try:
+                ok, msg = self._restart_lhm_monitoring()
+                self._log(f"[ENV-DIAG GUI] lhm restart (ok={ok}) -> {_one_line(msg)}")
+            finally:
+                self._lhm_action_busy = False
+                self._refresh_lhm_status()
+
+            self._set_status(msg, ok=ok)
+
+        def _on_show_lhm_diag(self) -> None:
+            self._reset_confirm()
+            try:
+                text = self._build_lhm_diag_text()
+            except Exception as exc:
+                err = f"Ошибка при сборе диагностики мониторинга датчиков: {exc}"
+                tb = traceback.format_exc()
+                self.output.setPlainText(err + "\n\n" + tb)
+                self._focus_output_from_start()
+                self._set_status(err, ok=False)
+                self._log(f"[ENV-DIAG GUI] show_lhm_diag failed: {err}")
+                return
+
+            self.output.setPlainText(text)
+            self._focus_output_from_start()
+            self._set_status("Диагностика мониторинга датчиков собрана.", ok=True)
+            self._log("[ENV-DIAG GUI] show_lhm_diag")
 
 
         # ---- config.ini / debug ----
@@ -1114,6 +1643,13 @@ def _get_env_diag_class():
                 "Логи:",
                 f"Локальный лог GUI-диагностики: {p(_get_log_file())}",
             ]
+
+            try:
+                lines.append("")
+                lines.append(self._build_lhm_diag_text(self._collect_lhm_snapshot()))
+            except Exception as exc:
+                lines.append("")
+                lines.append(f"Диагностика мониторинга датчиков недоступна: {exc}")
 
             if onefile_env:
                 lines.append("")

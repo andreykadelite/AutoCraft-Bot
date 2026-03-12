@@ -1,84 +1,108 @@
-{% extends "panel_base.html" %}
+﻿{% extends "panel_base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/file_manager.css', v='20260305a') }}">
+{% endblock %}
 
 {% block panel_content %}
 <a class="skip-link" href="#fm-table">Перейти к списку файлов</a>
 
-<div class="page-header">
-  <div>
-    <h1>Файловый менеджер</h1>
-    <p class="muted" id="fm-current-path">Корень</p>
+<div class="fm-page">
+  <div class="page-header fm-page-header">
+    <div>
+      <h1>Файловый менеджер</h1>
+      <p class="muted" id="fm-current-path">Корень</p>
+    </div>
+    <div class="badge" id="fm-selection">Выбрано: 0</div>
   </div>
-  <div class="badge" id="fm-selection">Выбрано: 0</div>
-</div>
 
-<div class="grid">
-  <section class="card" aria-labelledby="fm-quick-title">
-    <h3 id="fm-quick-title">Быстрые ярлыки</h3>
-    <div class="quick-links" id="fm-quick-links" role="list" aria-label="Быстрые ярлыки"></div>
-  </section>
-  <section class="card" aria-labelledby="fm-nav-title">
-    <h3 id="fm-nav-title">Навигация</h3>
-    <div class="fm-nav">
-      <label class="fm-label" for="fm-path-input">Путь</label>
-      <input id="fm-path-input" type="text" autocomplete="off" spellcheck="false">
-      <div class="fm-nav-actions">
-        <button class="btn" type="button" id="fm-go">Перейти</button>
-        <button class="btn" type="button" id="fm-up">Вверх</button>
-        <button class="btn" type="button" id="fm-root">Корень</button>
-        <button class="btn" type="button" id="fm-refresh">Обновить</button>
+  <div class="grid fm-grid">
+    <section class="card fm-card" aria-labelledby="fm-quick-title">
+      <h3 id="fm-quick-title">Быстрые ярлыки</h3>
+      <div class="quick-links" id="fm-quick-links" role="list" aria-label="Быстрые ярлыки"></div>
+    </section>
+    <section class="card fm-card" aria-labelledby="fm-nav-title">
+      <h3 id="fm-nav-title">Навигация</h3>
+      <div class="fm-nav">
+        <label class="fm-label" for="fm-path-input">Путь</label>
+        <input id="fm-path-input" type="text" autocomplete="off" spellcheck="false">
+        <div class="fm-nav-actions">
+          <button class="btn" type="button" id="fm-go">Перейти</button>
+          <button class="btn" type="button" id="fm-up">Вверх</button>
+          <button class="btn" type="button" id="fm-root">Корень</button>
+          <button class="btn" type="button" id="fm-refresh">Обновить</button>
+        </div>
+        <div class="fm-breadcrumbs" id="fm-breadcrumbs" role="navigation" aria-label="Навигация по пути"></div>
       </div>
-      <div class="fm-breadcrumbs" id="fm-breadcrumbs" role="navigation" aria-label="Навигация по пути"></div>
+    </section>
+  </div>
+
+  <section class="card fm-card" aria-labelledby="fm-actions-title">
+    <h3 id="fm-actions-title">Операции</h3>
+    <div class="fm-actions" role="group" aria-label="Операции с файлами">
+      <button class="btn" type="button" id="fm-new-folder">Новая папка</button>
+      <button class="btn" type="button" id="fm-upload">Загрузить</button>
+      <button class="btn" type="button" id="fm-copy">Копировать</button>
+      <button class="btn" type="button" id="fm-cut">Вырезать</button>
+      <button class="btn" type="button" id="fm-paste">Вставить</button>
+      <button class="btn" type="button" id="fm-rename">Переименовать</button>
+      <button class="btn danger" type="button" id="fm-delete">Удалить</button>
+      <button class="btn" type="button" id="fm-download">Скачать</button>
+      <button class="btn" type="button" id="fm-properties">Свойства</button>
+    </div>
+    <div class="fm-dropzone" id="fm-dropzone" tabindex="0" role="button" aria-label="Зона загрузки файлов">
+      <p><strong>Перетащите файлы сюда</strong> или нажмите «Загрузить»</p>
+      <p class="muted">Файлы загрузятся в текущую открытую папку.</p>
+    </div>
+    <p class="muted fm-clipboard" id="fm-clipboard" aria-live="polite"></p>
+    <div class="fm-status" id="fm-status" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="card fm-card" aria-labelledby="fm-list-title">
+    <h3 id="fm-list-title">Список файлов</h3>
+    <div class="table-scroll fm-table-wrap">
+      <table class="table table-compact" id="fm-table">
+        <caption class="sr-only">Список файлов и папок</caption>
+        <thead>
+          <tr>
+            <th scope="col">
+              <input id="fm-select-all" type="checkbox" aria-label="Выбрать все">
+            </th>
+            <th scope="col">Имя</th>
+            <th scope="col">Тип</th>
+            <th scope="col">Размер</th>
+            <th scope="col">Изменено</th>
+            <th scope="col">Действия</th>
+          </tr>
+        </thead>
+        <tbody id="fm-table-body">
+          <tr>
+            <td colspan="6">Загрузка...</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
+
+  <section class="card fm-card" aria-labelledby="fm-progress-title">
+    <div class="fm-progress-header">
+      <h3 id="fm-progress-title">Прогресс операций</h3>
+      <button class="btn" type="button" id="fm-clear-progress">Очистить завершенные</button>
+    </div>
+    <div class="fm-ops-overview" id="fm-ops-overview" hidden>
+      <div class="fm-ops-overview-head">
+        <span id="fm-ops-overview-title">Активные операции: 0</span>
+        <span id="fm-ops-overview-percent">0%</span>
+      </div>
+      <div class="fm-progress-track fm-progress-track-lg" aria-hidden="true">
+        <span class="fm-progress-fill" id="fm-ops-overview-fill"></span>
+      </div>
+    </div>
+    <p class="muted fm-progress-empty" id="fm-progress-empty">Операции пока не запускались.</p>
+    <div class="fm-progress-list" id="fm-progress-list" aria-live="polite"></div>
+  </section>
 </div>
-
-<section class="card" aria-labelledby="fm-actions-title">
-  <h3 id="fm-actions-title">Операции</h3>
-  <div class="fm-actions" role="group" aria-label="Операции с файлами">
-    <button class="btn" type="button" id="fm-new-folder">Новая папка</button>
-    <button class="btn" type="button" id="fm-upload">Загрузить</button>
-    <button class="btn" type="button" id="fm-copy">Копировать</button>
-    <button class="btn" type="button" id="fm-cut">Вырезать</button>
-    <button class="btn" type="button" id="fm-paste">Вставить</button>
-    <button class="btn" type="button" id="fm-rename">Переименовать</button>
-    <button class="btn danger" type="button" id="fm-delete">Удалить</button>
-    <button class="btn" type="button" id="fm-download">Скачать</button>
-    <button class="btn" type="button" id="fm-properties">Свойства</button>
-  </div>
-  <p class="muted fm-clipboard" id="fm-clipboard" aria-live="polite"></p>
-  <div class="fm-status" id="fm-status" role="status" aria-live="polite"></div>
-</section>
-
-<section class="card" aria-labelledby="fm-list-title">
-  <h3 id="fm-list-title">Список файлов</h3>
-  <div class="table-scroll">
-    <table class="table table-compact" id="fm-table">
-      <caption class="sr-only">Список файлов и папок</caption>
-      <thead>
-        <tr>
-          <th scope="col">
-            <input id="fm-select-all" type="checkbox" aria-label="Выбрать все">
-          </th>
-          <th scope="col">Имя</th>
-          <th scope="col">Тип</th>
-          <th scope="col">Размер</th>
-          <th scope="col">Изменено</th>
-          <th scope="col">Действия</th>
-        </tr>
-      </thead>
-      <tbody id="fm-table-body">
-        <tr>
-          <td colspan="6">Загрузка...</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section class="card" aria-labelledby="fm-progress-title">
-  <h3 id="fm-progress-title">Прогресс операций</h3>
-  <div class="fm-progress-list" id="fm-progress-list" aria-live="polite"></div>
-</section>
 
 <input id="fm-upload-input" class="sr-only" type="file" multiple aria-hidden="true">
 

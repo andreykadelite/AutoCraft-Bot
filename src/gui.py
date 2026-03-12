@@ -42,7 +42,7 @@ from PyQt5.QtWidgets import (
 
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QEvent
 from PyQt5.QtGui import QIcon, QPalette, QColor, QFont, QTextCursor
-from windows_startup import (
+from sys_core.windows_startup import (
     BASE_DIR,
     _debug_log,
     CONFIG_PATH,
@@ -61,6 +61,14 @@ from windows_startup import (
 
 # --- GUI sub-windows (kept separate for easier editing) ---
 from gui_win.functions_window import create_functions_button
+
+# Ранний мягкий импорт LAN discovery: нужен для автозапуска сервиса без открытия окна «Функции».
+# В watchdog-процессе модуль тихо ничего не запустит, а в --child сможет поднять сервис
+# по config.ini, если включён enabled_on_start.
+try:
+    from gui_win.gui_win_lan_discovery_window import try_start_lan_discovery_service
+except Exception:
+    try_start_lan_discovery_service = None
 
 # Nuitka/анализатор: модуль справки должен попасть в сборку, но импорт — только по кнопке.
 try:
@@ -300,6 +308,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
 
         super().__init__()
+        self._shutdown_in_progress = False
 
         # --- App-level look & feel -------------------------------------------------
         app = QApplication.instance()
@@ -902,6 +911,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # LAN discovery: best effort автозапуск по config.ini без открытия окна «Функции».
+        # Повторные вызовы безопасны: сам LAN-модуль защищён от дублей в одном процессе.
+        try:
+            if callable(try_start_lan_discovery_service):
+                try_start_lan_discovery_service()
+        except Exception:
+            pass
+
         # First adaptive layout pass (for the initial size)
         try:
             self._update_responsive_controls()
@@ -1386,47 +1403,80 @@ class MainWindow(QMainWindow):
             return
 
 
-    def exit_app(self):
-        # Перед выходом: закрыть управляемый браузер (если он открыт через модуль)
+    def _stop_webpanel_backend_before_shutdown(self):
+        """
+        Stops the in-process web panel backend singleton.
+        This guarantees srv.stop() and, therefore, LibreHardwareMonitor shutdown.
+        """
+        try:
+            modules = []
+            for name in ("startrunmodulwebpanel", "moduls.startrunmodulwebpanel"):
+                m = sys.modules.get(name)
+                if m is not None:
+                    modules.append(m)
+            if not modules:
+                try:
+                    modules.append(self._get_webpanel_backend())
+                except Exception:
+                    return
+
+            seen = set()
+            for module in modules:
+                module_id = id(module)
+                if module_id in seen:
+                    continue
+                seen.add(module_id)
+
+                srv = getattr(module, "_server", None)
+                if srv is None:
+                    continue
+
+                lock = getattr(module, "_server_lock", None)
+                try:
+                    if lock is not None:
+                        with lock:
+                            srv.stop()
+                    else:
+                        srv.stop()
+                except Exception:
+                    try:
+                        srv.stop()
+                    except Exception:
+                        pass
+        except Exception:
+            return
+
+    def _shutdown_application(self):
+        if self._shutdown_in_progress:
+            return
+        self._shutdown_in_progress = True
+
+        # 1) Close managed browser (if it was started via browser-control backend).
         self._close_managed_browser_before_shutdown()
-        # First, stop the local Telegram API server window and process
+        # 2) Stop web panel backend and sensor monitoring process.
+        self._stop_webpanel_backend_before_shutdown()
+        # 3) Stop local Telegram API process/window.
         if hasattr(self, "api_server_window") and self.api_server_window:
             try:
                 proc = self.api_server_window.proc
-                # If server is running, stop it and close window after stop
                 if proc.state() == gui_serverapi.QProcess.Running:
                     proc.finished.connect(lambda exitCode, exitStatus: self.api_server_window.close())
                     self.api_server_window.stop_server()
                 else:
-                    # If not running, close the window immediately
                     self.api_server_window.close()
             except Exception:
                 pass
-        # Then stop the Telegram bot
+        # 4) Stop Telegram bot loop/thread.
         self.stop_bot()
-        # Quit the main application
+
+    def exit_app(self):
+        self._shutdown_application()
         QApplication.quit()
 
     def closeEvent(self, event):
-        # Перед закрытием окна: закрыть управляемый браузер (если он открыт через модуль)
-        self._close_managed_browser_before_shutdown()
-        # On main window close, ensure server window and bot are stopped
-        if hasattr(self, "api_server_window") and self.api_server_window:
-            try:
-                proc = self.api_server_window.proc
-                if proc.state() == gui_serverapi.QProcess.Running:
-                    proc.finished.connect(lambda exitCode, exitStatus: self.api_server_window.close())
-                    self.api_server_window.stop_server()
-                else:
-                    self.api_server_window.close()
-            except Exception:
-                pass
-        # Stop the Telegram bot
-        self.stop_bot()
-        # Accept the close event
+        self._shutdown_application()
         event.accept()
         QApplication.quit()
-
 
     def hide_to_tray(self):
         try:
@@ -1443,14 +1493,38 @@ class MainWindow(QMainWindow):
             pass
         self.hide_to_tray()
 
-    def show_normal(self):
-        self.show()
+    def _restore_main_window(self):
+        """
+        Restore window from hidden/minimized states and request activation.
+        """
+        try:
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        except Exception:
+            pass
+        try:
+            self.showNormal()
+        except Exception:
+            try:
+                self.show()
+            except Exception:
+                pass
+        try:
+            self.raise_()
+        except Exception:
+            pass
+        try:
+            self.activateWindow()
+        except Exception:
+            pass
         self.tray_icon.setVisible(False)
+
+    def show_normal(self):
+        self._restore_main_window()
         # If launched with --tray flag, start hidden to tray (useful for autorun)
 
 
     def on_tray_icon_activated(self, reason):
-        if reason == QSystemTrayIcon.Trigger:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.show_normal()
 
 

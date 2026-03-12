@@ -1,0 +1,286 @@
+{% extends "panel_base.html" %}
+
+{% block head_css %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ static_url }}/winkeys.css">
+{% endblock %}
+
+{% block head_js %}
+  {{ super() }}
+  <script src="{{ static_url }}/winkeys.js"></script>
+{% endblock %}
+
+{% block panel_content %}
+  <div
+    class="panel-card winkeys-card"
+    id="winkeys-root"
+    data-config-url="{{ config_url }}"
+    data-send-url="{{ send_url }}"
+    data-custom-save-url="{{ custom_save_url }}"
+    data-custom-delete-url="{{ custom_delete_url }}"
+    data-custom-clear-url="{{ custom_clear_url }}"
+    data-history-clear-url="{{ history_clear_url }}"
+    data-csrf-token="{{ csrf_token() if csrf_token is defined else '' }}"
+  >
+    <header class="winkeys-header">
+      <div>
+        <h2>Win Keys</h2>
+        <p class="winkeys-subtitle">
+          Отправка комбинаций клавиш и действий мыши без перезагрузки страницы.
+          Всё управление доступно с клавиатуры и адаптировано под мобильные и десктопные экраны.
+        </p>
+      </div>
+      <div class="winkeys-badge">Расширение</div>
+    </header>
+
+    <div id="winkeys-output" class="winkeys-output" role="status" aria-live="polite" aria-atomic="true">
+      Загрузка конфигурации...
+    </div>
+
+    <nav
+      class="winkeys-tabs"
+      id="winkeys-tabs"
+      role="tablist"
+      aria-label="Разделы Win Keys"
+    >
+      <button id="winkeys-tab-keyboard" class="winkeys-tab" type="button" role="tab" aria-selected="true" aria-controls="winkeys-panel-keyboard" tabindex="0" data-tab-target="keyboard">Клавиатура</button>
+      <button id="winkeys-tab-mouse" class="winkeys-tab" type="button" role="tab" aria-selected="false" aria-controls="winkeys-panel-mouse" tabindex="-1" data-tab-target="mouse">Мышь</button>
+      <button id="winkeys-tab-presets" class="winkeys-tab" type="button" role="tab" aria-selected="false" aria-controls="winkeys-panel-presets" tabindex="-1" data-tab-target="presets">Свои пресеты</button>
+      <button id="winkeys-tab-history" class="winkeys-tab" type="button" role="tab" aria-selected="false" aria-controls="winkeys-panel-history" tabindex="-1" data-tab-target="history">История</button>
+      <button id="winkeys-tab-help" class="winkeys-tab" type="button" role="tab" aria-selected="false" aria-controls="winkeys-panel-help" tabindex="-1" data-tab-target="help">Инструкция</button>
+    </nav>
+
+    <section id="winkeys-panel-keyboard" class="winkeys-panel" role="tabpanel" aria-labelledby="winkeys-tab-keyboard" tabindex="0">
+      <div class="winkeys-section">
+        <div class="winkeys-section-head">
+          <h3>Популярные клавиатурные комбинации</h3>
+          <span id="winkeys-keyboard-count" class="winkeys-count"></span>
+        </div>
+        <div class="winkeys-filters">
+          <label class="winkeys-field winkeys-grow">
+            <span>Поиск</span>
+            <input id="winkeys-keyboard-search" class="winkeys-input" type="text" placeholder="Например: Win + R, диспетчер, скриншот">
+          </label>
+          <label class="winkeys-field">
+            <span>Категория</span>
+            <select id="winkeys-keyboard-category" class="winkeys-select">
+              <option value="">Все категории</option>
+            </select>
+          </label>
+        </div>
+        <div id="winkeys-keyboard-builtins" class="winkeys-grid" role="list" aria-label="Список клавиатурных комбинаций"></div>
+      </div>
+
+      <div class="winkeys-section">
+        <h3>Конструктор клавиатурной команды</h3>
+        <input id="winkeys-keyboard-edit-id" type="hidden">
+        <div class="winkeys-form-grid">
+          <label class="winkeys-field">
+            <span>Название пресета</span>
+            <input id="winkeys-keyboard-name" class="winkeys-input" type="text" maxlength="120" placeholder="Например: Быстрый скриншот">
+          </label>
+          <label class="winkeys-field">
+            <span>Тип</span>
+            <select id="winkeys-keyboard-type" class="winkeys-select">
+              <option value="hotkey">Комбинация (hotkey)</option>
+              <option value="key">Одна клавиша</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="winkeys-keyboard-hotkey-row" class="winkeys-form-grid">
+          <label class="winkeys-field winkeys-grow">
+            <span>Комбинация</span>
+            <input id="winkeys-keyboard-hotkey" class="winkeys-input" type="text" placeholder="Ctrl+Shift+Esc">
+          </label>
+        </div>
+
+        <div id="winkeys-keyboard-key-row" class="winkeys-form-grid" hidden>
+          <label class="winkeys-field">
+            <span>Клавиша</span>
+            <input
+              id="winkeys-keyboard-key"
+              class="winkeys-input"
+              type="text"
+              list="winkeys-keyboard-key-options"
+              autocomplete="off"
+              placeholder="F5 / Enter / A"
+            >
+            <datalist id="winkeys-keyboard-key-options"></datalist>
+          </label>
+        </div>
+
+        <div class="winkeys-form-grid">
+          <label class="winkeys-field">
+            <span>Повтор</span>
+            <input id="winkeys-keyboard-repeat" class="winkeys-input" type="number" min="1" max="20" value="1">
+          </label>
+          <label class="winkeys-field">
+            <span>Интервал (мс)</span>
+            <input id="winkeys-keyboard-interval" class="winkeys-input" type="number" min="0" max="2000" value="30">
+          </label>
+        </div>
+
+        <div class="winkeys-actions">
+          <button id="winkeys-keyboard-send" class="btn-primary" type="button" data-busy-lock>Отправить</button>
+          <button id="winkeys-keyboard-save" class="btn" type="button" data-busy-lock>Сохранить в пресеты</button>
+          <button id="winkeys-keyboard-reset" class="btn" type="button" data-busy-lock>Сбросить</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="winkeys-panel-mouse" class="winkeys-panel" role="tabpanel" aria-labelledby="winkeys-tab-mouse" tabindex="0" hidden>
+      <div class="winkeys-section">
+        <div class="winkeys-section-head">
+          <h3>Популярные действия мыши</h3>
+          <span id="winkeys-mouse-count" class="winkeys-count"></span>
+        </div>
+        <div class="winkeys-filters">
+          <label class="winkeys-field winkeys-grow">
+            <span>Поиск</span>
+            <input id="winkeys-mouse-search" class="winkeys-input" type="text" placeholder="Например: колесо вниз, правый клик">
+          </label>
+        </div>
+        <div id="winkeys-mouse-builtins" class="winkeys-grid" role="list" aria-label="Список действий мыши"></div>
+      </div>
+
+      <div class="winkeys-section">
+        <h3>Конструктор команды мыши</h3>
+        <input id="winkeys-mouse-edit-id" type="hidden">
+        <div class="winkeys-form-grid">
+          <label class="winkeys-field">
+            <span>Название пресета</span>
+            <input id="winkeys-mouse-name" class="winkeys-input" type="text" maxlength="120" placeholder="Например: Правый клик и пауза">
+          </label>
+          <label class="winkeys-field">
+            <span>Тип</span>
+            <select id="winkeys-mouse-type" class="winkeys-select">
+              <option value="mouse_click">Клик</option>
+              <option value="mouse_double">Двойной клик</option>
+              <option value="mouse_down">Нажать кнопку</option>
+              <option value="mouse_up">Отпустить кнопку</option>
+              <option value="scroll">Прокрутка</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="winkeys-mouse-button-row" class="winkeys-form-grid">
+          <label class="winkeys-field">
+            <span>Кнопка мыши</span>
+            <select id="winkeys-mouse-button" class="winkeys-select">
+              <option value="left">Левая</option>
+              <option value="right">Правая</option>
+              <option value="middle">Средняя</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="winkeys-mouse-scroll-row" class="winkeys-form-grid" hidden>
+          <label class="winkeys-field">
+            <span>Вертикально</span>
+            <input id="winkeys-mouse-vertical" class="winkeys-input" type="number" step="1" value="400">
+          </label>
+          <label class="winkeys-field">
+            <span>Горизонтально</span>
+            <input id="winkeys-mouse-horizontal" class="winkeys-input" type="number" step="1" value="0">
+          </label>
+        </div>
+
+        <div class="winkeys-form-grid">
+          <label class="winkeys-field">
+            <span>Повтор</span>
+            <input id="winkeys-mouse-repeat" class="winkeys-input" type="number" min="1" max="20" value="1">
+          </label>
+          <label class="winkeys-field">
+            <span>Интервал (мс)</span>
+            <input id="winkeys-mouse-interval" class="winkeys-input" type="number" min="0" max="2000" value="30">
+          </label>
+        </div>
+
+        <div class="winkeys-actions">
+          <button id="winkeys-mouse-send" class="btn-primary" type="button" data-busy-lock>Отправить</button>
+          <button id="winkeys-mouse-save" class="btn" type="button" data-busy-lock>Сохранить в пресеты</button>
+          <button id="winkeys-mouse-reset" class="btn" type="button" data-busy-lock>Сбросить</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="winkeys-panel-presets" class="winkeys-panel" role="tabpanel" aria-labelledby="winkeys-tab-presets" tabindex="0" hidden>
+      <div class="winkeys-section">
+        <h3>Текстовый пресет</h3>
+        <p class="winkeys-hint">Все команды с текстом сохраняются и редактируются здесь.</p>
+        <input id="winkeys-preset-text-id" type="hidden">
+        <div class="winkeys-form-grid">
+          <label class="winkeys-field">
+            <span>Название</span>
+            <input id="winkeys-preset-text-name" class="winkeys-input" type="text" maxlength="120" placeholder="Например: Вставить шаблон приветствия">
+          </label>
+          <label class="winkeys-field">
+            <span>Повтор</span>
+            <input id="winkeys-preset-text-repeat" class="winkeys-input" type="number" min="1" max="20" value="1">
+          </label>
+          <label class="winkeys-field">
+            <span>Интервал (мс)</span>
+            <input id="winkeys-preset-text-interval" class="winkeys-input" type="number" min="0" max="2000" value="30">
+          </label>
+        </div>
+        <div class="winkeys-form-grid">
+          <label class="winkeys-field winkeys-grow">
+            <span>Текст</span>
+            <textarea id="winkeys-preset-text-value" class="winkeys-textarea" rows="4" maxlength="2000" placeholder="Введите текст для отправки"></textarea>
+          </label>
+        </div>
+        <div class="winkeys-actions">
+          <button id="winkeys-preset-text-send" class="btn-primary" type="button" data-busy-lock>Отправить текст</button>
+          <button id="winkeys-preset-text-save" class="btn" type="button" data-busy-lock>Сохранить пресет</button>
+          <button id="winkeys-preset-text-reset" class="btn" type="button" data-busy-lock>Сбросить</button>
+        </div>
+      </div>
+
+      <div class="winkeys-section">
+        <div class="winkeys-section-head">
+          <h3>Свои пресеты</h3>
+          <button id="winkeys-custom-clear" class="btn" type="button" data-busy-lock>Очистить все</button>
+        </div>
+        <p class="winkeys-hint">В списке уже есть несколько стартовых примеров. Можно запускать, редактировать и удалять без перезагрузки страницы.</p>
+        <div id="winkeys-custom-list" class="winkeys-list" role="list" aria-label="Сохранённые пользовательские пресеты"></div>
+      </div>
+    </section>
+
+    <section id="winkeys-panel-history" class="winkeys-panel" role="tabpanel" aria-labelledby="winkeys-tab-history" tabindex="0" hidden>
+      <div class="winkeys-section">
+        <div class="winkeys-section-head">
+          <h3>История отправок</h3>
+          <button id="winkeys-history-clear" class="btn" type="button" data-busy-lock>Очистить историю</button>
+        </div>
+        <p class="winkeys-hint">Любую команду можно быстро повторить кнопкой «Повтор».</p>
+        <div id="winkeys-history-list" class="winkeys-list" role="list" aria-label="История отправленных команд"></div>
+      </div>
+    </section>
+
+    <section id="winkeys-panel-help" class="winkeys-panel" role="tabpanel" aria-labelledby="winkeys-tab-help" tabindex="0" hidden>
+      <div class="winkeys-section">
+        <h3>Краткая инструкция</h3>
+        <ol class="winkeys-help-list">
+          <li>Откройте вкладку <strong>Клавиатура</strong> или <strong>Мышь</strong>.</li>
+          <li>Выберите готовую команду и нажмите <strong>Отправить</strong>, либо соберите свою в конструкторе ниже.</li>
+          <li>Текстовые команды создаются во вкладке <strong>Свои пресеты</strong>, в блоке <strong>Текстовый пресет</strong>.</li>
+          <li>Чтобы использовать команду повторно, нажмите <strong>Сохранить в пресеты</strong>.</li>
+          <li>Вкладка <strong>Свои пресеты</strong>: запуск, редактирование и удаление ваших команд.</li>
+          <li>Вкладка <strong>История</strong>: повтор недавно отправленных команд и очистка журнала.</li>
+        </ol>
+        <h4>Навигация с клавиатуры</h4>
+        <ul class="winkeys-help-list">
+          <li>Вкладки переключаются мышью или клавишами <strong>Left/Right/Home/End</strong>.</li>
+          <li>Кнопки и поля доступны через <strong>Tab</strong>.</li>
+          <li><strong>Ctrl+Enter</strong> отправляет команду в активной вкладке (Клавиатура, Мышь, Свои пресеты).</li>
+          <li>Информация о результате озвучивается через статус-блок над вкладками.</li>
+        </ul>
+        <p class="winkeys-hint">
+          Хранилище JSON: <code id="winkeys-storage-file">-</code>
+        </p>
+      </div>
+    </section>
+  </div>
+{% endblock %}
+

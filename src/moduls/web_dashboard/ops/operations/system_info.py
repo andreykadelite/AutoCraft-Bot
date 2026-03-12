@@ -1,14 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import atexit
 import datetime as dt
 import json
 import os
 import platform
 import re
+import socket
 import subprocess
+import sys
 import threading
 import time
+import xml.etree.ElementTree as ET
 from typing import Any, Dict
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 import psutil
 
@@ -16,10 +22,203 @@ _CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
 _CACHE_TTL_SECONDS = 30.0
 _PS_TIMEOUT_SECONDS = 45
 _SNAPSHOT_LOCK = threading.Lock()
+_SNAPSHOT_WAIT_FOR_CACHE_SECONDS = 20.0
+_SNAPSHOT_WAIT_POLL_SECONDS = 0.05
 
 _OVERVIEW_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
 _OVERVIEW_CACHE_TTL_SECONDS = 3.0
 _OVERVIEW_LOCK = threading.Lock()
+
+_HARDWARE_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+_HARDWARE_CACHE_TTL_SECONDS = 4.0
+_HARDWARE_LOCK = threading.Lock()
+_HARDWARE_START_GUARD: Dict[str, float] = {"ts": 0.0}
+_HARDWARE_START_INTERVAL_SECONDS = 5.0
+_HARDWARE_START_WAIT_SECONDS = 0.75
+_HARDWARE_START_FETCH_ATTEMPTS = 8
+_HARDWARE_HTTP_TIMEOUT_SECONDS = 1.8
+
+_LHM_DEFAULT_HOST = "127.0.0.1"
+_LHM_DEFAULT_PORT = 8085
+_LHM_PROCESS_LOCK = threading.Lock()
+_LHM_MANAGED_PROCESS: subprocess.Popen | None = None
+_LHM_MANAGED_PID: int | None = None
+_LHM_PANEL_OWNS_PROCESS = False
+_LHM_AUTOSTART_ENABLED = False
+
+
+def _pick_onefile_dir(path: str) -> str | None:
+    current = os.path.abspath(path or "")
+    if not current:
+        return None
+    while True:
+        name = os.path.basename(current).lower()
+        if name.startswith("onefile_") or name.startswith("onefil") or name.startswith("_mei"):
+            return current
+        parent = os.path.dirname(current)
+        if not parent or parent == current:
+            return None
+        current = parent
+
+
+def _guess_onefile_extract_dir() -> str | None:
+    for env in ("NUITKA_ONEFILE_PARENT", "NUITKA_ONEFILE_TEMP", "NUITKA_ONEFILE_TEMP_DIR"):
+        value = os.environ.get(env)
+        if value:
+            try:
+                value_path = os.path.abspath(value)
+                if os.path.isdir(value_path):
+                    return value_path
+                if os.path.exists(value_path):
+                    return os.path.dirname(value_path)
+            except Exception:
+                pass
+
+    try:
+        main_mod = sys.modules.get("__main__")
+        main_file = getattr(main_mod, "__file__", None)
+        if main_file:
+            found = _pick_onefile_dir(main_file)
+            if found:
+                return found
+    except Exception:
+        pass
+
+    try:
+        found = _pick_onefile_dir(sys.executable)
+        if found:
+            return found
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_lhm_paths() -> tuple[str, str, str, str]:
+    candidates: list[str] = []
+
+    def _add(path: str | None) -> None:
+        if not path:
+            return
+        try:
+            resolved = os.path.abspath(path)
+        except Exception:
+            return
+        if resolved not in candidates:
+            candidates.append(resolved)
+
+    _add(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+    _add(os.environ.get("PANEL_BASE_DIR"))
+    _add(os.getcwd())
+    try:
+        _add(os.path.dirname(os.path.abspath(sys.executable)))
+    except Exception:
+        pass
+    try:
+        _add(os.path.dirname(os.path.abspath(sys.argv[0])))
+    except Exception:
+        pass
+
+    onefile_dir = _guess_onefile_extract_dir()
+    _add(onefile_dir)
+
+    for env in ("NUITKA_ONEFILE_PARENT", "NUITKA_ONEFILE_TEMP", "NUITKA_ONEFILE_TEMP_DIR"):
+        value = os.environ.get(env)
+        if value:
+            _add(value)
+            try:
+                _add(os.path.dirname(os.path.abspath(value)))
+            except Exception:
+                pass
+
+    for root in candidates:
+        lhm_dir = os.path.join(root, "data", "LibreHardwareMonitor.NET.10")
+        exe_path = os.path.join(lhm_dir, "LibreHardwareMonitor.exe")
+        if os.path.isfile(exe_path):
+            return root, lhm_dir, exe_path, os.path.join(lhm_dir, "LibreHardwareMonitor.config")
+
+    fallback_root = candidates[0] if candidates else os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+    )
+    fallback_dir = os.path.join(fallback_root, "data", "LibreHardwareMonitor.NET.10")
+    return (
+        fallback_root,
+        fallback_dir,
+        os.path.join(fallback_dir, "LibreHardwareMonitor.exe"),
+        os.path.join(fallback_dir, "LibreHardwareMonitor.config"),
+    )
+
+
+_LHM_ROOT_DIR, _LHM_DIR, _LHM_EXE_PATH, _LHM_CONFIG_PATH = _resolve_lhm_paths()
+
+_HARDWARE_CATEGORY_LABELS: dict[str, str] = {
+    "cpu": "ЦП",
+    "gpu": "ГП",
+    "mainboard": "Плата/VRM",
+    "memory": "ОЗУ",
+    "storage": "Диски",
+    "power": "Питание",
+    "network": "Сеть",
+    "other": "Прочее",
+}
+
+_HARDWARE_KIND_ORDER: tuple[str, ...] = (
+    "temperature",
+    "load",
+    "power",
+    "clock",
+    "fan",
+    "level",
+    "voltage",
+    "current",
+    "throughput",
+    "data",
+    "factor",
+    "other",
+)
+
+_HARDWARE_KIND_LABELS: dict[str, str] = {
+    "temperature": "Температура",
+    "load": "Нагрузка",
+    "power": "Мощность",
+    "clock": "Частоты",
+    "fan": "Вентиляторы",
+    "level": "Ресурс Рё уровни",
+    "voltage": "Напряжение",
+    "current": "Ток",
+    "throughput": "Скорость/поток",
+    "data": "Объем Рё данные",
+    "factor": "Счетчики",
+    "other": "Прочее",
+}
+
+_HARDWARE_SUMMARY_SPECS: list[tuple[str, str, str]] = [
+    ("cpu_load", "Нагрузка", "ЦП"),
+    ("cpu_temp", "Температура", "ЦП"),
+    ("cpu_power", "Мощность пакета", "ЦП"),
+    ("cpu_clock", "Частота", "ЦП"),
+    ("gpu_load", "Нагрузка", "ГП"),
+    ("gpu_temp", "Температура", "ГП"),
+    ("gpu_power", "Мощность", "ГП"),
+    ("vrm_temp", "Температура VRM/платы", "Плата/VRM"),
+    ("ram_load", "Нагрузка", "ОЗУ"),
+    ("ram_used", "Рспользовано", "ОЗУ"),
+    ("ram_temp_max", "Макс. температура", "ОЗУ"),
+    ("disk_temp_max", "Макс. температура", "Диски"),
+    ("disk_used_max", "Макс. занятость", "Диски"),
+    ("disk_life_min", "Мин. ресурс", "Диски"),
+    ("fan_speed_max", "Макс. скорость", "Охлаждение"),
+]
+
+_LHM_SKIP_NAME_PARTS = (
+    "distance to tjmax",
+    "warning temperature",
+    "critical temperature",
+    "thermal sensor low limit",
+    "thermal sensor high limit",
+    "critical low limit",
+    "critical high limit",
+    "temperature sensor resolution",
+)
 
 _NAME_PLACEHOLDERS = {
     "to be filled by o.e.m.",
@@ -687,7 +886,7 @@ def _looks_like_internal_battery(*values: Any) -> bool:
 def _portable_detected_label(detected_type: str) -> str:
     labels = {
         "internal_battery": "Встроенная батарея",
-        "ups": "ИБП",
+        "ups": "РБП",
         "ac_adapter": "AC Adapter (не батарея)",
         "unknown": "Не классифицировано",
     }
@@ -705,7 +904,7 @@ def _classify_portable_battery(*values: Any) -> tuple[str, str]:
 
     ups_hint = _find_keyword_match(haystack, _UPS_KEYWORDS)
     if ups_hint:
-        return "ups", f"Совпадение с сигнатурой ИБП: {ups_hint}."
+        return "ups", f"Совпадение с сигнатурой РБП: {ups_hint}."
 
     internal_hint = _find_keyword_match(haystack, _INTERNAL_BATTERY_INSTANCE_HINTS)
     if internal_hint:
@@ -715,7 +914,7 @@ def _classify_portable_battery(*values: Any) -> tuple[str, str]:
     if internal_kw:
         return "internal_battery", f"Совпадение с сигнатурой внутренней батареи: {internal_kw}."
 
-    return "unknown", "Явные сигнатуры батареи/ИБП не найдены."
+    return "unknown", "Явные сигнатуры батареи/РБП не найдены."
 
 
 def _detect_ups_vendors(*values: Any) -> list[str]:
@@ -763,13 +962,13 @@ def _extract_tpm_vendor_name(values: list[str], vendor_id: str) -> str:
         idx = values.index(vendor_id)
         if idx + 1 < len(values):
             candidate = values[idx + 1]
-            if re.search(r"[A-Za-zА-Яа-я]", candidate):
+            if re.search(r"[A-Za-zА-Яа-яЁё]", candidate):
                 return candidate
     for value in values:
         lowered = value.lower()
         if lowered in {"tpm", "2.0", "1.2"}:
             continue
-        if re.search(r"[A-Za-zА-Яа-я]", value):
+        if re.search(r"[A-Za-zА-Яа-яЁё]", value):
             return value
     return ""
 
@@ -931,6 +1130,1039 @@ def _calc_disk_totals() -> dict[str, Any]:
     }
 
 
+def _clean_sensor_text(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).replace("\xa0", " ")
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _parse_sensor_metric(raw: Any) -> tuple[float | None, str, str]:
+    text = _clean_sensor_text(raw)
+    if not text or text in {"-", "--"}:
+        return None, "", "-"
+
+    normalized = text.lower().replace(" ", "")
+    if "nan" in normalized:
+        unit = "%" if "%" in text else ""
+        return None, unit, text
+
+    clean_text = text.replace("\u2212", "-")
+    match = re.search(r"[-+]?\d+(?:[.,]\d+)?", clean_text)
+    if not match:
+        return None, "", text
+
+    num_token = match.group(0).replace(",", ".")
+    try:
+        value = float(num_token)
+    except Exception:
+        value = None
+
+    unit = clean_text[match.end() :].strip()
+    return value, unit, text
+
+
+def _sensor_has_metric(node: dict[str, Any]) -> bool:
+    for key in ("Value", "Min", "Max"):
+        metric = _clean_sensor_text(node.get(key))
+        if metric and metric not in {"-", "--"}:
+            return True
+    return False
+
+
+def _sensor_group_kind(group_name: str, sensor_name: str, unit: str) -> str:
+    group = (group_name or "").strip().lower()
+    sensor = (sensor_name or "").strip().lower()
+    unit_l = (unit or "").strip().lower()
+
+    if "temperature" in group or "temp" in group:
+        return "temperature"
+    if "level" in group:
+        return "level"
+    if "load" in group:
+        return "load"
+    if "clock" in group or unit_l == "mhz":
+        return "clock"
+    if "power" in group or unit_l == "w":
+        return "power"
+    if "fan" in group or unit_l == "rpm":
+        return "fan"
+    if "voltage" in group or unit_l == "v":
+        return "voltage"
+    if "current" in group or unit_l == "a":
+        return "current"
+    if "throughput" in group or "/s" in unit_l:
+        return "throughput"
+    if "data" in group:
+        return "data"
+    if "factor" in group:
+        return "factor"
+    if unit_l == "\u00b0c":
+        return "temperature"
+    if unit_l == "%":
+        return "load"
+    if sensor.endswith("temperature") or "temperature #" in sensor:
+        return "temperature"
+    return "other"
+
+
+def _classify_hardware_category(hardware_id: str, hardware_name: str) -> str:
+    hid = (hardware_id or "").lower()
+    name = (hardware_name or "").lower()
+    haystack = f"{hid} {name}"
+
+    if "/gpu" in hid or "graphics" in haystack:
+        return "gpu"
+    if "/intelcpu" in hid or "/amdcpu" in hid or ("/cpu" in hid and "/gpu" not in hid):
+        return "cpu"
+    if (
+        "/motherboard" in hid
+        or "/lpc/" in hid
+        or "/superio" in hid
+        or "/ec/" in hid
+        or "/embeddedcontroller" in hid
+    ):
+        return "mainboard"
+    if "/ram" in hid or "/vram" in hid or "/memory" in hid:
+        return "memory"
+    if any(token in hid for token in ("/nvme", "/hdd", "/ssd", "/storage", "/ata", "/drive")):
+        return "storage"
+    if "/battery" in hid or "/psu" in hid:
+        return "power"
+    if "/nic" in hid:
+        return "network"
+    return "other"
+
+
+def _lhm_children(node: dict[str, Any]) -> list[dict[str, Any]]:
+    children = node.get("Children")
+    if not isinstance(children, list):
+        return []
+    return [item for item in children if isinstance(item, dict)]
+
+
+def _normalize_lhm_host(host: str, port: int) -> str:
+    host = (host or "").strip()
+    if host in {"*", "+", "0.0.0.0", "::", "?"}:
+        return _LHM_DEFAULT_HOST
+    if "://" in host:
+        return _LHM_DEFAULT_HOST
+    if not host:
+        return _LHM_DEFAULT_HOST
+    try:
+        socket.getaddrinfo(host, port)
+    except Exception:
+        return _LHM_DEFAULT_HOST
+    return host
+
+
+def _load_lhm_listener_settings() -> tuple[str, int, bool]:
+    host = _LHM_DEFAULT_HOST
+    port = _LHM_DEFAULT_PORT
+    # LibreHardwareMonitor defaults web listener to disabled until enabled in settings.
+    web_enabled = False
+
+    if not os.path.isfile(_LHM_CONFIG_PATH):
+        return host, port, web_enabled
+
+    try:
+        tree = ET.parse(_LHM_CONFIG_PATH)
+        app_settings = tree.getroot().find("appSettings")
+        if app_settings is None:
+            return host, port, web_enabled
+        for add in app_settings.findall("add"):
+            key = (add.get("key") or "").strip()
+            value = (add.get("value") or "").strip()
+            if key == "listenerIp" and value:
+                host = value
+            elif key == "listenerPort":
+                parsed_port = _to_int(value)
+                if parsed_port and 1 <= parsed_port <= 65535:
+                    port = parsed_port
+            elif key == "runWebServerMenuItem":
+                enabled = _to_bool(value)
+                if enabled is not None:
+                    web_enabled = enabled
+    except Exception:
+        return host, port, web_enabled
+
+    host = _normalize_lhm_host(host, port)
+    return host or _LHM_DEFAULT_HOST, port, web_enabled
+
+
+def _upsert_lhm_setting(app_settings: ET.Element, key: str, value: str) -> bool:
+    changed = False
+    found: list[ET.Element] = []
+    for add in app_settings.findall("add"):
+        current_key = (add.get("key") or "").strip()
+        if current_key == key:
+            found.append(add)
+    if not found:
+        add = ET.SubElement(app_settings, "add")
+        add.set("key", key)
+        add.set("value", value)
+        return True
+
+    first = found[0]
+    current = (first.get("value") or "").strip()
+    if current != value:
+        first.set("value", value)
+        changed = True
+
+    for extra in found[1:]:
+        app_settings.remove(extra)
+        changed = True
+    return changed
+
+
+def _ensure_lhm_listener_settings(host: str, port: int) -> tuple[bool, str | None]:
+    host = _normalize_lhm_host(host, port)
+    try:
+        os.makedirs(_LHM_DIR, exist_ok=True)
+    except Exception as exc:
+        return False, f"Cannot prepare LibreHardwareMonitor directory: {exc}."
+
+    changed = False
+    try:
+        if os.path.isfile(_LHM_CONFIG_PATH):
+            try:
+                tree = ET.parse(_LHM_CONFIG_PATH)
+                root = tree.getroot()
+            except Exception:
+                root = ET.Element("configuration")
+                tree = ET.ElementTree(root)
+                changed = True
+        else:
+            root = ET.Element("configuration")
+            tree = ET.ElementTree(root)
+            changed = True
+
+        app_settings = root.find("appSettings")
+        if app_settings is None:
+            app_settings = ET.SubElement(root, "appSettings")
+            changed = True
+
+        changed = _upsert_lhm_setting(app_settings, "runWebServerMenuItem", "true") or changed
+        changed = _upsert_lhm_setting(app_settings, "listenerIp", host) or changed
+        changed = _upsert_lhm_setting(app_settings, "listenerPort", str(int(port))) or changed
+        changed = _upsert_lhm_setting(app_settings, "startMinMenuItem", "true") or changed
+        changed = _upsert_lhm_setting(app_settings, "minTrayMenuItem", "true") or changed
+
+        if changed:
+            if hasattr(ET, "indent"):
+                ET.indent(tree, space="  ")
+            tree.write(_LHM_CONFIG_PATH, encoding="utf-8", xml_declaration=True)
+    except Exception as exc:
+        return False, f"Cannot update LibreHardwareMonitor config: {exc}."
+    return changed, None
+
+
+def _fetch_lhm_tree(url: str) -> tuple[dict[str, Any] | None, str | None]:
+    request = urllib_request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib_request.urlopen(request, timeout=_HARDWARE_HTTP_TIMEOUT_SECONDS) as response:
+            payload = response.read().decode("utf-8", errors="ignore").lstrip("\ufeff").strip()
+    except urllib_error.HTTPError as exc:
+        return None, f"HTTP {exc.code} от endpoint LibreHardwareMonitor."
+    except urllib_error.URLError as exc:
+        return None, f"Не удалось подключиться к endpoint LibreHardwareMonitor: {exc.reason}."
+    except socket.timeout:
+        return None, "Таймаут при обращении к endpoint LibreHardwareMonitor."
+    except Exception as exc:
+        return None, f"Ошибка endpoint LibreHardwareMonitor: {exc}."
+
+    if not payload:
+        return None, "Endpoint LibreHardwareMonitor вернул пустой ответ."
+
+    try:
+        data = json.loads(payload)
+    except Exception as exc:
+        return None, f"Unable to parse LibreHardwareMonitor JSON: {exc}."
+
+    if not isinstance(data, dict):
+        return None, "Endpoint LibreHardwareMonitor вернул некорректный формат данных."
+    return data, None
+
+
+def _can_connect(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except Exception:
+        return False
+
+
+def _fetch_lhm_tree_with_retries(
+    url: str,
+    attempts: int,
+    delay_seconds: float,
+) -> tuple[dict[str, Any] | None, str | None]:
+    attempts = max(1, int(attempts or 1))
+    delay_seconds = max(0.0, float(delay_seconds or 0.0))
+    last_error: str | None = None
+    for idx in range(attempts):
+        tree, error = _fetch_lhm_tree(url)
+        if tree is not None:
+            return tree, None
+        last_error = error
+        if idx + 1 < attempts and delay_seconds > 0:
+            time.sleep(delay_seconds)
+    return None, last_error
+
+
+def _get_lhm_processes() -> list[psutil.Process]:
+    target_exe = os.path.normcase(os.path.abspath(_LHM_EXE_PATH))
+    processes: list[psutil.Process] = []
+    managed_pid = _LHM_MANAGED_PID
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
+        try:
+            name = str(proc.info.get("name") or "").strip().lower()
+            if name != "librehardwaremonitor.exe":
+                continue
+            exe = proc.info.get("exe")
+            if exe:
+                exe_norm = os.path.normcase(os.path.abspath(exe))
+                if exe_norm != target_exe:
+                    continue
+            elif managed_pid is None or proc.pid != managed_pid:
+                continue
+            processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+        except Exception:
+            continue
+    return processes
+
+
+def _stop_lhm_processes(processes: list[psutil.Process], timeout: float = 2.5) -> tuple[int, list[str]]:
+    stopped = 0
+    issues: list[str] = []
+    seen: set[int] = set()
+    for proc in processes:
+        try:
+            pid = int(proc.pid)
+        except Exception:
+            continue
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            if not proc.is_running():
+                continue
+            proc.terminate()
+            try:
+                proc.wait(timeout=timeout)
+            except psutil.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=timeout)
+            stopped += 1
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            issues.append(f"Access denied while stopping LibreHardwareMonitor PID {pid}.")
+        except Exception as exc:
+            issues.append(f"Failed to stop LibreHardwareMonitor PID {pid}: {exc}.")
+    return stopped, issues
+
+
+def _stop_managed_lhm_process() -> tuple[bool, str | None]:
+    global _LHM_MANAGED_PROCESS, _LHM_MANAGED_PID
+    with _LHM_PROCESS_LOCK:
+        managed_proc = _LHM_MANAGED_PROCESS
+        managed_pid = _LHM_MANAGED_PID
+        _LHM_MANAGED_PROCESS = None
+        _LHM_MANAGED_PID = None
+
+    if managed_proc is None and managed_pid is None:
+        return False, None
+
+    if managed_proc is not None:
+        try:
+            if managed_proc.poll() is None:
+                managed_proc.terminate()
+                try:
+                    managed_proc.wait(timeout=2.5)
+                except subprocess.TimeoutExpired:
+                    managed_proc.kill()
+                return True, "Managed LibreHardwareMonitor process stopped."
+            return False, None
+        except Exception as exc:
+            return False, f"Failed to stop managed LibreHardwareMonitor process: {exc}."
+
+    if managed_pid is not None:
+        try:
+            proc = psutil.Process(managed_pid)
+            stopped, issues = _stop_lhm_processes([proc])
+            if stopped:
+                return True, "Managed LibreHardwareMonitor process stopped."
+            if issues:
+                return False, issues[0]
+        except Exception:
+            return False, None
+    return False, None
+
+
+def _start_lhm_process_via_shell_runas() -> tuple[bool, str | None]:
+    if os.name != "nt":
+        return False, None
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    startupinfo = None
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+    exe_path = _LHM_EXE_PATH.replace("'", "''")
+    work_dir = _LHM_DIR.replace("'", "''")
+    ps_command = (
+        f"Start-Process -FilePath '{exe_path}' "
+        f"-WorkingDirectory '{work_dir}' "
+        "-Verb RunAs -WindowStyle Hidden"
+    )
+    try:
+        subprocess.Popen(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps_command,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+            close_fds=os.name != "nt",
+        )
+        return True, "Requested elevated launch for LibreHardwareMonitor (UAC may appear)."
+    except Exception as exc:
+        return False, f"Unable to request elevated launch for LibreHardwareMonitor: {exc}."
+
+
+def _start_lhm_process(host: str, port: int, respect_guard: bool = True) -> tuple[bool, str | None]:
+    host = _normalize_lhm_host(host, port)
+    if _can_connect(host, port):
+        return False, None
+    if not os.path.isfile(_LHM_EXE_PATH):
+        return False, f"LibreHardwareMonitor executable not found: {_LHM_EXE_PATH}."
+
+    cfg_changed, cfg_error = _ensure_lhm_listener_settings(host, port)
+    if cfg_error:
+        return False, cfg_error
+
+    now = time.monotonic()
+    last = _HARDWARE_START_GUARD.get("ts", 0.0)
+    if respect_guard and now - last < _HARDWARE_START_INTERVAL_SECONDS:
+        return False, "Repeated LibreHardwareMonitor launch skipped by start-rate guard."
+
+    existing = _get_lhm_processes()
+    restarted_existing = False
+    if existing:
+        stopped, issues = _stop_lhm_processes(existing)
+        restarted_existing = stopped > 0
+        if issues and stopped == 0:
+            return False, issues[0]
+        if restarted_existing:
+            time.sleep(0.35)
+
+    _HARDWARE_START_GUARD["ts"] = now
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    startupinfo = None
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+
+    try:
+        process = subprocess.Popen(
+            [_LHM_EXE_PATH],
+            cwd=_LHM_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+            close_fds=os.name != "nt",
+        )
+        with _LHM_PROCESS_LOCK:
+            global _LHM_MANAGED_PROCESS, _LHM_MANAGED_PID, _LHM_PANEL_OWNS_PROCESS
+            _LHM_MANAGED_PROCESS = process
+            _LHM_MANAGED_PID = process.pid
+            _LHM_PANEL_OWNS_PROCESS = True
+        parts = []
+        if cfg_changed:
+            parts.append("LibreHardwareMonitor config synchronized.")
+        if restarted_existing:
+            parts.append("Existing LibreHardwareMonitor process restarted.")
+        parts.append("LibreHardwareMonitor process started.")
+        return True, " ".join(parts)
+    except Exception as exc:
+        winerror = getattr(exc, "winerror", None)
+        if os.name == "nt" and winerror == 740:
+            elevated_started, elevated_msg = _start_lhm_process_via_shell_runas()
+            if elevated_started:
+                _LHM_PANEL_OWNS_PROCESS = True
+                parts = []
+                if cfg_changed:
+                    parts.append("LibreHardwareMonitor config synchronized.")
+                if restarted_existing:
+                    parts.append("Existing LibreHardwareMonitor process restarted.")
+                parts.append(elevated_msg or "Requested elevated launch for LibreHardwareMonitor.")
+                return True, " ".join(parts)
+            if elevated_msg:
+                return False, elevated_msg
+        return False, f"Unable to start LibreHardwareMonitor: {exc}."
+
+
+def ensure_lhm_running_for_panel() -> tuple[bool, str | None]:
+    global _LHM_AUTOSTART_ENABLED
+    _LHM_AUTOSTART_ENABLED = True
+    host, port, _ = _load_lhm_listener_settings()
+    return _start_lhm_process(host, port, respect_guard=False)
+
+
+def stop_lhm_for_panel() -> tuple[bool, str | None]:
+    global _LHM_PANEL_OWNS_PROCESS, _LHM_AUTOSTART_ENABLED
+    _LHM_AUTOSTART_ENABLED = False
+    owned_by_panel = bool(_LHM_PANEL_OWNS_PROCESS)
+    _LHM_PANEL_OWNS_PROCESS = False
+
+    stopped, msg = _stop_managed_lhm_process()
+    if not owned_by_panel:
+        return stopped, msg
+
+    extra_stopped = 0
+    issues: list[str] = []
+    try:
+        processes = _get_lhm_processes()
+        if processes:
+            extra_stopped, issues = _stop_lhm_processes(processes)
+    except Exception as exc:
+        issues.append(f"Unable to inspect LibreHardwareMonitor processes: {exc}.")
+
+    if stopped or extra_stopped > 0:
+        total = (1 if stopped else 0) + extra_stopped
+        return True, msg or f"Stopped LibreHardwareMonitor processes: {total}."
+    if issues:
+        return False, issues[0]
+    return False, msg
+
+
+def _atexit_stop_lhm_for_panel() -> None:
+    try:
+        stop_lhm_for_panel()
+    except Exception:
+        pass
+
+
+atexit.register(_atexit_stop_lhm_for_panel)
+
+
+def _flatten_lhm_sensors(tree: dict[str, Any]) -> list[dict[str, Any]]:
+    sensors: list[dict[str, Any]] = []
+
+    def walk(
+        node: dict[str, Any],
+        path: list[str],
+        hardware_name: str,
+        hardware_id: str,
+        group_name: str,
+    ) -> None:
+        text = _clean_sensor_text(node.get("Text"))
+        current_path = list(path)
+        if text:
+            current_path.append(text)
+
+        current_hardware_name = hardware_name
+        current_hardware_id = hardware_id
+        current_group_name = group_name
+
+        node_hardware_id = _clean_sensor_text(node.get("HardwareId"))
+        children = _lhm_children(node)
+
+        if node_hardware_id:
+            current_hardware_id = node_hardware_id
+            current_hardware_name = text or current_hardware_name or node_hardware_id
+            current_group_name = ""
+        elif current_hardware_id and not current_group_name and children:
+            current_group_name = text
+
+        if current_hardware_id and _sensor_has_metric(node):
+            value, value_unit, value_display = _parse_sensor_metric(node.get("Value"))
+            min_value, min_unit, min_display = _parse_sensor_metric(node.get("Min"))
+            max_value, max_unit, max_display = _parse_sensor_metric(node.get("Max"))
+            name_norm = (text or "").lower()
+            path_norm = " > ".join(current_path).lower()
+            blob_norm = f"{name_norm} {path_norm} {current_group_name.lower()} {current_hardware_name.lower()}"
+            category = _classify_hardware_category(current_hardware_id, current_hardware_name)
+            group_kind = _sensor_group_kind(current_group_name, text, value_unit)
+
+            sensors.append(
+                {
+                    "id": _to_int(node.get("id")),
+                    "category": category,
+                    "category_label": _HARDWARE_CATEGORY_LABELS.get(category, category.title()),
+                    "hardware_name": current_hardware_name,
+                    "hardware_id": current_hardware_id,
+                    "group": current_group_name or "-",
+                    "group_kind": group_kind,
+                    "name": text or "-",
+                    "value": value,
+                    "value_unit": value_unit,
+                    "value_display": value_display,
+                    "min": min_value,
+                    "min_unit": min_unit,
+                    "min_display": min_display,
+                    "max": max_value,
+                    "max_unit": max_unit,
+                    "max_display": max_display,
+                    "path": " > ".join(current_path),
+                    "name_norm": name_norm,
+                    "blob_norm": blob_norm,
+                }
+            )
+
+        for child in children:
+            walk(child, current_path, current_hardware_name, current_hardware_id, current_group_name)
+
+    walk(tree, [], "", "", "")
+
+    category_order = {name: idx for idx, name in enumerate(_HARDWARE_CATEGORY_LABELS.keys())}
+    sensors.sort(
+        key=lambda item: (
+            category_order.get(item.get("category", ""), 99),
+            str(item.get("hardware_name", "")).lower(),
+            str(item.get("group", "")).lower(),
+            str(item.get("name", "")).lower(),
+        )
+    )
+    return sensors
+
+
+def _select_sensor(
+    sensors: list[dict[str, Any]],
+    *,
+    categories: tuple[str, ...] | None = None,
+    groups: tuple[str, ...] | None = None,
+    include_terms: tuple[str, ...] = (),
+    exclude_terms: tuple[str, ...] = (),
+    prefer: str = "first",
+    require_numeric: bool = True,
+) -> dict[str, Any] | None:
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    include_norm = tuple(term.lower() for term in include_terms if term)
+    exclude_norm = tuple(term.lower() for term in exclude_terms if term)
+
+    for sensor in sensors:
+        if categories and sensor.get("category") not in categories:
+            continue
+        if groups and sensor.get("group_kind") not in groups:
+            continue
+        if require_numeric and sensor.get("value") is None:
+            continue
+
+        blob = sensor.get("blob_norm", "")
+        if any(term in blob for term in exclude_norm):
+            continue
+
+        score = 1 if sensor.get("value") is not None else 0
+        if include_norm:
+            for term in include_norm:
+                if term in blob:
+                    score += 5
+        ranked.append((score, sensor))
+
+    if not ranked:
+        return None
+
+    best_score = max(score for score, _ in ranked)
+    candidates = [sensor for score, sensor in ranked if score == best_score]
+    numeric_candidates = [sensor for sensor in candidates if sensor.get("value") is not None]
+
+    if prefer == "max" and numeric_candidates:
+        return max(numeric_candidates, key=lambda item: float(item.get("value") or 0.0))
+    if prefer == "min" and numeric_candidates:
+        return min(numeric_candidates, key=lambda item: float(item.get("value") or 0.0))
+    if prefer == "abs_max" and numeric_candidates:
+        return max(numeric_candidates, key=lambda item: abs(float(item.get("value") or 0.0)))
+    if prefer == "first_numeric" and numeric_candidates:
+        return numeric_candidates[0]
+    if numeric_candidates:
+        return numeric_candidates[0]
+    return candidates[0]
+
+
+def _build_summary_entry(
+    key: str,
+    label: str,
+    section: str,
+    sensor: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not sensor:
+        return {
+            "key": key,
+            "section": section,
+            "label": label,
+            "available": False,
+            "display": "-",
+            "value": None,
+            "unit": "",
+            "device": "",
+            "group": "",
+            "path": "",
+            "category": "",
+        }
+
+    return {
+        "key": key,
+        "section": section,
+        "label": label,
+        "available": True,
+        "display": sensor.get("value_display") or "-",
+        "value": sensor.get("value"),
+        "unit": sensor.get("value_unit") or "",
+        "device": sensor.get("hardware_name") or "",
+        "group": sensor.get("group") or "",
+        "path": sensor.get("path") or "",
+        "category": sensor.get("category_label") or "",
+        "min_display": sensor.get("min_display") or "-",
+        "max_display": sensor.get("max_display") or "-",
+    }
+
+
+def _build_empty_hardware_snapshot(error: str = "", diagnostics: list[str] | None = None) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    summary_order: list[str] = []
+    important: list[dict[str, Any]] = []
+    for key, label, section in _HARDWARE_SUMMARY_SPECS:
+        entry = _build_summary_entry(key, label, section, None)
+        summary[key] = entry
+        summary_order.append(key)
+        important.append(entry)
+    return {
+        "available": False,
+        "source": "LibreHardwareMonitor",
+        "updated_at": dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+        "error": error,
+        "diagnostics": diagnostics or [],
+        "summary": summary,
+        "summary_order": summary_order,
+        "important": important,
+        "all_sensors": [],
+        "total_sensors": 0,
+        "category_counts": [],
+        "kind_groups": [],
+    }
+
+
+def _build_hardware_summary(sensors: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str], list[dict[str, Any]]]:
+    cleaned = [
+        sensor
+        for sensor in sensors
+        if not any(skip in sensor.get("blob_norm", "") for skip in _LHM_SKIP_NAME_PARTS)
+    ]
+
+    def pick(**kwargs: Any) -> dict[str, Any] | None:
+        return _select_sensor(cleaned, **kwargs)
+
+    selected: dict[str, dict[str, Any] | None] = {}
+    selected["cpu_load"] = pick(
+        categories=("cpu",),
+        groups=("load",),
+        include_terms=("cpu total",),
+        prefer="max",
+    ) or pick(
+        categories=("cpu",),
+        groups=("load",),
+        include_terms=("cpu",),
+        prefer="max",
+    )
+    selected["cpu_temp"] = pick(
+        categories=("cpu",),
+        groups=("temperature",),
+        include_terms=("cpu package",),
+        prefer="max",
+    ) or pick(
+        categories=("cpu",),
+        groups=("temperature",),
+        include_terms=("core max", "package"),
+        prefer="max",
+    )
+    selected["cpu_power"] = pick(
+        categories=("cpu",),
+        groups=("power",),
+        include_terms=("cpu package", "package"),
+        prefer="max",
+    ) or pick(
+        categories=("cpu",),
+        groups=("power",),
+        include_terms=("cpu cores",),
+        prefer="max",
+    )
+    selected["cpu_clock"] = pick(
+        categories=("cpu",),
+        groups=("clock",),
+        include_terms=("core",),
+        prefer="max",
+    )
+
+    selected["gpu_load"] = pick(
+        categories=("gpu",),
+        groups=("load",),
+        include_terms=("3d",),
+        prefer="max",
+    ) or pick(
+        categories=("gpu",),
+        groups=("load",),
+        include_terms=("gpu",),
+        prefer="max",
+    )
+    selected["gpu_temp"] = pick(
+        categories=("gpu",),
+        groups=("temperature",),
+        include_terms=("gpu", "hot spot", "core"),
+        prefer="max",
+    )
+    selected["gpu_power"] = pick(
+        categories=("gpu",),
+        groups=("power",),
+        include_terms=("gpu power", "package"),
+        prefer="max",
+    )
+
+    selected["vrm_temp"] = pick(
+        categories=("mainboard", "other"),
+        groups=("temperature",),
+        include_terms=("vrm", "mos", "motherboard", "pch", "chipset", "soc", "tmpin"),
+        prefer="max",
+    )
+
+    selected["ram_load"] = pick(
+        categories=("memory",),
+        groups=("load",),
+        include_terms=("total memory", "memory"),
+        prefer="max",
+    )
+    selected["ram_used"] = pick(
+        categories=("memory",),
+        groups=("data",),
+        include_terms=("total memory", "memory used"),
+        prefer="max",
+    ) or pick(
+        categories=("memory",),
+        groups=("data",),
+        include_terms=("memory used",),
+        prefer="max",
+    )
+    selected["ram_temp_max"] = pick(
+        categories=("memory",),
+        groups=("temperature",),
+        include_terms=("dimm", "memory"),
+        prefer="max",
+    )
+
+    selected["disk_temp_max"] = pick(
+        categories=("storage",),
+        groups=("temperature",),
+        include_terms=("composite", "temperature", "drive"),
+        prefer="max",
+    )
+    selected["disk_used_max"] = pick(
+        categories=("storage",),
+        groups=("load",),
+        include_terms=("used space",),
+        prefer="max",
+    )
+    selected["disk_life_min"] = pick(
+        categories=("storage",),
+        groups=("level",),
+        include_terms=("life",),
+        prefer="min",
+    ) or pick(
+        categories=("storage",),
+        groups=("level",),
+        include_terms=("percentage used",),
+        prefer="max",
+    )
+
+    selected["fan_speed_max"] = pick(
+        categories=("cpu", "gpu", "mainboard", "other"),
+        groups=("fan",),
+        include_terms=("fan",),
+        prefer="max",
+    )
+
+    summary: dict[str, Any] = {}
+    summary_order: list[str] = []
+    important: list[dict[str, Any]] = []
+    for key, label, section in _HARDWARE_SUMMARY_SPECS:
+        entry = _build_summary_entry(key, label, section, selected.get(key))
+        summary[key] = entry
+        summary_order.append(key)
+        important.append(entry)
+    return summary, summary_order, important
+
+
+def _build_kind_groups(sensors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kind_map: dict[str, list[dict[str, Any]]] = {}
+    for sensor in sensors:
+        kind = str(sensor.get("group_kind") or "other")
+        kind_map.setdefault(kind, []).append(sensor)
+
+    ordered_keys = [key for key in _HARDWARE_KIND_ORDER if key in kind_map]
+    extra_keys = sorted(key for key in kind_map.keys() if key not in _HARDWARE_KIND_ORDER)
+    result: list[dict[str, Any]] = []
+
+    for key in ordered_keys + extra_keys:
+        items = kind_map.get(key, [])
+        if not items:
+            continue
+
+        category_counts: dict[str, int] = {}
+        for sensor in items:
+            category = str(sensor.get("category") or "other")
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+        categories = [
+            {
+                "key": category_key,
+                "label": _HARDWARE_CATEGORY_LABELS.get(category_key, category_key.title()),
+                "count": category_counts.get(category_key, 0),
+            }
+            for category_key in _HARDWARE_CATEGORY_LABELS.keys()
+            if category_counts.get(category_key, 0) > 0
+        ]
+        result.append(
+            {
+                "key": key,
+                "label": _HARDWARE_KIND_LABELS.get(key, key.title()),
+                "count": len(items),
+                "categories": categories,
+                "sensors": items,
+            }
+        )
+
+    return result
+
+
+def _collect_hardware_snapshot(force: bool = False) -> dict[str, Any]:
+    now = time.monotonic()
+    cached = _HARDWARE_CACHE.get("data")
+    if not force and cached and (now - _HARDWARE_CACHE.get("ts", 0.0) < _HARDWARE_CACHE_TTL_SECONDS):
+        return cached
+
+    if not _HARDWARE_LOCK.acquire(blocking=False):
+        return cached or _build_empty_hardware_snapshot()
+
+    try:
+        host, port, web_enabled = _load_lhm_listener_settings()
+        url = f"http://{host}:{port}/data.json"
+        diagnostics: list[str] = [f"Точка данных: {url}"]
+        if not web_enabled:
+            diagnostics.append("В конфигурации LibreHardwareMonitor отключен веб-сервер.")
+
+        tree, error = _fetch_lhm_tree(url)
+        if tree is None and _LHM_AUTOSTART_ENABLED:
+            started, start_msg = _start_lhm_process(host, port)
+            if start_msg:
+                diagnostics.append(start_msg)
+            if started:
+                tree, error = _fetch_lhm_tree_with_retries(
+                    url,
+                    attempts=_HARDWARE_START_FETCH_ATTEMPTS,
+                    delay_seconds=_HARDWARE_START_WAIT_SECONDS,
+                )
+        elif tree is None:
+            diagnostics.append("LibreHardwareMonitor autostart is disabled because the web panel is not running.")
+
+        if tree is None:
+            snapshot = _build_empty_hardware_snapshot(
+                error=error or "Данные LibreHardwareMonitor недоступны.",
+                diagnostics=diagnostics,
+            )
+            _HARDWARE_CACHE["ts"] = now
+            _HARDWARE_CACHE["data"] = snapshot
+            return snapshot
+
+        all_sensors = _flatten_lhm_sensors(tree)
+        summary, summary_order, important = _build_hardware_summary(all_sensors)
+        public_sensors = []
+        for sensor in all_sensors:
+            public_sensors.append(
+                {
+                    "id": sensor.get("id"),
+                    "category": sensor.get("category"),
+                    "category_label": sensor.get("category_label"),
+                    "hardware_name": sensor.get("hardware_name"),
+                    "hardware_id": sensor.get("hardware_id"),
+                    "group": sensor.get("group"),
+                    "group_kind": sensor.get("group_kind"),
+                    "name": sensor.get("name"),
+                    "value": sensor.get("value"),
+                    "value_unit": sensor.get("value_unit"),
+                    "value_display": sensor.get("value_display"),
+                    "min": sensor.get("min"),
+                    "min_unit": sensor.get("min_unit"),
+                    "min_display": sensor.get("min_display"),
+                    "max": sensor.get("max"),
+                    "max_unit": sensor.get("max_unit"),
+                    "max_display": sensor.get("max_display"),
+                    "path": sensor.get("path"),
+                }
+            )
+
+        category_counts_map: dict[str, int] = {}
+        for sensor in all_sensors:
+            category = sensor.get("category") or "other"
+            category_counts_map[category] = category_counts_map.get(category, 0) + 1
+
+        category_counts = [
+            {
+                "key": key,
+                "label": _HARDWARE_CATEGORY_LABELS.get(key, key.title()),
+                "count": category_counts_map.get(key, 0),
+            }
+            for key in _HARDWARE_CATEGORY_LABELS.keys()
+            if category_counts_map.get(key, 0) > 0
+        ]
+        kind_groups = _build_kind_groups(public_sensors)
+
+        snapshot = {
+            "available": bool(all_sensors),
+            "source": "LibreHardwareMonitor",
+            "updated_at": dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+            "error": "",
+            "diagnostics": diagnostics,
+            "summary": summary,
+            "summary_order": summary_order,
+            "important": important,
+            "all_sensors": public_sensors,
+            "total_sensors": len(public_sensors),
+            "category_counts": category_counts,
+            "kind_groups": kind_groups,
+        }
+        _HARDWARE_CACHE["ts"] = now
+        _HARDWARE_CACHE["data"] = snapshot
+        return snapshot
+    finally:
+        _HARDWARE_LOCK.release()
+
+
+def _hardware_overview_payload(hardware: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(hardware, dict):
+        return {}
+    return {
+        "available": bool(hardware.get("available")),
+        "source": hardware.get("source") or "",
+        "updated_at": hardware.get("updated_at") or "",
+        "error": hardware.get("error") or "",
+        "summary": hardware.get("summary") or {},
+        "summary_order": hardware.get("summary_order") or [],
+        "total_sensors": _to_int(hardware.get("total_sensors")) or 0,
+    }
+
+
 def get_overview_snapshot(force: bool = False) -> Dict[str, Any]:
     now = time.monotonic()
     cached = _OVERVIEW_CACHE.get("data")
@@ -944,6 +2176,7 @@ def get_overview_snapshot(force: bool = False) -> Dict[str, Any]:
         vm = psutil.virtual_memory()
         net = psutil.net_io_counters()
         disk_totals = _calc_disk_totals()
+        hardware = _collect_hardware_snapshot()
         uptime_seconds = None
         uptime_human = "-"
         try:
@@ -978,6 +2211,7 @@ def get_overview_snapshot(force: bool = False) -> Dict[str, Any]:
                 "recv_human": _human_bytes(net.bytes_recv),
             },
             "power": _collect_overview_power(),
+            "hardware": _hardware_overview_payload(hardware),
         }
         _OVERVIEW_CACHE["ts"] = now
         _OVERVIEW_CACHE["data"] = data
@@ -1022,10 +2256,11 @@ def _run_powershell_json(script: str) -> tuple[Any | None, str | None]:
         return None, f"Не удалось разобрать JSON PowerShell: {exc}"
 
 
-def _collect_ps_snapshot() -> tuple[Dict[str, Any], str | None]:
+def _collect_ps_snapshot(fast: bool = False) -> tuple[Dict[str, Any], str | None]:
     script = """
 $ErrorActionPreference = "Stop";
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
+$FastMode = __FAST_MODE__;
 
 $useCim = Get-Command Get-CimInstance -ErrorAction SilentlyContinue;
 $useCimMethod = Get-Command Invoke-CimMethod -ErrorAction SilentlyContinue;
@@ -1297,42 +2532,45 @@ if (Get-Command Get-Tpm -ErrorAction SilentlyContinue) {
 $tpmWmiRaw = $null;
 $tpmWmi = $null;
 $tpmWmiState = $null;
-$tpmSignals.Win32TpmAttempted = $true;
-try {
-  $tpmWmiRaw = Get-WmiCompat -Namespace "root\\CIMV2\\Security\\MicrosoftTpm" -ClassName Win32_Tpm;
-} catch {
-  $msg = [string]$_.Exception.Message;
-  if ($msg) {
-    $tpmWarnings += "Win32_Tpm: $msg";
-    $lowerMsg = $msg.ToLowerInvariant();
-    if ($lowerMsg.Contains("access is denied") -or $lowerMsg.Contains("отказано в доступе") -or $lowerMsg.Contains("0x80041003")) {
-      $tpmSignals.Win32TpmAccessDenied = $true;
+$tpmSignals.Win32TpmAttempted = $false;
+if (-not $FastMode) {
+  $tpmSignals.Win32TpmAttempted = $true;
+  try {
+    $tpmWmiRaw = Get-WmiCompat -Namespace "root\\CIMV2\\Security\\MicrosoftTpm" -ClassName Win32_Tpm;
+  } catch {
+    $msg = [string]$_.Exception.Message;
+    if ($msg) {
+      $tpmWarnings += "Win32_Tpm: $msg";
+      $lowerMsg = $msg.ToLowerInvariant();
+      if ($lowerMsg.Contains("access is denied") -or $lowerMsg.Contains("отказано в доступе") -or $lowerMsg.Contains("0x80041003")) {
+        $tpmSignals.Win32TpmAccessDenied = $true;
+      }
     }
   }
-}
-if ($tpmWmiRaw) {
-  $tpmWmi = $tpmWmiRaw | Select-Object IsEnabled_InitialValue,IsActivated_InitialValue,IsOwned_InitialValue,ManufacturerId,ManufacturerIdTxt,ManufacturerVersion,ManufacturerVersionInfo,SpecVersion,PhysicalPresenceVersionInfo;
-  $tpmWmiState = [pscustomobject]@{IsEnabled=$null;IsActivated=$null;IsOwned=$null};
-  try {
-    $res = Invoke-WmiCompat -InputObject $tpmWmiRaw -MethodName IsEnabled;
-    if ($null -ne $res.IsEnabled) { $tpmWmiState.IsEnabled = $res.IsEnabled }
-  } catch {
-    $msg = [string]$_.Exception.Message;
-    if ($msg) { $tpmWarnings += "Win32_Tpm IsEnabled: $msg"; }
-  }
-  try {
-    $res = Invoke-WmiCompat -InputObject $tpmWmiRaw -MethodName IsActivated;
-    if ($null -ne $res.IsActivated) { $tpmWmiState.IsActivated = $res.IsActivated }
-  } catch {
-    $msg = [string]$_.Exception.Message;
-    if ($msg) { $tpmWarnings += "Win32_Tpm IsActivated: $msg"; }
-  }
-  try {
-    $res = Invoke-WmiCompat -InputObject $tpmWmiRaw -MethodName IsOwned;
-    if ($null -ne $res.IsOwned) { $tpmWmiState.IsOwned = $res.IsOwned }
-  } catch {
-    $msg = [string]$_.Exception.Message;
-    if ($msg) { $tpmWarnings += "Win32_Tpm IsOwned: $msg"; }
+  if ($tpmWmiRaw) {
+    $tpmWmi = $tpmWmiRaw | Select-Object IsEnabled_InitialValue,IsActivated_InitialValue,IsOwned_InitialValue,ManufacturerId,ManufacturerIdTxt,ManufacturerVersion,ManufacturerVersionInfo,SpecVersion,PhysicalPresenceVersionInfo;
+    $tpmWmiState = [pscustomobject]@{IsEnabled=$null;IsActivated=$null;IsOwned=$null};
+    try {
+      $res = Invoke-WmiCompat -InputObject $tpmWmiRaw -MethodName IsEnabled;
+      if ($null -ne $res.IsEnabled) { $tpmWmiState.IsEnabled = $res.IsEnabled }
+    } catch {
+      $msg = [string]$_.Exception.Message;
+      if ($msg) { $tpmWarnings += "Win32_Tpm IsEnabled: $msg"; }
+    }
+    try {
+      $res = Invoke-WmiCompat -InputObject $tpmWmiRaw -MethodName IsActivated;
+      if ($null -ne $res.IsActivated) { $tpmWmiState.IsActivated = $res.IsActivated }
+    } catch {
+      $msg = [string]$_.Exception.Message;
+      if ($msg) { $tpmWarnings += "Win32_Tpm IsActivated: $msg"; }
+    }
+    try {
+      $res = Invoke-WmiCompat -InputObject $tpmWmiRaw -MethodName IsOwned;
+      if ($null -ne $res.IsOwned) { $tpmWmiState.IsOwned = $res.IsOwned }
+    } catch {
+      $msg = [string]$_.Exception.Message;
+      if ($msg) { $tpmWarnings += "Win32_Tpm IsOwned: $msg"; }
+    }
   }
 }
 
@@ -1356,7 +2594,7 @@ try {
 }
 
 $tpmTool = $null;
-if (Get-Command tpmtool -ErrorAction SilentlyContinue) {
+if ((-not $FastMode) -and (Get-Command tpmtool -ErrorAction SilentlyContinue)) {
   $tpmSignals.TpmToolAttempted = $true;
   try {
     $raw = (& tpmtool getdeviceinformation 2>&1 | Out-String);
@@ -1405,14 +2643,18 @@ if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
 }
 
 $hotfix = $null;
-try {
-  $hf = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1;
-  if ($hf) {
-    $installed = $null;
-    try { $installed = (Get-Date $hf.InstalledOn).ToString("o") } catch {}
-    $hotfix = [pscustomobject]@{HotFixID=$hf.HotFixID;InstalledOn=$installed;Description=$hf.Description;InstalledBy=$hf.InstalledBy};
+if (-not $FastMode) {
+  try {
+    $hf = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1;
+    if ($hf) {
+      $installed = $null;
+      try { $installed = (Get-Date $hf.InstalledOn).ToString("o") } catch {}
+      $hotfix = [pscustomobject]@{HotFixID=$hf.HotFixID;InstalledOn=$installed;Description=$hf.Description;InstalledBy=$hf.InstalledBy};
+    }
+  } catch {}
+} else {
+  $hotfix = [pscustomobject]@{Skipped=$true;Reason="fast_mode"};
   }
-} catch {}
 
 $svcNames = @("wuauserv","WinRM","TermService","w32time");
 $services = @();
@@ -1448,7 +2690,9 @@ $bitlockerMeta = [pscustomobject]@{
   ManageBdeExitCode = $null;
   ManageBdeRawSnippet = "";
 };
-if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+if ($FastMode) {
+  $bitlockerMeta.Diagnostics += "BitLocker collection skipped in fast mode.";
+} elseif (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
   $bitlockerMeta.Available = $true;
   try {
     $bitlocker = Get-BitLockerVolume | Select-Object MountPoint,VolumeType,ProtectionStatus,LockStatus,EncryptionMethod,EncryptionPercentage;
@@ -1472,7 +2716,7 @@ if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
   $bitlockerMeta.Available = $false;
   $bitlockerMeta.Errors += "Get-BitLockerVolume недоступен (модуль BitLocker не найден).";
 }
-if ((-not $bitlocker) -and (-not $bitlockerMeta.AccessDenied) -and (Get-Command manage-bde -ErrorAction SilentlyContinue)) {
+if ((-not $FastMode) -and (-not $bitlocker) -and (-not $bitlockerMeta.AccessDenied) -and (Get-Command manage-bde -ErrorAction SilentlyContinue)) {
   $bitlockerMeta.ManageBdeAttempted = $true;
   try {
     $manageBdeRaw = (& manage-bde -status 2>&1 | Out-String);
@@ -1631,7 +2875,7 @@ try {
     $rebootChecks.ComputerNameChangePending = $true;
     $rebootReasons += [pscustomobject]@{
       Id = "computer_name_change_pending";
-      Title = "Изменение имени компьютера";
+      Title = "Рзменение имени компьютера";
       Details = "ActiveComputerName=$activeName, PendingComputerName=$pendingName";
     };
   }
@@ -1644,7 +2888,7 @@ foreach ($kv in $rebootChecks.GetEnumerator()) {
   if ($kv.Value) { $rebootActiveChecks += [string]$kv.Key; }
 }
 if ($rebootActiveChecks.Count -gt 0) {
-  $rebootDiagnostics += "Сработали проверки: $($rebootActiveChecks -join ', ')";
+  $rebootDiagnostics += "СработалРё проверки: $($rebootActiveChecks -join ', ')";
 } else {
   $rebootDiagnostics += "Признаки pending reboot не обнаружены.";
 }
@@ -1665,6 +2909,7 @@ $rebootPendingInfo = [pscustomobject]@{
   SerialPorts=$serialPorts;PowerStatus=$powerStatus;UpsTools=$upsTools
 } | ConvertTo-Json -Depth 6 -Compress
 """
+    script = script.replace("__FAST_MODE__", "$true" if fast else "$false")
     data, err = _run_powershell_json(script)
     if err:
         return {}, err
@@ -1673,14 +2918,36 @@ $rebootPendingInfo = [pscustomobject]@{
     return {}, "PowerShell вернул неожиданный формат."
 
 
+def _wait_for_snapshot_cache(timeout_seconds: float) -> Dict[str, Any]:
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    while time.monotonic() < deadline:
+        cached = _CACHE.get("data")
+        if isinstance(cached, dict) and cached:
+            return cached
+        if not _SNAPSHOT_LOCK.locked():
+            break
+        time.sleep(_SNAPSHOT_WAIT_POLL_SECONDS)
+    cached = _CACHE.get("data")
+    if isinstance(cached, dict):
+        return cached
+    return {}
+
+
 def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
     now = time.monotonic()
     cached = _CACHE.get("data")
     if not force and cached and (now - _CACHE.get("ts", 0.0) < _CACHE_TTL_SECONDS):
         return cached
-    if not _SNAPSHOT_LOCK.acquire(blocking=False):
-        return cached or {}
+    lock_acquired = _SNAPSHOT_LOCK.acquire(blocking=False)
+    if not lock_acquired:
+        if not force:
+            waited = _wait_for_snapshot_cache(_SNAPSHOT_WAIT_FOR_CACHE_SECONDS)
+            if waited:
+                return waited
+        _SNAPSHOT_LOCK.acquire()
+        lock_acquired = True
     try:
+        now = time.monotonic()
         cached = _CACHE.get("data")
         if not force and cached and (now - _CACHE.get("ts", 0.0) < _CACHE_TTL_SECONDS):
             return cached
@@ -1688,7 +2955,7 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
         cpu_percent = psutil.cpu_percent(interval=0.1)
         net = psutil.net_io_counters()
 
-        ps_data, ps_error = _collect_ps_snapshot()
+        ps_data, ps_error = _collect_ps_snapshot(fast=not force)
         os_info = _ensure_dict(ps_data.get("OS"))
         cs_info = _ensure_dict(ps_data.get("Computer"))
         bios_info = _ensure_dict(ps_data.get("BIOS"))
@@ -1905,7 +3172,7 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
         elif bitlocker_access_denied:
             bitlocker_summary = "Доступ ограничен: нужны права администратора."
         elif bitlocker_available is False:
-            bitlocker_summary = "Инструменты BitLocker недоступны в системе."
+            bitlocker_summary = "Рнструменты BitLocker недоступны в системе."
         elif bitlocker_error:
             bitlocker_summary = bitlocker_error
         else:
@@ -1944,7 +3211,7 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
                 bitlocker_readability_reasons.append(
                     {
                         "id": "fallback_manage_bde_ok",
-                        "title": "Использован fallback manage-bde",
+                        "title": "Рспользован fallback manage-bde",
                         "details": "Команда manage-bde -status выполнена успешно.",
                     }
                 )
@@ -2334,11 +3601,11 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
                 summary_parts.append(f"остаток {runtime_human}")
         if not summary_parts:
             if has_internal and has_ups:
-                summary = "Обнаружены аккумулятор и ИБП"
+                summary = "Обнаружены аккумулятор Рё РБП"
             elif has_internal:
                 summary = "Обнаружен аккумулятор"
             elif has_ups:
-                summary = "Обнаружен ИБП"
+                summary = "Обнаружен РБП"
             elif power_present:
                 summary = "Питание обнаружено"
             else:
@@ -2385,11 +3652,11 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
         ):
             power_error = (
                 "Win32_PortableBattery вернул устройства, но ОС сообщает NoSystemBattery; "
-                "записи отфильтрованы как AC Adapter/не-ИБП."
+                "записи отфильтрованы как AC Adapter/не-РБП."
             )
         elif overview_power.get("battery_flag") == 255 and not has_internal and not has_ups:
             power_error = (
-                "Статус батареи неизвестен (BatteryFlag=255). Проверьте драйверы ACPI/Battery и WMI."
+                "Статус батареи неизвестен (BatteryFlag=255). Проверьте драйверы ACPI/Battery Рё WMI."
             )
 
         power_paths = [
@@ -2401,25 +3668,25 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
             },
             {
                 "channel": "UPS WMI",
-                "target": "ИБП через системные классы",
+                "target": "РБП через системные классы",
                 "status": "доступно" if ups_raw else ("обнаружено" if portable_ups_from_portable else "нет данных"),
-                "details": "Win32_UninterruptiblePowerSupply и UPS-подсказки из Win32_PortableBattery",
+                "details": "Win32_UninterruptiblePowerSupply Рё UPS-подсказки из Win32_PortableBattery",
             },
             {
                 "channel": "USB HID/PnP",
-                "target": "ИБП по USB (в т.ч. APC, CyberPower, DEXP и др.)",
+                "target": "РБП по USB (в т.ч. APC, CyberPower, DEXP Рё др.)",
                 "status": "обнаружено" if pnp_ups_hints else "нет данных",
                 "details": "Get-PnpDevice (Class Battery), Win32_PnPEntity",
             },
             {
                 "channel": "COM/Serial",
-                "target": "ИБП через COM/USB-Serial",
+                "target": "РБП через COM/USB-Serial",
                 "status": "обнаружено" if serial_ups_candidates else "нет данных",
                 "details": "Win32_SerialPort (по сигнатурам устройства)",
             },
             {
                 "channel": "SNMP / Network UPS",
-                "target": "Сетевой ИБП",
+                "target": "Сетевой РБП",
                 "status": "требуется настройка",
                 "details": "автоопрос невозможен без IP/учетных данных; используйте NUT/вендор-агент",
             },
@@ -2459,9 +3726,9 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
                 "snmp_service": bool(ups_tools_raw.get("SnmpService")),
             },
             "notes": [
-                "Статус зависит от драйверов устройства и вендорского ПО.",
-                "Для SNMP-ИБП нужен адрес устройства и параметры доступа.",
-                "Для некоторых ИБП расширенная телеметрия доступна только через утилиты производителя.",
+                "Статус зависит от драйверов устройства Рё вендорского ПО.",
+                "Для SNMP-РБП нужен адрес устройства Рё параметры доступа.",
+                "Для некоторых РБП расширенная телеметрия доступна только через утилиты производителя.",
             ],
             "source": "WMI/PnP + PowerStatus",
         }
@@ -2631,7 +3898,7 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
             )
         if tpm_tool_present and not tpm_get and not tpm_wmi:
             tpm_diagnostics.append(
-                "Использован fallback tpmtool для подтверждения присутствия TPM."
+                "Рспользован fallback tpmtool для подтверждения присутствия TPM."
             )
 
         tpm_error = ""
@@ -2949,6 +4216,8 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
             }
         except Exception:
             swap = {}
+
+        hardware = _collect_hardware_snapshot()
     
         snapshot = {
             "cpu_percent": round(cpu_percent, 1),
@@ -2996,14 +4265,16 @@ def get_system_snapshot(force: bool = False) -> Dict[str, Any]:
             "pagefiles": pagefiles,
             "physical_disks": physical_disks,
             "swap": swap,
+            "hardware": hardware,
             "error": ps_error,
         }
 
-        _CACHE["ts"] = now
+        _CACHE["ts"] = time.monotonic()
         _CACHE["data"] = snapshot
         return snapshot
     finally:
-        _SNAPSHOT_LOCK.release()
+        if lock_acquired:
+            _SNAPSHOT_LOCK.release()
 
 
 def get_cached_system_snapshot() -> Dict[str, Any]:

@@ -1,10 +1,15 @@
+import asyncio
+import io
 import os
 import shutil
+import threading
+import time
 from datetime import datetime
-from typing import List, Dict, Set, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from aiogram import types
 from aiogram.dispatcher import Dispatcher
+from aiogram.utils import exceptions as tg_exc
 
 from keymenu import get_utilities_keyboard
 from __main__ import authorized_users, write_bot_log
@@ -64,6 +69,404 @@ BTN_MULTI_CLOSE_MENU = "Закрыть контекстное меню"
 
 BTN_CONFIRM_DELETE = "Да, удалить"
 BTN_CANCEL_DELETE = "Отмена удаления"
+
+# Параметры лимитов Telegram API
+LOCAL_API_FILE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+STANDARD_API_SEND_LIMIT_BYTES = 50 * 1024 * 1024
+STANDARD_API_RECEIVE_LIMIT_BYTES = 20 * 1024 * 1024
+
+# Параметры отслеживания отправки файла
+UPLOAD_PROGRESS_INTERVAL_SEC = 10
+UPLOAD_STALL_TIMEOUT_SEC = 120
+UPLOAD_TIMEOUT_MIN_SEC = 120
+UPLOAD_TIMEOUT_MAX_SEC = 4 * 60 * 60
+UPLOAD_MIN_SPEED_BPS_FOR_TIMEOUT = 256 * 1024  # 256 КБ/с
+UPLOAD_CANCEL_CALLBACK_PREFIX = "fm_upload_cancel:"
+
+# Активные отправки файлов (по пользователю)
+fileman_upload_transfers: Dict[int, Dict[str, Any]] = {}
+
+
+class UploadCancelledError(Exception):
+    """Отправка файла была отменена пользователем или сторожем таймаута."""
+
+
+class UploadProgressTracker:
+    """
+    Потокобезопасный трекер прогресса отправки файла.
+    Отдельный lock нужен, потому что чтение файла может происходить вне основного потока.
+    """
+
+    def __init__(self, total_bytes: int):
+        now = time.monotonic()
+        self._lock = threading.Lock()
+        self.total_bytes = max(total_bytes, 0)
+        self.sent_bytes = 0
+        self.started_at = now
+        self.last_progress_at = now
+        self.finished = False
+        self.success = False
+        self.cancel_requested = False
+        self.cancel_reason = ""
+        self.error_text = ""
+
+    def advance(self, delta: int) -> None:
+        if delta <= 0:
+            return
+        with self._lock:
+            self.sent_bytes += delta
+            if self.total_bytes > 0 and self.sent_bytes > self.total_bytes:
+                self.sent_bytes = self.total_bytes
+            self.last_progress_at = time.monotonic()
+
+    def request_cancel(self, reason: str) -> bool:
+        with self._lock:
+            if self.finished or self.cancel_requested:
+                return False
+            self.cancel_requested = True
+            self.cancel_reason = reason
+            return True
+
+    def is_cancel_requested(self) -> bool:
+        with self._lock:
+            return self.cancel_requested
+
+    def get_cancel_reason(self) -> str:
+        with self._lock:
+            return self.cancel_reason
+
+    def finish(self, success: bool, error_text: str = "") -> None:
+        with self._lock:
+            self.finished = True
+            self.success = success
+            self.error_text = error_text
+            self.last_progress_at = time.monotonic()
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            now = time.monotonic()
+            elapsed = max(now - self.started_at, 0.001)
+            sent = max(self.sent_bytes, 0)
+            total = max(self.total_bytes, 0)
+            remaining = max(total - sent, 0)
+            speed_bps = sent / elapsed if elapsed > 0 else 0.0
+            eta_seconds: Optional[float] = None
+            if speed_bps > 0 and remaining > 0:
+                eta_seconds = remaining / speed_bps
+            percent = 100.0 if total == 0 else min((sent / total) * 100.0, 100.0)
+            return {
+                "sent_bytes": sent,
+                "total_bytes": total,
+                "remaining_bytes": remaining,
+                "elapsed_seconds": elapsed,
+                "speed_bps": speed_bps,
+                "eta_seconds": eta_seconds,
+                "percent": percent,
+                "finished": self.finished,
+                "success": self.success,
+                "cancel_requested": self.cancel_requested,
+                "cancel_reason": self.cancel_reason,
+                "error_text": self.error_text,
+                "last_progress_at": self.last_progress_at,
+            }
+
+
+class TrackedFileReader(io.BufferedReader):
+    """Файловый объект с отслеживанием прогресса и поддержкой принудительной отмены."""
+
+    def __init__(self, path: str, tracker: UploadProgressTracker):
+        self._raw_file = open(path, "rb")
+        super().__init__(self._raw_file)
+        self._tracker = tracker
+
+    def read(self, size: int = -1) -> bytes:
+        if self._tracker.is_cancel_requested():
+            raise UploadCancelledError(
+                self._tracker.get_cancel_reason() or "Отправка была отменена."
+            )
+        data = super().read(size)
+        if data:
+            self._tracker.advance(len(data))
+        return data
+
+
+def get_telegram_api_limits(bot) -> Tuple[bool, str, int, int]:
+    """
+    Возвращает (is_local_api, api_label, send_limit_bytes, receive_limit_bytes).
+    """
+    base_url: Optional[str] = None
+    try:
+        server = getattr(bot, "server", None)
+        if server:
+            base_url = (
+                getattr(server, "base", None)
+                or getattr(server, "_base", None)
+                or getattr(server, "_base_url", None)
+            )
+    except Exception:
+        base_url = None
+
+    if isinstance(base_url, str) and base_url and not base_url.startswith(
+        "https://api.telegram.org"
+    ):
+        return (
+            True,
+            f"локальный Telegram API ({base_url})",
+            LOCAL_API_FILE_LIMIT_BYTES,
+            LOCAL_API_FILE_LIMIT_BYTES,
+        )
+
+    return (
+        False,
+        "стандартный Telegram API (api.telegram.org)",
+        STANDARD_API_SEND_LIMIT_BYTES,
+        STANDARD_API_RECEIVE_LIMIT_BYTES,
+    )
+
+
+def format_megabytes(num_bytes: int) -> str:
+    return f"{num_bytes / (1024 * 1024):.2f} МБ"
+
+
+def format_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "неизвестно"
+    sec = max(int(seconds), 0)
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h} ч {m:02d} мин {s:02d} сек"
+    if m > 0:
+        return f"{m} мин {s:02d} сек"
+    return f"{s} сек"
+
+
+def calc_upload_timeout(total_bytes: int) -> int:
+    dynamic = int(total_bytes / UPLOAD_MIN_SPEED_BPS_FOR_TIMEOUT) + 60
+    return max(UPLOAD_TIMEOUT_MIN_SEC, min(dynamic, UPLOAD_TIMEOUT_MAX_SEC))
+
+
+def build_upload_cancel_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            "Отмена отправки",
+            callback_data=f"{UPLOAD_CANCEL_CALLBACK_PREFIX}{user_id}",
+        )
+    )
+    return kb
+
+
+def build_upload_progress_text(
+    file_name: str,
+    api_label: str,
+    send_limit_bytes: int,
+    receive_limit_bytes: int,
+    snapshot: Dict[str, Any],
+) -> str:
+    sent = int(snapshot.get("sent_bytes", 0))
+    total = int(snapshot.get("total_bytes", 0))
+    remaining = int(snapshot.get("remaining_bytes", 0))
+    speed_bps = float(snapshot.get("speed_bps", 0.0))
+    percent = float(snapshot.get("percent", 0.0))
+    eta_seconds = snapshot.get("eta_seconds")
+
+    lines = [
+        "📤 Загрузка файла в Telegram",
+        f"Файл: {file_name}",
+        f"Подключение: {api_label}",
+        (
+            "Лимиты: "
+            f"отправка {human_readable_size(send_limit_bytes)}, "
+            f"получение {human_readable_size(receive_limit_bytes)}"
+        ),
+        "",
+        f"Процент: {percent:.2f}%",
+        f"Скорость: {speed_bps / (1024 * 1024):.2f} МБ/с",
+        f"Загружено: {format_megabytes(sent)}",
+        f"Осталось: {format_megabytes(remaining)}",
+        f"Общий размер: {format_megabytes(total)}",
+    ]
+
+    if remaining > 0:
+        lines.append(f"Осталось по времени: {format_duration(eta_seconds)}")
+
+    if snapshot.get("finished") and snapshot.get("success"):
+        lines.append("Статус: ✅ Отправка завершена.")
+    elif snapshot.get("cancel_requested"):
+        reason = snapshot.get("cancel_reason") or "Отправка отменена."
+        lines.append(f"Статус: 🛑 {reason}")
+    elif snapshot.get("finished") and not snapshot.get("success"):
+        err = snapshot.get("error_text") or "Не удалось отправить файл."
+        lines.append(f"Статус: ❌ {err}")
+    else:
+        lines.append("Статус: ⏳ Идёт отправка... Нажми «Отмена отправки», если нужно остановить.")
+
+    return "\n".join(lines)
+
+
+def classify_upload_error(exc: Exception) -> Tuple[str, str]:
+    if isinstance(exc, UploadCancelledError):
+        return (
+            "🛑 Отправка файла остановлена",
+            str(exc),
+        )
+
+    if isinstance(exc, tg_exc.RetryAfter):
+        timeout = getattr(exc, "timeout", None)
+        wait_text = f"{timeout} сек" if timeout else "несколько секунд"
+        return (
+            "⏳ Ограничение Telegram (flood control)",
+            f"Telegram попросил подождать {wait_text} и повторить отправку.",
+        )
+
+    if isinstance(exc, (tg_exc.NetworkError, asyncio.TimeoutError)):
+        return (
+            "🌐 Проблема сети или таймаут",
+            "Отправка зависла по сети. Возможна блокировка медиа-трафика, "
+            "нестабильный интернет, VPN/прокси или недоступность API.",
+        )
+
+    if isinstance(exc, tg_exc.BadRequest):
+        text = str(exc)
+        text_l = text.lower()
+        if "file is too big" in text_l:
+            return (
+                "⚠️ Файл слишком большой для выбранного Telegram API",
+                text,
+            )
+        if "wrong file identifier" in text_l:
+            return (
+                "⚠️ Telegram отклонил файл",
+                "Telegram не принял файл. Попробуй переоткрыть файл и отправить снова.",
+            )
+        return (
+            "⚠️ Telegram отклонил отправку",
+            text,
+        )
+
+    if isinstance(exc, tg_exc.TelegramAPIError):
+        return (
+            "⚠️ Ошибка Telegram API",
+            str(exc),
+        )
+
+    return (
+        "⚠️ Не удалось отправить файл",
+        f"{type(exc).__name__}: {exc}",
+    )
+
+
+async def safe_edit_message_text(
+    bot,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup: Optional[types.InlineKeyboardMarkup] = None,
+) -> None:
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+        )
+    except tg_exc.MessageNotModified:
+        return
+    except tg_exc.MessageToEditNotFound:
+        return
+    except Exception as exc:
+        write_bot_log(f"[fileman] Не удалось обновить сообщение прогресса: {exc}")
+
+
+async def monitor_upload_progress(
+    bot,
+    user_id: int,
+    transfer_state: Dict[str, Any],
+) -> None:
+    """
+    Фоновый монитор:
+    - обновляет прогресс каждые 10 сек;
+    - если долго нет прогресса, отменяет отправку, чтобы не висела бесконечно.
+    """
+    tracker = transfer_state.get("tracker")
+    if not isinstance(tracker, UploadProgressTracker):
+        return
+
+    chat_id = transfer_state.get("chat_id")
+    message_id = transfer_state.get("progress_message_id")
+    file_name = transfer_state.get("file_name", "file")
+    api_label = transfer_state.get("api_label", "Telegram API")
+    send_limit_bytes = int(transfer_state.get("send_limit_bytes", 0))
+    receive_limit_bytes = int(transfer_state.get("receive_limit_bytes", 0))
+
+    if not isinstance(chat_id, int) or not isinstance(message_id, int):
+        return
+
+    last_text = ""
+
+    while True:
+        await asyncio.sleep(UPLOAD_PROGRESS_INTERVAL_SEC)
+        snap = tracker.snapshot()
+
+        # Если отправка зависла без прогресса — отменяем.
+        if not snap["finished"] and not snap["cancel_requested"]:
+            stuck_sec = time.monotonic() - float(snap["last_progress_at"])
+            if (
+                snap["sent_bytes"] < snap["total_bytes"]
+                and stuck_sec >= UPLOAD_STALL_TIMEOUT_SEC
+            ):
+                reason = (
+                    "Отправка остановлена: нет прогресса более "
+                    f"{UPLOAD_STALL_TIMEOUT_SEC} сек."
+                )
+                tracker.request_cancel(reason)
+                upload_task = transfer_state.get("upload_task")
+                if isinstance(upload_task, asyncio.Task) and not upload_task.done():
+                    upload_task.cancel()
+                write_bot_log(f"[fileman] user={user_id} send stalled, cancel requested.")
+                snap = tracker.snapshot()
+
+        text = build_upload_progress_text(
+            file_name=file_name,
+            api_label=api_label,
+            send_limit_bytes=send_limit_bytes,
+            receive_limit_bytes=receive_limit_bytes,
+            snapshot=snap,
+        )
+        if text != last_text:
+            markup = (
+                None
+                if snap["finished"] or snap["cancel_requested"]
+                else build_upload_cancel_keyboard(user_id)
+            )
+            await safe_edit_message_text(
+                bot=bot,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=markup,
+            )
+            last_text = text
+
+        if snap["finished"] or snap["cancel_requested"]:
+            break
+
+
+def request_cancel_upload(user_id: int, reason: str) -> bool:
+    transfer_state = fileman_upload_transfers.get(user_id)
+    if not transfer_state:
+        return False
+
+    tracker = transfer_state.get("tracker")
+    if not isinstance(tracker, UploadProgressTracker):
+        return False
+
+    changed = tracker.request_cancel(reason)
+    upload_task = transfer_state.get("upload_task")
+    if isinstance(upload_task, asyncio.Task) and not upload_task.done():
+        upload_task.cancel()
+    return changed
 
 
 def list_drives() -> List[str]:
@@ -294,6 +697,174 @@ async def send_directory_listing(message: types.Message, user_id: int):
     await message.answer(header + info, reply_markup=kb)
 
 
+async def send_file_to_telegram_with_progress(
+    message: types.Message,
+    user_id: int,
+    path: str,
+) -> None:
+    """
+    Отправляет файл в Telegram с периодическим обновлением прогресса и кнопкой отмены.
+    """
+    if not os.path.isfile(path):
+        await message.answer("Файл недоступен или был перемещён.")
+        return
+
+    # Не допускаем параллельную отправку для одного пользователя.
+    existing_transfer = fileman_upload_transfers.get(user_id)
+    if existing_transfer:
+        existing_tracker = existing_transfer.get("tracker")
+        if isinstance(existing_tracker, UploadProgressTracker):
+            snap = existing_tracker.snapshot()
+            if not snap["finished"] and not snap["cancel_requested"]:
+                await message.answer(
+                    "Уже выполняется отправка другого файла.\n"
+                    "Дождись завершения или нажми «Отмена отправки» в сообщении прогресса."
+                )
+                return
+        fileman_upload_transfers.pop(user_id, None)
+
+    file_name = os.path.basename(path)
+    try:
+        file_size = os.path.getsize(path)
+    except Exception as exc:
+        await message.answer(f"Не удалось определить размер файла: {exc}")
+        return
+
+    is_local_api, api_label, send_limit_bytes, receive_limit_bytes = (
+        get_telegram_api_limits(message.bot)
+    )
+    if file_size > send_limit_bytes:
+        await message.answer(
+            "Файл слишком большой для текущего типа Telegram API.\n"
+            f"Подключение: {api_label}\n"
+            f"Размер файла: {human_readable_size(file_size)}\n"
+            f"Лимит отправки: {human_readable_size(send_limit_bytes)}"
+        )
+        write_bot_log(
+            "[fileman] user="
+            f"{user_id} file={path} exceeds send limit "
+            f"{file_size}>{send_limit_bytes} (local_api={is_local_api})"
+        )
+        return
+
+    tracker = UploadProgressTracker(file_size)
+    initial_snapshot = tracker.snapshot()
+
+    progress_message = await message.answer(
+        build_upload_progress_text(
+            file_name=file_name,
+            api_label=api_label,
+            send_limit_bytes=send_limit_bytes,
+            receive_limit_bytes=receive_limit_bytes,
+            snapshot=initial_snapshot,
+        ),
+        reply_markup=build_upload_cancel_keyboard(user_id),
+    )
+
+    transfer_state: Dict[str, Any] = {
+        "tracker": tracker,
+        "chat_id": progress_message.chat.id,
+        "progress_message_id": progress_message.message_id,
+        "file_name": file_name,
+        "file_path": path,
+        "api_label": api_label,
+        "send_limit_bytes": send_limit_bytes,
+        "receive_limit_bytes": receive_limit_bytes,
+        "upload_task": asyncio.current_task(),
+    }
+    fileman_upload_transfers[user_id] = transfer_state
+
+    monitor_task = asyncio.create_task(
+        monitor_upload_progress(message.bot, user_id, transfer_state)
+    )
+    transfer_state["monitor_task"] = monitor_task
+
+    timeout_sec = calc_upload_timeout(file_size)
+    write_bot_log(
+        "[fileman] user="
+        f"{user_id} send-start file={path} size={file_size} "
+        f"api='{api_label}' timeout={timeout_sec}s"
+    )
+
+    try:
+        try:
+            with TrackedFileReader(path, tracker) as tracked_file:
+                input_file = types.InputFile(tracked_file, filename=file_name)
+                send_coro = message.answer_document(document=input_file, caption=file_name)
+                await asyncio.wait_for(send_coro, timeout=timeout_sec)
+        except TypeError as exc:
+            # Защитный путь: в некоторых сборках/обёртках InputFile может
+            # отвергать кастомный file-like объект. Тогда повторяем отправку
+            # через обычный open(), как в старой рабочей реализации.
+            if "Not supported file type" not in str(exc):
+                raise
+
+            write_bot_log(
+                f"[fileman] user={user_id} tracked InputFile rejected, fallback to plain file: {exc}"
+            )
+            with open(path, "rb") as plain_file:
+                send_coro = message.answer_document(document=plain_file, caption=file_name)
+                await asyncio.wait_for(send_coro, timeout=timeout_sec)
+            # В fallback-пути телеметрия чтения недоступна — отмечаем итог как полностью отправленный.
+            tracker.advance(file_size)
+
+        tracker.finish(success=True)
+        await message.answer(f"✅ Файл «{file_name}» успешно отправлен в Telegram.")
+        write_bot_log(f"[fileman] user={user_id} send-success file={path}")
+
+    except asyncio.CancelledError:
+        cancel_reason = tracker.get_cancel_reason() or "Отправка отменена."
+        tracker.finish(success=False, error_text=cancel_reason)
+        await message.answer(
+            f"🛑 Отправка файла «{file_name}» отменена.\nПричина: {cancel_reason}"
+        )
+        write_bot_log(f"[fileman] user={user_id} send-cancelled file={path}: {cancel_reason}")
+
+    except Exception as exc:
+        title, details = classify_upload_error(exc)
+        tracker.finish(success=False, error_text=f"{type(exc).__name__}: {exc}")
+        await message.answer(
+            f"{title}\n"
+            f"{details}\n\n"
+            "Файл остался на компьютере. Можешь повторить отправку позже."
+        )
+        write_bot_log(
+            f"[fileman] user={user_id} send-error file={path}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    finally:
+        final_snapshot = tracker.snapshot()
+        final_text = build_upload_progress_text(
+            file_name=file_name,
+            api_label=api_label,
+            send_limit_bytes=send_limit_bytes,
+            receive_limit_bytes=receive_limit_bytes,
+            snapshot=final_snapshot,
+        )
+        await safe_edit_message_text(
+            bot=message.bot,
+            chat_id=progress_message.chat.id,
+            message_id=progress_message.message_id,
+            text=final_text,
+            reply_markup=None,
+        )
+
+        monitor_task_obj = transfer_state.get("monitor_task")
+        if isinstance(monitor_task_obj, asyncio.Task):
+            monitor_task_obj.cancel()
+            try:
+                await monitor_task_obj
+            except asyncio.CancelledError:
+                pass
+            except Exception as monitor_exc:
+                write_bot_log(
+                    f"[fileman] user={user_id} progress-monitor-stop-error: {monitor_exc}"
+                )
+
+        fileman_upload_transfers.pop(user_id, None)
+
+
 def register_handlers(dp: Dispatcher):
     """
     Регистрация хендлеров файлового менеджера.
@@ -319,6 +890,11 @@ def register_handlers(dp: Dispatcher):
         """
         user_id = message.from_user.id
 
+        request_cancel_upload(
+            user_id,
+            "Отправка остановлена: повторный вход в файловый менеджер.",
+        )
+
         fileman_mode[user_id] = True
         fileman_current_path[user_id] = None  # показываем список дисков
         fileman_page[user_id] = 0
@@ -336,9 +912,16 @@ def register_handlers(dp: Dispatcher):
 
         write_bot_log(f"Пользователь {user_id} открыл модуль 'Файловый менеджер'.")
 
+        _, api_label, send_limit_bytes, receive_limit_bytes = get_telegram_api_limits(
+            message.bot
+        )
+
         kb = get_disks_keyboard()
         await message.answer(
             "📂 Файловый менеджер.\n"
+            f"Подключение: {api_label}.\n"
+            f"Лимит отправки файлов (ПК → Telegram): {human_readable_size(send_limit_bytes)}.\n"
+            f"Лимит получения файлов (Telegram → бот): {human_readable_size(receive_limit_bytes)}.\n"
             "Сначала выбери диск, затем папку или файл.\n"
             "Для выхода используй кнопку «Назад в утилиты».",
             reply_markup=kb,
@@ -354,6 +937,11 @@ def register_handlers(dp: Dispatcher):
         Выход из файлового менеджера обратно в раздел утилит.
         """
         user_id = message.from_user.id
+
+        upload_was_cancelled = request_cancel_upload(
+            user_id,
+            "Отправка остановлена: выход из файлового менеджера.",
+        )
 
         fileman_mode[user_id] = False
         fileman_current_path.pop(user_id, None)
@@ -373,7 +961,43 @@ def register_handlers(dp: Dispatcher):
         write_bot_log(f"Пользователь {user_id} закрыл модуль 'Файловый менеджер'.")
 
         kb = get_utilities_keyboard()
-        await message.answer("Возвращаюсь в раздел утилит.", reply_markup=kb)
+        if upload_was_cancelled:
+            text = "Возвращаюсь в раздел утилит. Активная отправка файла остановлена."
+        else:
+            text = "Возвращаюсь в раздел утилит."
+        await message.answer(text, reply_markup=kb)
+
+    @dp.callback_query_handler(
+        lambda callback_query: callback_query.from_user.id in authorized_users
+        and (callback_query.data or "").startswith(UPLOAD_CANCEL_CALLBACK_PREFIX)
+    )
+    async def fileman_cancel_upload(callback_query: types.CallbackQuery):
+        """
+        Отмена активной отправки файла по inline-кнопке в сообщении прогресса.
+        """
+        data = callback_query.data or ""
+        try:
+            target_user_id = int(data[len(UPLOAD_CANCEL_CALLBACK_PREFIX) :])
+        except Exception:
+            await callback_query.answer("Некорректные данные отмены.", show_alert=True)
+            return
+
+        caller_id = callback_query.from_user.id
+        if caller_id != target_user_id:
+            await callback_query.answer(
+                "Эта кнопка относится к отправке другого пользователя.",
+                show_alert=True,
+            )
+            return
+
+        changed = request_cancel_upload(
+            target_user_id,
+            "Отправка отменена пользователем.",
+        )
+        if changed:
+            await callback_query.answer("Останавливаю отправку файла...")
+        else:
+            await callback_query.answer("Отправка уже завершена или останавливается.")
 
     # --- Контекстное меню одиночного файла ---
 
@@ -413,11 +1037,11 @@ def register_handlers(dp: Dispatcher):
             write_bot_log(
                 f"Пользователь {user_id} запрашивает отправку файла в Telegram: {path}"
             )
-            try:
-                with open(path, "rb") as f:
-                    await message.answer_document(f, caption=os.path.basename(path))
-            except Exception as e:
-                await message.answer(f"Не удалось отправить файл: {e}")
+            await send_file_to_telegram_with_progress(
+                message=message,
+                user_id=user_id,
+                path=path,
+            )
             return
 
         if action == BTN_FILE_OPEN:

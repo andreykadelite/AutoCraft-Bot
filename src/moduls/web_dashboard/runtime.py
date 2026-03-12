@@ -11,7 +11,6 @@ class PanelRuntime:
         self.app = None
         self.appbuilder = None
         self.scheduler = None
-        self.generated_password: Optional[str] = None
         self.started_at = time.time()
         self.last_metrics_at: Optional[float] = None
 
@@ -25,7 +24,6 @@ class PanelRuntime:
         self.app = app
         self.appbuilder = appbuilder
         self.scheduler = context.get("scheduler")
-        self.generated_password = context.get("generated_password")
         self.last_metrics_at = context.get("last_metrics_at")
         self.config = context.get("config", self.config)
         return self.app

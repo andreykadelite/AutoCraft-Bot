@@ -87,9 +87,8 @@ python -m nuitka ^
   --include-data-file="%SCRIPT_DIR%ffmpeg-7.1\bin\avcodec-61.dll=avcodec-61.dll" ^
   --include-data-file="%SCRIPT_DIR%serverapibot.zip=serverapibot.zip" ^
   --include-data-file="%SCRIPT_DIR%Python.zip=Python.zip" ^
-  --include-data-file="%SCRIPT_DIR%nircmd-x64\NirCmd.chm=nircmd-x64\NirCmd.chm" ^
-  --include-data-file="%SCRIPT_DIR%nircmd-x64\nircmd.exe=nircmd-x64\nircmd.exe" ^
-  --include-data-file="%SCRIPT_DIR%nircmd-x64\nircmdc.exe=nircmd-x64\nircmdc.exe" ^
+  --include-data-file="%SCRIPT_DIR%LibreHardwareMonitor.NET.10.zip=LibreHardwareMonitor.NET.10.zip" ^
+  --include-data-file="%SCRIPT_DIR%nircmd-x64.zip=nircmd-x64.zip" ^
   --include-package=moduls ^
   --include-data-dir="%SCRIPT_DIR%src\moduls\web_dashboard=moduls\web_dashboard" ^
   --include-package=network_module ^

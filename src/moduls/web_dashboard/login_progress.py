@@ -289,6 +289,20 @@ def _run_login_preparation(app, token: str) -> None:
                 message="Сбор системной информации",
             )
             snapshot = get_system_snapshot()
+            if not isinstance(snapshot, dict) or not snapshot:
+                snapshot = get_system_snapshot(force=True)
+            if not isinstance(snapshot, dict) or not snapshot:
+                _LOGIN_PROGRESS.set_step(
+                    token,
+                    "system",
+                    "error",
+                    detail="Не удалось получить системные данные.",
+                )
+                _LOGIN_PROGRESS.fail(
+                    token,
+                    "Не удалось получить данные системы: пустой ответ сборщика.",
+                )
+                return
             snapshot_error = ""
             if isinstance(snapshot, dict):
                 snapshot_error = str(snapshot.get("error") or "").strip()

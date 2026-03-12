@@ -54,6 +54,9 @@
   var streamRunId = 0;
   var modeStorageKey = "rd_render_mode";
   var MOVE_SEND_MAX_FPS = 30;
+  var CAPTURE_EXIT_COMBO_TEXT = "Ctrl + Alt + Shift + I";
+  var CTRL_ALT_DEL_PENDING_TEXT =
+    "\u041a\u043e\u043c\u0430\u043d\u0434\u0430 \u0441\u043a\u043e\u0440\u043e \u0431\u0443\u0434\u0435\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0430.";
 
   var state = {
     sessionActive: false,
@@ -69,7 +72,8 @@
     lastGestureAt: 0,
     streamAttempt: "",
     streamRunId: 0,
-    frameCount: 0
+    frameCount: 0,
+    restoreCaptureFocus: false
   };
 
   var KEY_MAP = {
@@ -275,7 +279,7 @@
     } else if (!cfg.hasControl) {
       text = "Управление недоступно.";
     } else if (!state.control) {
-      text = "Нажмите, чтобы захватить управление.";
+      text = "Нажмите, чтобы захватить управление. Выход из захвата: " + CAPTURE_EXIT_COMBO_TEXT + ".";
     }
     overlay.textContent = text;
     overlay.classList.toggle("active", !!text);
@@ -322,7 +326,7 @@
   function updateFullscreenButton() {
     if (!fullscreenBtn) return;
     var active = isFullscreenActive();
-    fullscreenBtn.textContent = active ? "Exit Fullscreen" : "Fullscreen";
+    fullscreenBtn.textContent = active ? "Оконный режим" : "Полный экран";
     fullscreenBtn.setAttribute("aria-pressed", active ? "true" : "false");
   }
 
@@ -361,6 +365,7 @@
       return;
     }
     state.sessionActive = true;
+    state.restoreCaptureFocus = false;
     state.screenError = "";
     state.streamAttempt = "";
     state.frameCount = 0;
@@ -381,11 +386,11 @@
     if (!state.sessionActive) {
       return;
     }
+    deactivateControl({ keepStatus: true, releaseRemoteKeys: true });
     state.sessionActive = false;
+    state.restoreCaptureFocus = false;
     stopStatusLoop();
     stopStream();
-    state.control = false;
-    state.keyboard = false;
     state.screenError = "";
     state.streamAttempt = "";
     state.frameCount = 0;
@@ -1471,10 +1476,54 @@
       .catch(function () {});
   }
 
-  function sendInput(payload) {
-    if (!state.sessionActive) return;
-    if (!state.control || !cfg.hasControl) return;
-    fetch(cfg.inputUrl, {
+  function normalizeInputErrorMessage(errorText) {
+    var text = String(errorText || "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return "Команда не выполнена.";
+    }
+    if (text.length > 240) {
+      return text.slice(0, 240) + "...";
+    }
+    return text;
+  }
+
+  function parseInputResponse(resp) {
+    if (!resp) {
+      return Promise.resolve({ ok: false, error: "Пустой ответ сервера." });
+    }
+    return resp.text()
+      .then(function (body) {
+        var textBody = String(body || "");
+        if (!textBody) {
+          return { ok: resp.ok };
+        }
+        try {
+          return JSON.parse(textBody);
+        } catch (err) {
+          return {
+            ok: false,
+            error: "Некорректный JSON в ответе /remote-desktop/input."
+          };
+        }
+      });
+  }
+
+  function sendInput(payload, options) {
+    var opts = options || {};
+    var trackResponse = !!opts.trackResponse;
+    var allowWithoutControl = !!opts.allowWithoutControl;
+    var silentError = opts.silentError !== false;
+    var successMessage = opts.successMessage || "";
+    var endpointName = "/remote-desktop/input";
+
+    if (!state.sessionActive) {
+      return Promise.resolve({ ok: false, skipped: true, reason: "session_inactive" });
+    }
+    if ((!state.control || !cfg.hasControl) && !allowWithoutControl) {
+      return Promise.resolve({ ok: false, skipped: true, reason: "control_inactive" });
+    }
+
+    return fetch(cfg.inputUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1482,8 +1531,138 @@
         "X-RDP-Token": cfg.token
       },
       credentials: "same-origin",
-      body: JSON.stringify(payload)
-    }).catch(function () {});
+      body: JSON.stringify(payload || {})
+    })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return parseResponseDetail(resp, endpointName)
+            .then(function (detail) {
+              throw new Error(normalizeInputErrorMessage(detail || ("HTTP " + (resp.status || 0))));
+            });
+        }
+        if (!trackResponse) {
+          return { ok: true };
+        }
+        return parseInputResponse(resp);
+      })
+      .then(function (data) {
+        if (!trackResponse) {
+          return data;
+        }
+        if (!data || data.ok === false) {
+          throw new Error(normalizeInputErrorMessage((data && (data.error || data.message)) || ""));
+        }
+        if (successMessage) {
+          setStatus(successMessage);
+        } else if (data.message) {
+          setStatus(String(data.message));
+        }
+        return data;
+      })
+      .catch(function (err) {
+        var message = normalizeInputErrorMessage(err && err.message ? err.message : "");
+        if (!silentError) {
+          setStatus(message);
+        }
+        sendClientLog("input_send_error", {
+          action: payload && payload.action ? String(payload.action) : "",
+          detail: message
+        }, "warning");
+        return { ok: false, error: message };
+      });
+  }
+
+  function releaseRemoteKeys(silentError) {
+    if (!state.sessionActive || !cfg.hasControl) {
+      return Promise.resolve({ ok: false, skipped: true, reason: "session_or_control_unavailable" });
+    }
+    return sendInput(
+      { action: "release_keys" },
+      {
+        allowWithoutControl: true,
+        trackResponse: true,
+        silentError: silentError !== false
+      }
+    );
+  }
+
+  function clearScreenFocus() {
+    if (screenWrapper && typeof screenWrapper.blur === "function") {
+      screenWrapper.blur();
+    }
+    if (document.activeElement && document.activeElement !== document.body) {
+      try {
+        document.activeElement.blur();
+      } catch (err) {
+      }
+    }
+  }
+
+  function queueCaptureFocusRestore() {
+    if (!state.sessionActive) return;
+    if (!state.control || !state.keyboard) return;
+    state.restoreCaptureFocus = true;
+  }
+
+  function tryRestoreCaptureFocus() {
+    if (!state.restoreCaptureFocus) return;
+    if (!state.sessionActive || !state.control || !state.keyboard || !screenWrapper) {
+      state.restoreCaptureFocus = false;
+      return;
+    }
+    if (document.visibilityState && document.visibilityState !== "visible") {
+      return;
+    }
+    if (typeof document.hasFocus === "function" && !document.hasFocus()) {
+      return;
+    }
+    state.restoreCaptureFocus = false;
+    setTimeout(function () {
+      if (!state.sessionActive || !state.control || !state.keyboard || !screenWrapper) {
+        return;
+      }
+      if (typeof screenWrapper.focus === "function") {
+        screenWrapper.focus();
+      }
+    }, 0);
+  }
+
+  function deactivateControl(options) {
+    var opts = options || {};
+    var reason = opts.reason || "";
+    var keepStatus = !!opts.keepStatus;
+    var shouldReleaseKeys = opts.releaseRemoteKeys !== false;
+    var wasControl = !!state.control;
+    var wasKeyboard = !!state.keyboard;
+
+    if (!wasControl && !wasKeyboard) {
+      return;
+    }
+
+    state.control = false;
+    state.keyboard = false;
+    state.restoreCaptureFocus = false;
+    pointerActiveId = null;
+    updateButtons();
+    clearScreenFocus();
+
+    if (shouldReleaseKeys) {
+      releaseRemoteKeys(true);
+    }
+
+    if (!keepStatus && reason) {
+      setStatus(reason);
+    }
+  }
+
+  function isCaptureExitCombo(event) {
+    if (!event) return false;
+    if (!state.control) return false;
+    if (event.metaKey) return false;
+    if (!event.ctrlKey || !event.altKey || !event.shiftKey) return false;
+    var code = String(event.code || "");
+    var key = String(event.key || "").toLowerCase();
+    return code === "KeyI" || key === "i";
   }
 
   function getRemoteCoords(event) {
@@ -1552,6 +1731,13 @@
   }
 
   function handleKey(event, action) {
+    if (action === "key_down" && isCaptureExitCombo(event)) {
+      event.preventDefault();
+      deactivateControl({
+        reason: "Захват управления отключен (" + CAPTURE_EXIT_COMBO_TEXT + ")."
+      });
+      return;
+    }
     if (!state.keyboard || !state.control || !cfg.hasControl) return;
     if (isPrintable(event)) {
       if (action === "key_down") {
@@ -1835,14 +2021,19 @@
         setStatus("Сеанс выключен");
         return;
       }
-      state.control = !state.control;
-      if (state.control && !state.keyboard) {
+      if (state.control) {
+        deactivateControl({ reason: "Управление отключено." });
+        return;
+      }
+      state.control = true;
+      if (!state.keyboard) {
         state.keyboard = true;
       }
       updateButtons();
       if (state.control && screenWrapper) {
         screenWrapper.focus();
       }
+      setStatus("Управление активно. Выход из захвата: " + CAPTURE_EXIT_COMBO_TEXT + ".");
     });
   }
 
@@ -1857,12 +2048,17 @@
         setStatus("Управление недоступно.");
         return;
       }
+      if (state.control) {
+        setStatus("Управление уже активно. Выход: " + CAPTURE_EXIT_COMBO_TEXT + ".");
+        return;
+      }
       state.control = true;
       state.keyboard = true;
       updateButtons();
       if (screenWrapper) {
         screenWrapper.focus();
       }
+      setStatus("Управление захвачено. Выход из захвата: " + CAPTURE_EXIT_COMBO_TEXT + ".");
     });
   }
 
@@ -1877,15 +2073,19 @@
       updateButtons();
       if (state.keyboard && screenWrapper) {
         screenWrapper.focus();
+        setStatus("Клавиатура включена.");
+      } else if (!state.keyboard) {
+        releaseRemoteKeys(true);
+        setStatus("Клавиатура выключена.");
       }
     });
   }
 
   if (clearFocusBtn) {
     clearFocusBtn.addEventListener("click", function () {
-      if (document.activeElement) {
-        document.activeElement.blur();
-      }
+      clearScreenFocus();
+      releaseRemoteKeys(true);
+      setStatus("Фокус снят. Клавиши отпущены.");
     });
   }
 
@@ -1904,6 +2104,7 @@
             state.keyboard = true;
             updateButtons();
             screenWrapper.focus();
+            setStatus("Управление захвачено. Выход из захвата: " + CAPTURE_EXIT_COMBO_TEXT + ".");
           }
           return;
         }
@@ -1961,6 +2162,7 @@
             state.keyboard = true;
             updateButtons();
             screenWrapper.focus();
+            setStatus("Управление захвачено. Выход из захвата: " + CAPTURE_EXIT_COMBO_TEXT + ".");
           }
           return;
         }
@@ -2014,13 +2216,68 @@
     });
   }
 
+  window.addEventListener("blur", function () {
+    if (!state.sessionActive) return;
+    if (!state.control) return;
+    queueCaptureFocusRestore();
+    pointerActiveId = null;
+    releaseRemoteKeys(true);
+  });
+
+  document.addEventListener("visibilitychange", function () {
+    if (!state.sessionActive) return;
+    if (!state.control) return;
+    if (document.visibilityState === "hidden") {
+      queueCaptureFocusRestore();
+      pointerActiveId = null;
+      releaseRemoteKeys(true);
+    } else {
+      tryRestoreCaptureFocus();
+    }
+  });
+
+  window.addEventListener("focus", function () {
+    tryRestoreCaptureFocus();
+  });
+
+  window.addEventListener("pageshow", function () {
+    tryRestoreCaptureFocus();
+  });
+
   document.querySelectorAll("[data-hotkey]").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      if (!state.control) return;
+      if (!state.control) {
+        setStatus("Сначала захватите управление.");
+        return;
+      }
       markUserGesture();
       var keys = (btn.getAttribute("data-hotkey") || "").split("+");
       if (!keys.length) return;
-      sendInput({ action: "hotkey", keys: keys });
+      var normalizedSignature = keys
+        .map(function (part) {
+          return String(part || "").trim().toLowerCase();
+        })
+        .filter(Boolean)
+        .sort()
+        .join("+");
+      if (normalizedSignature === "alt+ctrl+del" || normalizedSignature === "alt+ctrl+delete") {
+        setStatus(CTRL_ALT_DEL_PENDING_TEXT);
+        sendInput(
+          { action: "hotkey", keys: keys },
+          {
+            trackResponse: false,
+            silentError: true
+          }
+        );
+        return;
+      }
+      sendInput(
+        { action: "hotkey", keys: keys },
+        {
+          trackResponse: true,
+          silentError: false
+        }
+      );
     });
   });
 
@@ -2092,8 +2349,14 @@
         setStatus("Введите текст для отправки.");
         return;
       }
-      sendInput({ action: "text", text: text });
-      setStatus("Текст отправлен.");
+      sendInput(
+        { action: "text", text: text },
+        {
+          trackResponse: true,
+          silentError: false,
+          successMessage: "Текст отправлен."
+        }
+      );
     });
   }
 
@@ -2113,9 +2376,13 @@
       toggleFullscreen();
     });
   }
-  document.addEventListener("fullscreenchange", updateFullscreenButton);
-  document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
-  document.addEventListener("msfullscreenchange", updateFullscreenButton);
+  function handleFullscreenChange() {
+    updateFullscreenButton();
+    tryRestoreCaptureFocus();
+  }
+  document.addEventListener("fullscreenchange", handleFullscreenChange);
+  document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+  document.addEventListener("msfullscreenchange", handleFullscreenChange);
 
 
   if (sessionToggle) {
@@ -2190,6 +2457,9 @@
   refreshFiles();
 
   window.addEventListener("beforeunload", function () {
+    if (state.sessionActive && state.control) {
+      releaseRemoteKeys(true);
+    }
     if (state.sessionActive) {
       sendSessionState("stop");
     }

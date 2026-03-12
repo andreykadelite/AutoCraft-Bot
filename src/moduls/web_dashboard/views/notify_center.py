@@ -7,8 +7,8 @@ from flask_appbuilder import BaseView, expose
 from flask_appbuilder.security.decorators import permission_name
 from flask_appbuilder.security.sqla.models import User
 from flask_login import current_user
-from flask_wtf.csrf import validate_csrf
-from sqlalchemy import func, or_
+from flask_wtf.csrf import generate_csrf, validate_csrf
+from sqlalchemy import func
 
 from ..db import db
 from ..models.audit import AuditLog
@@ -131,9 +131,15 @@ def _get_or_create_notification_state(user_id: int, username: str) -> UserNotifi
     if state:
         return state
 
+    latest_audit_id = _get_latest_system_audit_id(username)
+    latest_messenger_message_id = _latest_messenger_received_message_id(user_id)
+    latest_communications_message_id = _latest_communications_received_message_id(user_id)
     state = UserNotificationState(
         user_id=user_id,
-        system_last_read_audit_id=_get_latest_system_audit_id(username),
+        system_last_read_audit_id=latest_audit_id,
+        system_last_shown_audit_id=latest_audit_id,
+        messenger_last_shown_message_id=latest_messenger_message_id,
+        communications_last_shown_message_id=latest_communications_message_id,
         updated_at=dt.datetime.utcnow(),
     )
     db.session.add(state)
@@ -150,6 +156,21 @@ def _effective_system_read_audit_id(state: UserNotificationState) -> int:
         int(state.system_last_read_audit_id or 0),
         _history_cutoff_audit_id(state),
     )
+
+
+def _effective_system_shown_audit_id(state: UserNotificationState) -> int:
+    return max(
+        int(state.system_last_shown_audit_id or 0),
+        _history_cutoff_audit_id(state),
+    )
+
+
+def _effective_messenger_shown_message_id(state: UserNotificationState) -> int:
+    return max(int(state.messenger_last_shown_message_id or 0), 0)
+
+
+def _effective_communications_shown_message_id(state: UserNotificationState) -> int:
+    return max(int(state.communications_last_shown_message_id or 0), 0)
 
 
 def _count_system_unread(
@@ -247,33 +268,6 @@ def _load_system_banners_after(
     return [_serialize_system_item(row) for row in rows], int(rows[-1].id)
 
 
-def _messenger_unread_query(user_id: int):
-    return (
-        db.session.query(InternalChatMessage)
-        .join(
-            InternalChatState,
-            InternalChatState.thread_id == InternalChatMessage.thread_id,
-        )
-        .filter(
-            InternalChatState.user_id == int(user_id),
-            InternalChatState.is_hidden.is_(False),
-            InternalChatMessage.sender_id != int(user_id),
-            or_(
-                InternalChatState.last_read_message_id.is_(None),
-                InternalChatMessage.id > InternalChatState.last_read_message_id,
-            ),
-        )
-    )
-
-
-def _communications_unread_query(user_id: int):
-    return db.session.query(UserMessage).filter(
-        UserMessage.recipient_id == int(user_id),
-        UserMessage.read_at.is_(None),
-        UserMessage.deleted_by_recipient.is_(False),
-    )
-
-
 def _latest_messenger_received_message_id(user_id: int) -> int:
     latest = (
         db.session.query(func.max(InternalChatMessage.id))
@@ -308,36 +302,23 @@ def _load_messenger_banners(
     *,
     after_id: int,
     limit: int,
-    initial: bool,
 ) -> tuple[list[dict], int]:
-    query = _messenger_unread_query(user_id)
-    limit = max(1, int(limit))
-    rows: list[InternalChatMessage]
-    total_unread = 0
-
-    if initial:
-        rows_desc = query.order_by(InternalChatMessage.id.desc()).limit(limit).all()
-        rows = list(reversed(rows_desc))
-        total_unread = int(query.count() or 0)
-    else:
-        query = (
-            db.session.query(InternalChatMessage)
-            .join(
-                InternalChatState,
-                InternalChatState.thread_id == InternalChatMessage.thread_id,
-            )
-            .filter(
-                InternalChatState.user_id == int(user_id),
-                InternalChatState.is_hidden.is_(False),
-                InternalChatMessage.sender_id != int(user_id),
-            )
+    rows = (
+        db.session.query(InternalChatMessage)
+        .join(
+            InternalChatState,
+            InternalChatState.thread_id == InternalChatMessage.thread_id,
         )
-        rows = (
-            query.filter(InternalChatMessage.id > int(after_id))
-            .order_by(InternalChatMessage.id.asc())
-            .limit(limit)
-            .all()
+        .filter(
+            InternalChatState.user_id == int(user_id),
+            InternalChatState.is_hidden.is_(False),
+            InternalChatMessage.sender_id != int(user_id),
+            InternalChatMessage.id > int(after_id),
         )
+        .order_by(InternalChatMessage.id.asc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
 
     if not rows:
         return [], int(after_id)
@@ -363,22 +344,6 @@ def _load_messenger_banners(
         )
         last_id = max(last_id, int(msg.id))
 
-    if initial and total_unread > len(rows):
-        remaining = int(total_unread - len(rows))
-        items.append(
-            {
-                "id": f"messenger:remaining:{last_id}:{remaining}",
-                "kind": "messenger",
-                "title": "Мессенджер: есть ещё непрочитанные",
-                "body": f"Ещё непрочитанных сообщений: {remaining}.",
-                "created_at": _format_datetime(dt.datetime.utcnow()),
-                "level": "info",
-                "url": url_for("InternalMessengerView.list"),
-                "action_label": "Перейти",
-                "source_label": "Мессенджер",
-            }
-        )
-
     return items, int(last_id)
 
 
@@ -387,28 +352,18 @@ def _load_communications_banners(
     *,
     after_id: int,
     limit: int,
-    initial: bool,
 ) -> tuple[list[dict], int]:
-    query = _communications_unread_query(user_id)
-    limit = max(1, int(limit))
-    rows: list[UserMessage]
-    total_unread = 0
-
-    if initial:
-        rows_desc = query.order_by(UserMessage.id.desc()).limit(limit).all()
-        rows = list(reversed(rows_desc))
-        total_unread = int(query.count() or 0)
-    else:
-        query = db.session.query(UserMessage).filter(
+    rows = (
+        db.session.query(UserMessage)
+        .filter(
             UserMessage.recipient_id == int(user_id),
             UserMessage.deleted_by_recipient.is_(False),
+            UserMessage.id > int(after_id),
         )
-        rows = (
-            query.filter(UserMessage.id > int(after_id))
-            .order_by(UserMessage.id.asc())
-            .limit(limit)
-            .all()
-        )
+        .order_by(UserMessage.id.asc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
 
     if not rows:
         return [], int(after_id)
@@ -436,22 +391,6 @@ def _load_communications_banners(
         )
         last_id = max(last_id, int(msg.id))
 
-    if initial and total_unread > len(rows):
-        remaining = int(total_unread - len(rows))
-        items.append(
-            {
-                "id": f"communications:remaining:{last_id}:{remaining}",
-                "kind": "communications",
-                "title": "Центр коммуникаций: есть ещё непрочитанные",
-                "body": f"Ещё непрочитанных сообщений: {remaining}.",
-                "created_at": _format_datetime(dt.datetime.utcnow()),
-                "level": "info",
-                "url": url_for("CommunicationCenterView.list", box="inbox"),
-                "action_label": "Перейти",
-                "source_label": "Центр коммуникаций",
-            }
-        )
-
     return items, int(last_id)
 
 
@@ -474,9 +413,16 @@ class SystemNotifyCenterView(BaseView):
         )
         latest_visible_id = int(history[0]["id"]) if history else int(cleared_before_id)
         current_read_id = _effective_system_read_audit_id(state)
+        current_shown_id = _effective_system_shown_audit_id(state)
+        state_changed = False
 
         if latest_visible_id > current_read_id:
             state.system_last_read_audit_id = latest_visible_id
+            state_changed = True
+        if latest_visible_id > current_shown_id:
+            state.system_last_shown_audit_id = latest_visible_id
+            state_changed = True
+        if state_changed:
             state.updated_at = dt.datetime.utcnow()
             db.session.commit()
 
@@ -500,6 +446,7 @@ class SystemNotifyCenterView(BaseView):
         state = _get_or_create_notification_state(user_id, username)
         cleared_before_id = _history_cutoff_audit_id(state)
         effective_read_id = _effective_system_read_audit_id(state)
+        effective_shown_id = _effective_system_shown_audit_id(state)
 
         system_unread = _count_system_unread(
             username,
@@ -516,7 +463,7 @@ class SystemNotifyCenterView(BaseView):
 
         first_poll = "notify_hub_initialized" not in session
         seen_system_id_default = (
-            int(effective_read_id)
+            max(int(effective_read_id), int(effective_shown_id))
             if first_poll
             else (int(system_recent[0]["id"]) if system_recent else int(cleared_before_id))
         )
@@ -524,87 +471,94 @@ class SystemNotifyCenterView(BaseView):
             _parse_int(session.get("notify_hub_system_seen_id"), seen_system_id_default),
             int(cleared_before_id),
         )
+        messenger_shown_id_default = _effective_messenger_shown_message_id(state)
+        communications_shown_id_default = _effective_communications_shown_message_id(state)
+        if first_poll and messenger_shown_id_default <= 0:
+            messenger_shown_id_default = _latest_messenger_received_message_id(user_id)
+        if first_poll and communications_shown_id_default <= 0:
+            communications_shown_id_default = _latest_communications_received_message_id(user_id)
         seen_messenger_message_id = _parse_int(
             session.get("notify_hub_seen_messenger_message_id"),
-            0,
+            messenger_shown_id_default,
+        )
+        seen_messenger_message_id = max(
+            int(seen_messenger_message_id or 0),
+            int(messenger_shown_id_default or 0),
         )
         seen_communications_message_id = _parse_int(
             session.get("notify_hub_seen_communications_message_id"),
-            0,
+            communications_shown_id_default,
+        )
+        seen_communications_message_id = max(
+            int(seen_communications_message_id or 0),
+            int(communications_shown_id_default or 0),
         )
 
         banners: list[dict] = []
-
-        if first_poll:
-            messenger_banners, last_messenger_message_id = _load_messenger_banners(
-                user_id,
-                after_id=0,
-                limit=_POLL_INITIAL_MESSAGE_BANNERS_LIMIT,
-                initial=True,
-            )
-            communications_banners, last_communications_message_id = _load_communications_banners(
-                user_id,
-                after_id=0,
-                limit=_POLL_INITIAL_MESSAGE_BANNERS_LIMIT,
-                initial=True,
-            )
-            system_banners, last_system_banner_id = _load_system_banners_after(
-                username,
-                after_id=seen_system_id,
-                limit=_POLL_SYSTEM_BANNERS_LIMIT,
-                cleared_before_audit_id=cleared_before_id,
-            )
-        else:
-            messenger_banners, last_messenger_message_id = _load_messenger_banners(
-                user_id,
-                after_id=seen_messenger_message_id,
-                limit=_POLL_MESSAGE_BANNERS_LIMIT,
-                initial=False,
-            )
-            communications_banners, last_communications_message_id = _load_communications_banners(
-                user_id,
-                after_id=seen_communications_message_id,
-                limit=_POLL_MESSAGE_BANNERS_LIMIT,
-                initial=False,
-            )
-            system_banners, last_system_banner_id = _load_system_banners_after(
-                username,
-                after_id=seen_system_id,
-                limit=_POLL_SYSTEM_BANNERS_LIMIT,
-                cleared_before_audit_id=cleared_before_id,
-            )
+        message_banners_limit = (
+            _POLL_INITIAL_MESSAGE_BANNERS_LIMIT
+            if first_poll
+            else _POLL_MESSAGE_BANNERS_LIMIT
+        )
+        messenger_banners, last_messenger_message_id = _load_messenger_banners(
+            user_id,
+            after_id=seen_messenger_message_id,
+            limit=message_banners_limit,
+        )
+        communications_banners, last_communications_message_id = _load_communications_banners(
+            user_id,
+            after_id=seen_communications_message_id,
+            limit=message_banners_limit,
+        )
+        system_banners, last_system_banner_id = _load_system_banners_after(
+            username,
+            after_id=seen_system_id,
+            limit=_POLL_SYSTEM_BANNERS_LIMIT,
+            cleared_before_audit_id=cleared_before_id,
+        )
 
         banners.extend(messenger_banners)
         banners.extend(communications_banners)
         banners.extend(system_banners)
 
-        if first_poll:
-            next_messenger_seen_message_id = max(
-                int(last_messenger_message_id or 0),
-                _latest_messenger_received_message_id(user_id),
-            )
-            next_communications_seen_message_id = max(
-                int(last_communications_message_id or 0),
-                _latest_communications_received_message_id(user_id),
-            )
-        else:
-            next_messenger_seen_message_id = int(last_messenger_message_id or 0)
-            next_communications_seen_message_id = int(last_communications_message_id or 0)
+        next_messenger_seen_message_id = max(
+            int(last_messenger_message_id or 0),
+            int(seen_messenger_message_id or 0),
+        )
+        next_communications_seen_message_id = max(
+            int(last_communications_message_id or 0),
+            int(seen_communications_message_id or 0),
+        )
 
         session["notify_hub_seen_messenger_message_id"] = int(next_messenger_seen_message_id)
         session["notify_hub_seen_communications_message_id"] = int(next_communications_seen_message_id)
-        session["notify_hub_system_seen_id"] = int(
+        next_system_seen_id = int(
             max(
                 int(last_system_banner_id or 0),
                 int(seen_system_id or 0),
                 int(cleared_before_id or 0),
             )
         )
+        session["notify_hub_system_seen_id"] = next_system_seen_id
 
         session["notify_hub_prev_messenger_unread"] = int(messenger_unread)
         session["notify_hub_prev_communications_unread"] = int(communications_unread)
         session["notify_hub_initialized"] = True
         session.modified = True
+
+        state_changed = False
+        if next_system_seen_id > _effective_system_shown_audit_id(state):
+            state.system_last_shown_audit_id = int(next_system_seen_id)
+            state_changed = True
+        if next_messenger_seen_message_id > _effective_messenger_shown_message_id(state):
+            state.messenger_last_shown_message_id = int(next_messenger_seen_message_id)
+            state_changed = True
+        if next_communications_seen_message_id > _effective_communications_shown_message_id(state):
+            state.communications_last_shown_message_id = int(next_communications_seen_message_id)
+            state_changed = True
+        if state_changed:
+            state.updated_at = dt.datetime.utcnow()
+            db.session.commit()
 
         return jsonify(
             {
@@ -616,6 +570,7 @@ class SystemNotifyCenterView(BaseView):
                 },
                 "system_recent": system_recent,
                 "banners": banners,
+                "csrf_token": generate_csrf(),
             }
         )
 
@@ -634,12 +589,16 @@ class SystemNotifyCenterView(BaseView):
         latest_id = _get_latest_system_audit_id(username, after_id=cleared_before_id)
         read_id = max(int(latest_id), int(cleared_before_id))
         state.system_last_read_audit_id = int(read_id)
+        state.system_last_shown_audit_id = max(
+            int(state.system_last_shown_audit_id or 0),
+            int(read_id),
+        )
         state.updated_at = dt.datetime.utcnow()
         db.session.commit()
 
         session["notify_hub_system_seen_id"] = int(read_id)
         session.modified = True
-        return jsonify({"ok": True, "system_unread": 0})
+        return jsonify({"ok": True, "system_unread": 0, "csrf_token": generate_csrf()})
 
     @expose("/system/clear", methods=["POST"])
     @has_access_api
@@ -658,10 +617,21 @@ class SystemNotifyCenterView(BaseView):
             int(state.system_last_read_audit_id or 0),
             int(latest_id),
         )
+        state.system_last_shown_audit_id = max(
+            int(state.system_last_shown_audit_id or 0),
+            int(latest_id),
+        )
         state.updated_at = dt.datetime.utcnow()
         db.session.commit()
 
         session["notify_hub_system_seen_id"] = int(latest_id)
         session["notify_hub_initialized"] = True
         session.modified = True
-        return jsonify({"ok": True, "system_unread": 0, "system_recent": []})
+        return jsonify(
+            {
+                "ok": True,
+                "system_unread": 0,
+                "system_recent": [],
+                "csrf_token": generate_csrf(),
+            }
+        )

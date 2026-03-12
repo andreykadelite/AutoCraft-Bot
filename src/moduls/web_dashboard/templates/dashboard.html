@@ -92,10 +92,28 @@
 </div>
 {% endif %}
 
+{% set hw = hardware or {} %}
+{% set hw_summary = hw.summary or {} %}
+{% set hw_summary_order = hw.summary_order or [] %}
+{% set hw_categories = hw.category_counts or [] %}
+{% set hw_kind_groups = hw.kind_groups or [] %}
+{% set hw_cpu_temp = hw_summary.get('cpu_temp') or {} %}
+{% set hw_gpu_temp = hw_summary.get('gpu_temp') or {} %}
+
 <div class="tiles" role="list">
   <div class="tile" role="listitem" aria-label="Нагрузка центрального процессора">
     <div class="tile-title">ЦП</div>
     <div class="tile-value" data-overview-value="cpu_percent">{{ cpu | default('-', true) }}%</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Температура центрального процессора">
+    <div class="tile-title">Темп. ЦП</div>
+    <div class="tile-value" data-overview-value="hardware.summary.cpu_temp.display">{{ hw_cpu_temp.display or '-' }}</div>
+    <div class="tile-sub">{{ hw_cpu_temp.device or 'LibreHardwareMonitor' }}</div>
+  </div>
+  <div class="tile" role="listitem" aria-label="Температура графического процессора">
+    <div class="tile-title">Темп. GPU</div>
+    <div class="tile-value" data-overview-value="hardware.summary.gpu_temp.display">{{ hw_gpu_temp.display or '-' }}</div>
+    <div class="tile-sub">{{ hw_gpu_temp.device or 'LibreHardwareMonitor' }}</div>
   </div>
   <div class="tile" role="listitem" aria-label="Использование памяти">
     <div class="tile-title">Память</div>
@@ -648,6 +666,116 @@
         </div>
       </dl>
     </details>
+  </section>
+
+  <section class="card" aria-labelledby="hardware-title">
+    <h3 id="hardware-title">Датчики оборудования</h3>
+    <p class="muted">
+      {% if hw.available %}
+        Источник: {{ hw.source or 'LibreHardwareMonitor' }}. Обновлено: <span data-overview-value="hardware.updated_at">{{ hw.updated_at or '-' }}</span>.
+      {% else %}
+        Источник: LibreHardwareMonitor.
+      {% endif %}
+    </p>
+
+    {% if hw.error %}
+    <div class="alert alert-warning" role="alert">
+      <strong>Датчики:</strong> {{ hw.error }}
+    </div>
+    {% endif %}
+
+    {% if hw_categories %}
+    <p class="muted">
+      Найдено <span data-overview-value="hardware.total_sensors">{{ hw.total_sensors or 0 }}</span> датчиков:
+      {% for group in hw_categories %}
+        {{ group.label }} ({{ group.count }}){% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </p>
+    {% endif %}
+
+    {% if hw_summary_order %}
+    <dl class="info-list">
+      {% for metric_key in hw_summary_order %}
+        {% set metric = hw_summary.get(metric_key) or {} %}
+        <div>
+          <dt>{{ metric.section or 'Датчик' }} · {{ metric.label or metric_key }}</dt>
+          <dd data-overview-value="hardware.summary.{{ metric_key }}.display">
+            {{ metric.display or '-' }}
+            {% if metric.device %}
+              <span class="muted">({{ metric.device }})</span>
+            {% endif %}
+          </dd>
+        </div>
+      {% endfor %}
+    </dl>
+    {% else %}
+    <p class="muted">Ключевые датчики пока недоступны.</p>
+    {% endif %}
+
+    <details class="details-block">
+      <summary>Все найденные датчики ({{ hw.total_sensors or 0 }})</summary>
+      {% if hw_kind_groups %}
+      <p class="muted">Датчики сгруппированы по типу метрики, а внутри — по устройствам. Все разделы и устройства ниже свернуты по умолчанию.</p>
+      {% for kind in hw_kind_groups %}
+      <details class="details-block">
+        <summary>{{ kind.label }} ({{ kind.count }})</summary>
+        {% if kind.categories %}
+        <p class="muted">
+          Внутри:
+          {% for category in kind.categories %}
+            {{ category.label }} ({{ category.count }}){% if not loop.last %}, {% endif %}
+          {% endfor %}
+        </p>
+        {% endif %}
+        {% for device_group in kind.sensors | groupby('hardware_name') %}
+        {% set device_name = device_group.grouper or 'Неизвестное устройство' %}
+        <details class="details-block">
+          <summary>{{ device_name }} ({{ device_group.list | length }})</summary>
+          <div class="table-scroll">
+            <table class="table table-compact">
+              <thead>
+                <tr>
+                  <th scope="col">Категория</th>
+                  <th scope="col">Группа</th>
+                  <th scope="col">Датчик</th>
+                  <th scope="col">Текущее</th>
+                  <th scope="col">Мин</th>
+                  <th scope="col">Макс</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for sensor in device_group.list %}
+                <tr>
+                  <td>{{ sensor.category_label or '-' }}</td>
+                  <td>{{ sensor.group or '-' }}</td>
+                  <td title="{{ sensor.path or '' }}">{{ sensor.name or '-' }}</td>
+                  <td>{{ sensor.value_display or '-' }}</td>
+                  <td>{{ sensor.min_display or '-' }}</td>
+                  <td>{{ sensor.max_display or '-' }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+        {% endfor %}
+      </details>
+      {% endfor %}
+      {% else %}
+      <p class="muted">Датчики пока не обнаружены или LibreHardwareMonitor недоступен.</p>
+      {% endif %}
+    </details>
+
+    {% if hw.diagnostics %}
+    <details class="details-block">
+      <summary>Диагностика источника датчиков</summary>
+      <ul>
+        {% for line in hw.diagnostics %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
   </section>
 
   <section class="card" aria-labelledby="security-title">

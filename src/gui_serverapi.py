@@ -24,11 +24,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtWidgets import QStyleFactory
 from PyQt5.QtGui import QPalette, QColor, QFont
 
-import serverextrbot  # не удаляем, используется внешним кодом
+import sys_core.serverextrbot  # не удаляем, используется внешним кодом
 
 # Try to import startup settings reader from main app to know "start in tray"
 try:
-    from windows_startup import load_startup_full
+    from sys_core.windows_startup import load_startup_full
 except Exception:
     def load_startup_full():
         # Fallback: autorun disabled, start_in_tray disabled, method 'startup'

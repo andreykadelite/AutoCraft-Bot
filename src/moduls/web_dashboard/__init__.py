@@ -18,6 +18,11 @@ try:
 except Exception:
     pass
 
+try:
+    from .web_plugins.win_keys import plugin as _win_keys_plugin  # noqa: F401
+except Exception:
+    pass
+
 __all__ = [
     "PanelConfig",
     "load_config",

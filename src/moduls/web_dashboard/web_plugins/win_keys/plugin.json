@@ -1,0 +1,12 @@
+{
+  "id": "winkeys",
+  "name": "Win Keys",
+  "version": "1.0",
+  "description": "Отправка популярных Windows-комбинаций клавиш и действий мыши, с пользовательскими пресетами и историей.",
+  "entrypoint": "plugin.py",
+  "template": "index.html",
+  "menu_label": "Win Keys",
+  "category": "Расширения",
+  "order": 12,
+  "roles": ["Admin", "Operator"]
+}
